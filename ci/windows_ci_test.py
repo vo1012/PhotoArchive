@@ -234,7 +234,7 @@ def test_long_path():
         # winlong() (photosort_win.py) is a no-op on non-Windows -- the file lands at the plain
         # path there, not behind a "\\?\" prefix, which only means something to the Win32 API.
         walk_root = ("\\\\?\\" + os.path.abspath(deep_target)) if os.name == "nt" else deep_target
-        for dirpath, _, files in os.walk(walk_root):
+        for _dirpath, _, files in os.walk(walk_root):
             if any(f.endswith(".jpg") for f in files):
                 found = True
                 break
@@ -464,7 +464,7 @@ def test_source_walker_reports_current_directory():
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                         encoding="utf-8", errors="replace")
     check(r.returncode == 0, f"dir-progress: unit script exits 0 (stderr={r.stderr[-500:]})")
-    seen_line = next((l for l in r.stdout.splitlines() if l.startswith("SEEN:")), "SEEN:")
+    seen_line = next((line for line in r.stdout.splitlines() if line.startswith("SEEN:")), "SEEN:")
     seen = seen_line[len("SEEN:"):].split("|")
     check(any(s.endswith("Vacation") for s in seen),
           "dir-progress: the plain 'Vacation' subfolder is reported with its real disk path")
