@@ -25,7 +25,6 @@ import errno
 import fnmatch
 import hashlib
 import inspect
-import io
 import json
 import multiprocessing
 import os
@@ -1237,7 +1236,7 @@ def exiftool_batch(paths, batch_size=200):
             # exact when counts line up; fall back to string matching only if they don't
             # (e.g. exiftool dropped an unreadable file from its output).
             if len(data) == len(chunk):
-                for p, entry in zip(chunk, data):
+                for p, entry in zip(chunk, data, strict=True):
                     results[p] = entry
             else:
                 for entry in data:
@@ -1748,6 +1747,14 @@ def _matches_any(name: str, patterns) -> bool:
     return any(fnmatch.fnmatch(lname, pat) for pat in patterns)
 
 
+def _strip_trailing_arrow(s: str) -> str:
+    """Removes exactly one trailing " → " separator (used to join nested archive names) --
+    NOT str.rstrip(" → "), which strips any trailing run of space/→ characters and can eat
+    into a nested archive's own name if it happens to end in one of those characters (ruff
+    B005: misleading multi-character strip, found 2026-07-17)."""
+    return s[:-len(" → ")] if s.endswith(" → ") else s
+
+
 class SourceWalker:
     def __init__(self, cfg: Config, log=print, progress_cb=None):
         self.cfg = cfg
@@ -1975,11 +1982,11 @@ class SourceWalker:
                 stack.append((full, rel, False, cur_ancestors + (full_real,)))
 
     def _handle_archive(self, archive_path, rel_prefix, origin_prefix, depth, archive_boundary_idx=None):
-        display_name = origin_prefix.rstrip(" → ") if origin_prefix else os.path.basename(archive_path)
+        display_name = _strip_trailing_arrow(origin_prefix) if origin_prefix else os.path.basename(archive_path)
         full_display = f"{origin_prefix}" if origin_prefix else os.path.basename(archive_path)
 
         if depth > self.cfg.max_archive_depth:
-            self._log_archive(full_display.rstrip(" → "), "archive_bomb_suspected", "превышена глубина вложенности")
+            self._log_archive(_strip_trailing_arrow(full_display), "archive_bomb_suspected", "превышена глубина вложенности")
             return
 
         fmt = detect_archive_format(archive_path)
@@ -1997,24 +2004,24 @@ class SourceWalker:
             # generator, through _walk_dir()/walk(), all the way to main() -- which only catches
             # KeyboardInterrupt/EOFError -- crashing the entire run with a raw traceback instead
             # of skipping just this one archive and continuing with everything else.
-            self._log_archive(full_display.rstrip(" → "), "archive_read_error",
+            self._log_archive(_strip_trailing_arrow(full_display), "archive_read_error",
                                f"файл исчез или недоступен во время обработки: {e}")
             return
 
         if info.ok:
             if info.encrypted:
-                self._log_archive(full_display.rstrip(" → "), "archive_password_protected")
+                self._log_archive(_strip_trailing_arrow(full_display), "archive_password_protected")
                 return
             if info.path_traversal:
-                self._log_archive(full_display.rstrip(" → "), "archive_path_traversal_suspected",
+                self._log_archive(_strip_trailing_arrow(full_display), "archive_path_traversal_suspected",
                                    "член архива содержит '..' или абсолютный путь -- не распаковываю")
                 return
             if info.total_size > 2 * 1024**3 and compressed_size > 0 and info.total_size > compressed_size * 100:
-                self._log_archive(full_display.rstrip(" → "), "archive_bomb_suspected",
+                self._log_archive(_strip_trailing_arrow(full_display), "archive_bomb_suspected",
                                    f"ratio={info.total_size / max(compressed_size,1):.0f}x")
                 return
             if info.entries > MAX_ARCHIVE_ENTRIES:
-                self._log_archive(full_display.rstrip(" → "), "archive_bomb_suspected",
+                self._log_archive(_strip_trailing_arrow(full_display), "archive_bomb_suspected",
                                    f"entries={info.entries} (лимит {MAX_ARCHIVE_ENTRIES})")
                 return
             required = info.total_size + int(self.cfg.free_space_margin_gb * 1024**3)
@@ -2025,13 +2032,13 @@ class SourceWalker:
             # в тысячи раз больше заявленного и заполнить весь том прямо во время распаковки
             # (мимо этой предполётной проверки). Раз надёжной оценки места нет -- считаем
             # такой архив подозрительным и не распаковываем, а не гадаем с потолка.
-            self._log_archive(full_display.rstrip(" → "), "archive_bomb_suspected",
+            self._log_archive(_strip_trailing_arrow(full_display), "archive_bomb_suspected",
                                "листинг архива не читается, распакованный размер неизвестен")
             return
 
         free = free_space_bytes(self.cfg.tmp_extract if os.path.isdir(winlong(self.cfg.tmp_extract)) else self.cfg.target)
         if required > free:
-            self._log_archive(full_display.rstrip(" → "), "archive_skipped_no_space",
+            self._log_archive(_strip_trailing_arrow(full_display), "archive_skipped_no_space",
                                f"нужно ~{required/1024**3:.1f}ГБ, свободно {free/1024**3:.1f}ГБ")
             return
 
@@ -2042,7 +2049,7 @@ class SourceWalker:
         # ("archive_no_media") as the post-extraction empty-result case below, just reached
         # without ever touching tmp_extract for this archive.
         if not info.has_media_candidate:
-            self._log_archive(full_display.rstrip(" → "), "archive_no_media")
+            self._log_archive(_strip_trailing_arrow(full_display), "archive_no_media")
             return
 
         try:
@@ -2052,7 +2059,7 @@ class SourceWalker:
             # WHOLE archive to hash it (real wall-clock time on a multi-GB file, exactly the
             # window the live user report happened in: "программа его продолжала распаковывать,
             # а потом срубилась"). Same fix, same reasoning.
-            self._log_archive(full_display.rstrip(" → "), "archive_read_error",
+            self._log_archive(_strip_trailing_arrow(full_display), "archive_read_error",
                                f"файл исчез или недоступен во время обработки: {e}")
             return
         extract_dir = os.path.join(self.cfg.tmp_extract, archive_hash)
@@ -2065,7 +2072,7 @@ class SourceWalker:
         self.log(f"  Распаковка {display_name} ({size_gb:.1f} ГБ)…")
         ok = extract_archive(archive_path, fmt, extract_dir, log=self.log)
         if not ok:
-            self._log_archive(full_display.rstrip(" → "), "archive_extract_failed")
+            self._log_archive(_strip_trailing_arrow(full_display), "archive_extract_failed")
             cleanup_dir(extract_dir)
             return
 
@@ -2077,7 +2084,7 @@ class SourceWalker:
             # docstring), so any reparse point found there is treated as suspicious outright.
             reparse = find_reparse_point_in_tree(extract_dir)
             if reparse:
-                self._log_archive(full_display.rstrip(" → "), "archive_symlink_suspected",
+                self._log_archive(_strip_trailing_arrow(full_display), "archive_symlink_suspected",
                                    f"извлечённое дерево содержит symlink/junction ({reparse}) -- "
                                    f"содержимое архива не читаю")
                 cleanup_dir(extract_dir)
@@ -2088,7 +2095,7 @@ class SourceWalker:
             # здесь физически найдётся МЕНЬШЕ файлов, чем заявлено в листинге архива.
             extracted_count = count_extracted_files(extract_dir)
             if extracted_count < info.entries:
-                self._log_archive(full_display.rstrip(" → "), "archive_path_traversal_suspected",
+                self._log_archive(_strip_trailing_arrow(full_display), "archive_path_traversal_suspected",
                                    f"после распаковки найдено {extracted_count} файлов, "
                                    f"в листинге архива было {info.entries} -- похоже, часть "
                                    f"содержимого вышла за пределы extract_dir")
@@ -2108,9 +2115,9 @@ class SourceWalker:
             cleanup_dir(extract_dir)
 
         if media_count == 0:
-            self._log_archive(full_display.rstrip(" → "), "archive_no_media")
+            self._log_archive(_strip_trailing_arrow(full_display), "archive_no_media")
         else:
-            self._log_archive(full_display.rstrip(" → "), "archive_extracted", f"{media_count} медиафайлов")
+            self._log_archive(_strip_trailing_arrow(full_display), "archive_extracted", f"{media_count} медиафайлов")
 
 # ============================================================================
 # PROCESS  (from pipeline/process.py)
@@ -3071,7 +3078,7 @@ class TargetLock:
                     f"файл {self.lock_path} создан {age:.0f} сек назад. Если это не так "
                     f"(прошлый прогон аварийно завершился только что) -- удалите файл "
                     f"вручную и запустите снова."
-                )
+                ) from None
             self.log(f"ВНИМАНИЕ: обнаружен устаревший LOCK-файл ({age / 3600:.1f}ч) -- "
                      f"похоже, прошлый прогон был прерван аварийно (питание/крэш). "
                      f"Удаляю и продолжаю.")
@@ -3652,7 +3659,7 @@ def run_analyze(cfg: Config, mode: str, log=print) -> AnalyzeStats:
 
     bar.close()  # ДО печати чек-листа вызывающим (print_analyze_report) -- не портить формат
 
-    for display, status, note in walker.archive_logs:
+    for display, status, _note in walker.archive_logs:
         if status.startswith("archive_"):
             stats.n_archives_found += 1
         if status == "archive_password_protected":
@@ -3760,7 +3767,7 @@ def check_rules_version(cfg: Config, log=print):
         log(f"Версия правил: первая — {RULES_VERSION} (записана в __служебные_файлы\\prompt\\version.txt)")
         return
     with open(winlong(dest), "r", encoding="utf-8") as f:
-        lines = [l for l in f.read().splitlines() if l.strip()]
+        lines = [line for line in f.read().splitlines() if line.strip()]
     last_version = lines[-1].split("\t", 1)[0] if lines else None
     if last_version == RULES_VERSION:
         return

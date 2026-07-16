@@ -3145,77 +3145,96 @@ def test_relative_path_rejected():
 # FileNotFoundError, а не мягким FAIL.
 
 
+# 2026-07-17 (вторая рецензия, синхронизировано из dev-репозитория): список объектов-функций
+# + опциональный фильтр по подстроке имени в sys.argv[1] -- `python ci/windows_ci_test.py
+# near_dup` гоняет только совпадающие тесты, вместо комментирования 65 строк вручную.
+ALL_TESTS = [
+    test_regression_and_zones,
+    test_sibling_albums_not_merged,
+    test_mirror_raw,
+    test_multi_source,
+    test_long_path,
+    test_hidden_attribute,
+    test_progress_note_does_not_stick,
+    test_progress_bar_desc_separated_even_with_zero_updates,
+    test_log_line_does_not_glue_onto_active_bar,
+    test_progress_bar_context_note_persists_and_truncates,
+    test_source_walker_reports_current_directory,
+    test_progress_bar_no_doubled_colon_or_mixed_units,
+    test_sanitize_zip,
+    test_archive_no_media_skips_extraction,
+    test_archive_unlistable_treated_as_bomb,
+    test_archive_rename_finalization,
+    test_tar_source_never_uses_unverified_rename,
+    test_place_file_archive_no_crc_forces_hash_verify,
+    test_analyze_modes,
+    test_raw_layout_sibling,
+    test_photosort_marker_excludes_subtree,
+    test_unsorted_is_not_marker_protected,
+    test_undated_promotion,
+    test_cli_version_help_routing,
+    test_check_bundled_tools_detects_broken_frozen_build,
+    test_target_nested_warning,
+    test_ctrl_c_no_traceback,
+    test_eof_no_traceback,
+    test_near_dup_appended_not_skipped,
+    test_bare_date_subfolder_not_collapsed_as_dump,
+    test_desktop_is_dump_segment,
+    test_camera_roll_and_new_folder_are_dump_segments,
+    test_force_dump_tilde_prefix,
+    test_merged_album_marker_file,
+    test_archive_file_always_becomes_an_album,
+    test_bare_digit_date_folder_kept_inside_album_but_not_as_album_name,
+    test_summary_enriched_always,
+    test_default_exclude_dirs_configurable_and_logged,
+    test_dump_segment_names_configurable,
+    test_dump_segment_config_ignores_nested_yaml_alias_bomb,
+    test_config_yaml_autocreate_before_first_prompt,
+    test_debug_flag_actions_log,
+    test_log_rotation,
+    test_archive_cache_prunes_stale_paths,
+    test_crash_log_rotates,
+    test_exit_code_aggregation_across_sources,
+    test_target_lock_blocks_concurrent_run,
+    test_target_lock_stale_auto_removed,
+    test_target_lock_released_after_run,
+    test_target_confirmation_unit,
+    test_drive_root_target_confirmation_unit,
+    test_bare_drive_letter_normalization_and_source_target_conflict,
+    test_bare_launch_helpers_unit,
+    test_bare_launch_menu_argv_gate_and_flow,
+    test_tmp_extract_wipe_protection,
+    test_negative_free_space_margin_and_numeric_config_validation,
+    test_disk_full_graceful_stop,
+    test_place_failure_does_not_crash_run,
+    test_symlink_loop_protection,
+    test_deep_directory_tree_does_not_raise_recursion_error,
+    test_archive_entry_count_bomb,
+    test_archive_deleted_mid_scan_does_not_crash,
+    test_archive_path_traversal_rejected,
+    test_archive_symlink_rejected,
+    test_archive_entry_count_mismatch_rejected,
+    test_relative_path_rejected,
+]
+
+
 def main():
     if os.path.isdir(WORK):
         shutil.rmtree(WORK)
     os.makedirs(WORK, exist_ok=True)
 
-    test_regression_and_zones()
-    test_sibling_albums_not_merged()
-    test_mirror_raw()
-    test_multi_source()
-    test_long_path()
-    test_hidden_attribute()
-    test_progress_note_does_not_stick()
-    test_progress_bar_desc_separated_even_with_zero_updates()
-    test_log_line_does_not_glue_onto_active_bar()
-    test_progress_bar_context_note_persists_and_truncates()
-    test_source_walker_reports_current_directory()
-    test_progress_bar_no_doubled_colon_or_mixed_units()
-    test_sanitize_zip()
-    test_archive_no_media_skips_extraction()
-    test_archive_unlistable_treated_as_bomb()
-    test_archive_rename_finalization()
-    test_tar_source_never_uses_unverified_rename()
-    test_place_file_archive_no_crc_forces_hash_verify()
-    test_analyze_modes()
-    test_raw_layout_sibling()
-    test_photosort_marker_excludes_subtree()
-    test_unsorted_is_not_marker_protected()
-    test_undated_promotion()
-    test_cli_version_help_routing()
-    test_check_bundled_tools_detects_broken_frozen_build()
-    test_target_nested_warning()
-    test_ctrl_c_no_traceback()
-    test_eof_no_traceback()
-    test_near_dup_appended_not_skipped()
-    test_bare_date_subfolder_not_collapsed_as_dump()
-    test_desktop_is_dump_segment()
-    test_camera_roll_and_new_folder_are_dump_segments()
-    test_force_dump_tilde_prefix()
-    test_merged_album_marker_file()
-    test_archive_file_always_becomes_an_album()
-    test_bare_digit_date_folder_kept_inside_album_but_not_as_album_name()
-    test_summary_enriched_always()
-    test_default_exclude_dirs_configurable_and_logged()
-    test_dump_segment_names_configurable()
-    test_dump_segment_config_ignores_nested_yaml_alias_bomb()
-    test_config_yaml_autocreate_before_first_prompt()
-    test_debug_flag_actions_log()
-    test_log_rotation()
-    test_archive_cache_prunes_stale_paths()
-    test_crash_log_rotates()
-    test_exit_code_aggregation_across_sources()
-    test_target_lock_blocks_concurrent_run()
-    test_target_lock_stale_auto_removed()
-    test_target_lock_released_after_run()
-    test_target_confirmation_unit()
-    test_drive_root_target_confirmation_unit()
-    test_bare_drive_letter_normalization_and_source_target_conflict()
-    test_bare_launch_helpers_unit()
-    test_bare_launch_menu_argv_gate_and_flow()
-    test_tmp_extract_wipe_protection()
-    test_negative_free_space_margin_and_numeric_config_validation()
-    test_disk_full_graceful_stop()
-    test_place_failure_does_not_crash_run()
-    test_symlink_loop_protection()
-    test_deep_directory_tree_does_not_raise_recursion_error()
-    test_archive_entry_count_bomb()
-    test_archive_deleted_mid_scan_does_not_crash()
-    test_archive_path_traversal_rejected()
-    test_archive_symlink_rejected()
-    test_archive_entry_count_mismatch_rejected()
-    test_relative_path_rejected()
+    pattern = sys.argv[1] if len(sys.argv) > 1 else ""
+    ran = 0
+    for t in ALL_TESTS:
+        if pattern and pattern not in t.__name__:
+            continue
+        print(f"\n--- {t.__name__} ---")
+        t()
+        ran += 1
+
+    if pattern and ran == 0:
+        sys.exit(f"No test function name contains {pattern!r} -- check the spelling "
+                  f"(matches against t.__name__ in ALL_TESTS).")
 
     print("\n" + "=" * 60)
     if FAILURES:
@@ -3223,7 +3242,7 @@ def main():
         for f in FAILURES:
             print(f"  - {f}")
         sys.exit(1)
-    print("ALL CHECKS PASSED")
+    print(f"ALL CHECKS PASSED ({ran}/{len(ALL_TESTS)} test function(s) ran)")
 
 
 if __name__ == "__main__":

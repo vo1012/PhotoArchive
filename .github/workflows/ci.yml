@@ -2,14 +2,28 @@ name: CI
 
 on:
   push:
-    paths-ignore:
-      - '**.md'
   pull_request:
-    paths-ignore:
-      - '**.md'
   workflow_dispatch:
 
 jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Run ruff
+        # E501 (line too long) excluded on purpose -- this codebase deliberately uses long
+        # lines for detailed rationale comments, not a style bug.
+        run: ruff check . --select E,F,B --ignore E501
+
   test:
     name: Functional tests (windows-latest)
     runs-on: windows-latest
@@ -21,7 +35,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install Python dependencies
-        run: pip install pillow pillow-heif imagehash reverse_geocoder pyyaml tqdm
+        run: pip install -r requirements.txt
 
       - name: Install external tools (exiftool/ffmpeg/7zip/unrar)
         run: choco install exiftool ffmpeg 7zip unrar -y --no-progress
