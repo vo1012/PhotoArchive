@@ -7,3 +7,4 @@ crash.log.*
 analyze_report.csv
 __служебные_файлы/
 PhotoArchive.exe
+__pycache__/

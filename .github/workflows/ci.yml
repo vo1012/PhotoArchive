@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Functional tests (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install pillow pillow-heif imagehash reverse_geocoder pyyaml tqdm
+
+      - name: Install external tools (exiftool/ffmpeg/7zip/unrar)
+        run: choco install exiftool ffmpeg 7zip unrar -y --no-progress
+        shell: pwsh
+
+      - name: Sanity-check tools are on PATH
+        shell: pwsh
+        run: |
+          exiftool -ver
+          ffmpeg -version | Select-Object -First 1
+          ffprobe -version | Select-Object -First 1
+          7z i | Select-Object -First 1
+
+      - name: Syntax check
+        run: python -m py_compile photosort_win.py
+
+      - name: Run functional smoke tests
+        run: python ci/windows_ci_test.py
