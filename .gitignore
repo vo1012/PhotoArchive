@@ -1,0 +1,9 @@
+# Файлы, которые PhotoArchive.exe создаёт рядом с собой при запуске -- не часть репозитория.
+photoarchive_config.yaml
+work.db
+work.db-journal
+crash.log
+crash.log.*
+analyze_report.csv
+__служебные_файлы/
+PhotoArchive.exe
