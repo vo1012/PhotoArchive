@@ -925,10 +925,12 @@ def test_cli_version_help_routing():
           "B.3: top-level --help lists analyze-* subcommands (not swallowed by the archive shim)")
     check("github.com/vo1012/PhotoArchive" in r3.stdout,
           "2026-07-15: --help epilog links the public repo")
-    check("2202 2092 9796 4578" in r3.stdout and "коммерческой выгоды" in r3.stdout,
+    check("скомпрометирована" in r3.stdout and "коммерческой выгоды" in r3.stdout,
           "2026-07-15: --help epilog carries the same donation text as "
           "PhotoArchive_ot_avtora.md's P.S. (DONATION_TEXT), so it travels with the exe even "
-          "if the letter isn't opened")
+          "if the letter isn't opened. 2026-07-17: real card number replaced with a "
+          "placeholder (card was compromised and blocked) -- check the placeholder text "
+          "survives instead of the literal number")
 
     r5 = subprocess.run([sys.executable, SCRIPT, "--formats"], capture_output=True,
                          text=True, encoding="utf-8", errors="replace")
