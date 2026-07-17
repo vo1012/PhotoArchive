@@ -1152,22 +1152,9 @@ def test_desktop_is_dump_segment():
     print("\n=== 2026-07-11 finding: 'Desktop'/'Рабочий стол' is a recognized dump segment "
           "(sort by date), not swallowed whole as an album ===")
     # Found on a real archive: a loose photo directly under .../Desktop/ landed as an album
-    # instead of being sorted by date -- "Desktop" wasn't in DUMP_SEGMENT_NAMES.
-    code = (
-        "import sys; sys.path.insert(0, %r)\n"
-        "import photosort_win as m\n"
-        "print('desktop:', m.is_dump_segment('Desktop'))\n"
-        "print('desktop_ru:', m.is_dump_segment('Рабочий стол'))\n"
-        "print('archive_not_dump:', m.is_dump_segment('archive'))\n"
-    ) % ROOT
-    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                        encoding="utf-8", errors="replace")
-    check(r.returncode == 0, f"dump-segments: unit script exits 0 (stderr={r.stderr[-500:]})")
-    check("desktop: True" in r.stdout, "dump-segments: 'Desktop' is a dump segment")
-    check("desktop_ru: True" in r.stdout, "dump-segments: 'Рабочий стол' is a dump segment")
-    check("archive_not_dump: False" in r.stdout,
-          "dump-segments: 'archive' is deliberately NOT blanket-whitelisted (see "
-          "test_archive_file_always_becomes_an_album below for how this case is actually fixed)")
+    # instead of being sorted by date -- "Desktop" wasn't in DUMP_SEGMENT_NAMES. The pure
+    # is_dump_segment() unit check for this now lives in tests/test_dump_segments.py
+    # (test_is_dump_segment_known_names) -- this test keeps only the end-to-end pipeline part.
 
     # End-to-end: a photo with a reliable EXIF date sitting in a real user's Desktop folder
     # now sorts by date instead of becoming Albums\Desktop\.
@@ -1189,29 +1176,9 @@ def test_camera_roll_and_new_folder_are_dump_segments():
     # Found on a real archive: E:\ has "Новая папка" AND "Новая папка (2)" as sibling
     # top-level folders (Windows' own default name for an unrenamed folder, numbered for each
     # further one), plus a real Pictures\Camera Roll (standard Windows/OneDrive phone-sync
-    # folder) -- neither was in DUMP_SEGMENT_NAMES/DUMP_SEGMENT_REGEXES before this.
-    code = (
-        "import sys; sys.path.insert(0, %r)\n"
-        "import photosort_win as m\n"
-        "print('camera_roll:', m.is_dump_segment('Camera Roll'))\n"
-        "print('novaya_papka:', m.is_dump_segment('Новая папка'))\n"
-        "print('novaya_papka_numbered:', m.is_dump_segment('Новая папка (2)'))\n"
-        "print('new_folder:', m.is_dump_segment('New Folder'))\n"
-        "print('new_folder_numbered:', m.is_dump_segment('New Folder (3)'))\n"
-        "print('real_album_not_dump:', m.is_dump_segment('Фото Чайка_2024'))\n"
-    ) % ROOT
-    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                        encoding="utf-8", errors="replace")
-    check(r.returncode == 0, f"camera-roll/new-folder: unit script exits 0 (stderr={r.stderr[-500:]})")
-    check("camera_roll: True" in r.stdout, "camera-roll/new-folder: 'Camera Roll' is a dump segment")
-    check("novaya_papka: True" in r.stdout, "camera-roll/new-folder: 'Новая папка' is a dump segment")
-    check("novaya_papka_numbered: True" in r.stdout,
-          "camera-roll/new-folder: 'Новая папка (2)' (Windows-numbered sibling) is a dump segment too")
-    check("new_folder: True" in r.stdout, "camera-roll/new-folder: 'New Folder' is a dump segment")
-    check("new_folder_numbered: True" in r.stdout,
-          "camera-roll/new-folder: 'New Folder (3)' is a dump segment too")
-    check("real_album_not_dump: False" in r.stdout,
-          "camera-roll/new-folder: a real deliberately-named album is unaffected")
+    # folder) -- neither was in DUMP_SEGMENT_NAMES/DUMP_SEGMENT_REGEXES before this. The pure
+    # is_dump_segment() unit check for this now lives in tests/test_dump_segments.py
+    # (test_is_dump_segment_known_names) -- this test keeps only the end-to-end pipeline part.
 
     # End-to-end: a photo dropped straight in an unrenamed "Новая папка" sorts by date, not
     # into an Albums\Новая папка\ pile.
@@ -1233,22 +1200,9 @@ def test_force_dump_tilde_prefix():
     # User's own scenario: a cloud-sync folder named "Яндекс_диск" reads as a plausible real
     # album name (correctly NOT in DUMP_SEGMENT_NAMES) -- renaming it to "~Яндекс_диск" is a
     # manual, read-only (source is never renamed BY the program) way to force it to sort by
-    # date instead. See FORCE_DUMP_PREFIX in photosort_win.py.
-    code = (
-        "import sys; sys.path.insert(0, %r)\n"
-        "import photosort_win as m\n"
-        "print('tilde_forces_dump:', m.is_dump_segment('~Яндекс_диск'))\n"
-        "print('tilde_forces_dump_as_subpath_too:', m.is_dump_segment('~Яндекс_диск', for_subpath=True))\n"
-        "print('plain_name_not_dump:', m.is_dump_segment('Яндекс_диск'))\n"
-    ) % ROOT
-    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                        encoding="utf-8", errors="replace")
-    check(r.returncode == 0, f"force-dump-tilde: unit script exits 0 (stderr={r.stderr[-500:]})")
-    check("tilde_forces_dump: True" in r.stdout, "force-dump-tilde: '~Яндекс_диск' is a dump segment")
-    check("tilde_forces_dump_as_subpath_too: True" in r.stdout,
-          "force-dump-tilde: still dump even as a subpath under an already-found album")
-    check("plain_name_not_dump: False" in r.stdout,
-          "force-dump-tilde: without the tilde, the same name is a real (non-dump) album candidate")
+    # date instead. See FORCE_DUMP_PREFIX in photosort_win.py. The pure is_dump_segment() unit
+    # check for this now lives in tests/test_dump_segments.py (test_force_dump_tilde_prefix)
+    # -- this test keeps only the end-to-end pipeline part.
 
     # End-to-end: a photo directly under "~Яндекс_диск" sorts by date, not into
     # Albums\~Яндекс_диск\.
@@ -1417,27 +1371,9 @@ def test_archive_file_always_becomes_an_album():
 def test_bare_digit_date_folder_kept_inside_album_but_not_as_album_name():
     print("\n=== 2026-07-11 finding: a bare 6-8 digit folder ('20240802') never NAMES an "
           "album, but survives as a subpath once already inside a real album ===")
-    # Unit check on the two-role split (is_dump_segment(for_subpath=...)).
-    code = (
-        "import sys; sys.path.insert(0, %r)\n"
-        "import photosort_win as m\n"
-        "print('album_role:', m.is_dump_segment('20240802'))\n"
-        "print('subpath_role:', m.is_dump_segment('20240802', for_subpath=True))\n"
-        "print('short_digit_subpath_role:', m.is_dump_segment('101', for_subpath=True))\n"
-        "print('with_separators_never_dump:', m.is_dump_segment('2015-08-20'))\n"
-    ) % ROOT
-    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                        encoding="utf-8", errors="replace")
-    check(r.returncode == 0, f"digit-date subpath: unit script exits 0 (stderr={r.stderr[-500:]})")
-    check("album_role: True" in r.stdout,
-          "digit-date subpath: a bare 6-8 digit folder is still dump when naming the album")
-    check("subpath_role: False" in r.stdout,
-          "digit-date subpath: the SAME folder is no longer dump once inside a real album")
-    check("short_digit_subpath_role: True" in r.stdout,
-          "digit-date subpath: a short bare digit sequence ('101') still collapses even "
-          "inside an album -- only the 6-8 digit date-shaped range is exempted")
-    check("with_separators_never_dump: False" in r.stdout,
-          "digit-date subpath: a date WITH separators was never dump in either role (unchanged)")
+    # The pure unit check on the two-role split (is_dump_segment(for_subpath=...)) now lives
+    # in tests/test_dump_segments.py (test_bare_digit_date_folder_two_role_split) -- this test
+    # keeps only the end-to-end pipeline part.
 
     # End-to-end: a real album containing an unrenamed camera-style date folder.
     src = os.path.join(WORK, "src_digit_date_subpath")
@@ -3137,17 +3073,14 @@ def test_relative_path_rejected():
           "5.9: relative TARGET gets a clear Russian error message")
 
 
-# test_third_party_licenses_wired_up() и test_requirements_txt_pinned_and_wired_up() из
-# dev-репозитория (photo-sort-win) сюда сознательно не перенесены -- они проверяют
-# согласованность build.bat/RELEASING.md/requirements.txt/README-BUILD.md, файлов сборочного
-# конвейера, которых в этом (публичном) репозитории нет по замыслу (см. README этого
-# репозитория). Здесь эти функции просто открывали бы несуществующие файлы и падали с
-# FileNotFoundError, а не мягким FAIL.
-
-
-# 2026-07-17 (вторая рецензия, синхронизировано из dev-репозитория): список объектов-функций
-# + опциональный фильтр по подстроке имени в sys.argv[1] -- `python ci/windows_ci_test.py
-# near_dup` гоняет только совпадающие тесты, вместо комментирования 65 строк вручную.
+# 2026-07-17 (вторая рецензия): плоский список из 68 прямых вызовов раньше означал, что
+# запустить один тест можно было только закомментировав остальные 67 -- при том, что каждый
+# тест поднимает несколько subprocess-ов, полный прогон идёт минуты, а отлаживаешь всегда
+# один. Список объектов-функций + опциональный фильтр по подстроке имени в sys.argv[1] чинит
+# оба случая разом: `python ci/windows_ci_test.py near_dup` гоняет только совпадающие тесты.
+# Побочный эффект: забытая функция теста, которую не дописали в этот список, -- опечатка в
+# ОДНОМ месте (не как раньше, когда `def test_...():` и вызов в main() были двумя независимыми
+# местами, и можно было незаметно для CI никогда не вызвать новый тест).
 ALL_TESTS = [
     test_regression_and_zones,
     test_sibling_albums_not_merged,

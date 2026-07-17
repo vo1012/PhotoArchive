@@ -25,6 +25,7 @@ import errno
 import fnmatch
 import hashlib
 import inspect
+import itertools
 import json
 import multiprocessing
 import os
@@ -2306,22 +2307,16 @@ def _aspect_bucket(aspect: float) -> int:
     return round(aspect * 50)  # ~2% grid
 
 
-def _phash_prefix(phash_hex: str) -> str:
-    return phash_hex[:4] if phash_hex else ""
-
-
 class Pool:
     def __init__(self):
         self.by_sha = {}
         self.by_aspect_bucket = defaultdict(list)
-        self.by_phash_prefix = defaultdict(list)
         self.by_duration_bucket = defaultdict(list)
 
     def add(self, entry: PoolEntry):
         self.by_sha[entry.sha256] = entry
         if entry.ftype in ("image",) and entry.aspect and entry.phash:
             self.by_aspect_bucket[_aspect_bucket(entry.aspect)].append(entry)
-            self.by_phash_prefix[_phash_prefix(entry.phash)].append(entry)
         elif entry.ftype == "video" and entry.duration is not None:
             self.by_duration_bucket[int(entry.duration)].append(entry)
 
@@ -2329,31 +2324,36 @@ class Pool:
         return self.by_sha.get(sha256)
 
     def find_near_dup_image(self, aspect: float, phash: str, threshold=6):
-        """Returns (entry, aspect_matches, hamming_distance) for the closest near-dup, or
-        (None, None, None). The distance is surfaced (p.5.7) so the caller can log exactly
-        how close a near-dup match was, now that near-dups are appended, not skipped."""
+        """Returns (entry, aspect_matches, hamming_distance) for the best-quality near-dup
+        within threshold, or (None, None, None). Among all cluster matches, the entry is
+        chosen by _quality_key (same criterion as image_is_strictly_better) rather than the
+        nearest by Hamming distance -- otherwise appended_better/appended_near_dup could be
+        decided against the wrong cluster member. The distance of the chosen entry is still
+        surfaced (p.5.7) so the caller can log how close the match was, now that near-dups
+        are appended, not skipped."""
         bucket = _aspect_bucket(aspect)
-        best = None
-        best_dist = threshold + 1
+        candidates = []
         for b in (bucket - 1, bucket, bucket + 1):
             for entry in self.by_aspect_bucket.get(b, []):
                 d = hamming(entry.phash, phash)
-                if d <= threshold and d < best_dist:
+                if d <= threshold:
                     rel_diff = abs(entry.aspect - aspect) / max(entry.aspect, 1e-6)
                     if rel_diff <= 0.02:
-                        best = entry
-                        best_dist = d
-        if best:
+                        candidates.append((entry, d))
+        if candidates:
+            best, best_dist = max(candidates, key=lambda pair: _quality_key(pair[0]))
             return best, True, best_dist
 
-        prefix = _phash_prefix(phash)
-        neighbor_prefixes = {prefix}
-        for entry in self.by_phash_prefix.get(prefix, []):
+        # Fallback: a crop can have a different aspect (so it never lands in the buckets
+        # above) but a similar phash. Scan every image entry in the pool -- by_aspect_bucket
+        # already holds all of them, no separate phash-prefix index needed.
+        candidates = []
+        for entry in itertools.chain(*self.by_aspect_bucket.values()):
             d = hamming(entry.phash, phash)
-            if d <= threshold and d < best_dist:
-                best = entry
-                best_dist = d
-        if best:
+            if d <= threshold:
+                candidates.append((entry, d))
+        if candidates:
+            best, best_dist = max(candidates, key=lambda pair: _quality_key(pair[0]))
             return best, False, best_dist
         return None, None, None
 
@@ -2379,16 +2379,14 @@ class Pool:
         return None, None
 
 
+def _quality_key(entry: PoolEntry):
+    """Ordering used to pick the best of several near-dup candidates: pixel area, then file
+    size, then EXIF camera presence -- same criterion as image_is_strictly_better below."""
+    return ((entry.width or 0) * (entry.height or 0), entry.size, entry.has_camera)
+
+
 def image_is_strictly_better(candidate: PoolEntry, existing: PoolEntry) -> bool:
-    cand_px = (candidate.width or 0) * (candidate.height or 0)
-    exist_px = (existing.width or 0) * (existing.height or 0)
-    if cand_px != exist_px:
-        return cand_px > exist_px
-    if candidate.size != existing.size:
-        return candidate.size > existing.size
-    if candidate.has_camera != existing.has_camera:
-        return candidate.has_camera
-    return False
+    return _quality_key(candidate) > _quality_key(existing)
 
 
 def video_is_strictly_better(candidate: PoolEntry, existing: PoolEntry) -> bool:
