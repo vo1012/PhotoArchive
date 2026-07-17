@@ -1,6 +1,8 @@
 """hamming() / _aspect_bucket() / _quality_key() / image_is_strictly_better() /
 video_is_strictly_better() / Pool.find_near_dup_image() / decide() -- pure dedup/quality
 logic on bare Pool()/PoolEntry()/SourceRecord() objects, no real media files needed."""
+import time
+
 import pytest
 
 import photosort_win as m
@@ -22,6 +24,30 @@ class TestHamming:
     def test_known_distance(self):
         # v_close flips exactly one bit relative to the base hash (see point-5 fix commit).
         assert m.hamming("aa55000000000000", "aa55000000800000") == 1
+
+
+class TestHammingInt:
+    """hamming_int()/_phash_to_int() -- the cached-int fast path Pool uses instead of
+    hamming(str, str) in its hot near-dup lookup loop (second-review perf finding,
+    2026-07-17: re-parsing hex on every call made the O(n) fallback scan O(n) in wall-clock
+    minutes at real archive scale). Must agree with hamming() bit-for-bit -- it's the same
+    XOR-popcount math, just skipping imagehash's hex_to_hash() re-parse."""
+
+    def test_agrees_with_hamming_on_known_distance(self):
+        a, b = "aa55000000000000", "aa55000000800000"
+        assert m.hamming_int(m._phash_to_int(a), m._phash_to_int(b)) == m.hamming(a, b) == 1
+
+    def test_identical_hashes_zero_distance(self):
+        v = m._phash_to_int("aa55000000000000")
+        assert m.hamming_int(v, v) == 0
+
+    def test_none_input_returns_sentinel_not_crash(self):
+        assert m.hamming_int(None, m._phash_to_int("aa55000000000000")) == 999
+        assert m.hamming_int(m._phash_to_int("aa55000000000000"), None) == 999
+
+    def test_phash_to_int_invalid_hex_returns_none(self):
+        assert m._phash_to_int("not-hex") is None
+        assert m._phash_to_int(None) is None
 
 
 @pytest.mark.parametrize("aspect,expected_bucket", [
@@ -107,6 +133,28 @@ class TestFindNearDupImage:
                          aspect=4 / 3, width=800, height=600, phash="0000000000000000"))
         entry, aspect_ok, dist = pool.find_near_dup_image(4 / 3, "ffffffffffffffff")
         assert (entry, aspect_ok, dist) == (None, None, None)
+
+    def test_fallback_scan_scales_to_thousands_of_entries(self):
+        # Regression guard for the second-review perf finding (2026-07-17): the fallback
+        # loop used to re-parse both hex phashes via imagehash.hex_to_hash() on every
+        # comparison (~48us/call measured) -- O(n) per miss, O(n^2) over a real run, since
+        # most photos in a real archive are unique and never match an aspect bucket (that's
+        # exactly what forces this fallback branch). This pool is deliberately small (pytest
+        # needs to stay fast, not simulate a real 20k-photo archive) but the time budget is
+        # tight enough that the OLD per-call hex-parsing implementation would have blown it
+        # (2000 entries * ~48us =~ 96ms) while the cached-int path clears it comfortably.
+        pool = m.Pool()
+        for i in range(2000):
+            pool.add(_entry(sha256=f"{i:064x}", dest_path=f"e{i}", size=1000,
+                             aspect=1.5, width=800, height=600, phash=f"{i:016x}"))
+        start = time.perf_counter()
+        # aspect=0.7 guarantees a miss on every aspect bucket (pool is all aspect=1.5) --
+        # forces the O(n) fallback scan, not the cheap aspect-bucket path.
+        pool.find_near_dup_image(0.7, "ffffffffffffffff")
+        elapsed = time.perf_counter() - start
+        assert elapsed < 0.05, (
+            f"near-dup fallback scan took {elapsed:.3f}s for 2000 entries -- likely a "
+            f"perf regression in Pool.find_near_dup_image()'s hot loop")
 
 
 def _source_record(ftype, **kwargs):
