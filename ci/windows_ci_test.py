@@ -3154,6 +3154,18 @@ ALL_TESTS = [
 
 
 def main():
+    # 2026-07-17 (ревизорская сессия, раунд 1): ALL_TESTS -- обычный литерал, который
+    # правится вручную. Комментарий над ним утверждает, что забытая функция теста -- теперь
+    # только опечатка в ОДНОМ месте, но без этой проверки её всё ещё можно было бы просто не
+    # заметить: CI остался бы зелёным, а новый def test_...() никогда бы не исполнился, без
+    # единого сигнала об этом. Сверяем целиком, а не полагаемся на визуальную аккуратность.
+    _defined = {name for name, obj in globals().items()
+                if name.startswith("test_") and callable(obj)}
+    _listed = {t.__name__ for t in ALL_TESTS}
+    _missing = _defined - _listed
+    assert not _missing, (
+        f"test function(s) defined but missing from ALL_TESTS: {sorted(_missing)}")
+
     if os.path.isdir(WORK):
         shutil.rmtree(WORK)
     os.makedirs(WORK, exist_ok=True)
