@@ -925,12 +925,15 @@ def test_cli_version_help_routing():
           "B.3: top-level --help lists analyze-* subcommands (not swallowed by the archive shim)")
     check("github.com/vo1012/PhotoArchive" in r3.stdout,
           "2026-07-15: --help epilog links the public repo")
-    check("скомпрометирована" in r3.stdout and "коммерческой выгоды" in r3.stdout,
+    check("актуальные способы" in r3.stdout and "коммерческой выгоды" in r3.stdout,
           "2026-07-15: --help epilog carries the same donation text as "
           "PhotoArchive_ot_avtora.md's P.S. (DONATION_TEXT), so it travels with the exe even "
-          "if the letter isn't opened. 2026-07-17: real card number replaced with a "
-          "placeholder (card was compromised and blocked) -- check the placeholder text "
-          "survives instead of the literal number")
+          "if the letter isn't opened. 2026-07-17: rewritten to point at GitHub instead of a "
+          "placeholder about the compromised card -- --help never gets the real card number, "
+          "not even in the manual-distribution build (see build/md_to_pdf.py's "
+          "_inject_donation_details, which only ever touches PhotoArchive_ot_avtora.md/FAQ.md)")
+    check("скомпрометирована" not in r3.stdout,
+          "2026-07-17: stale compromised-card placeholder must not linger in --help")
 
     r5 = subprocess.run([sys.executable, SCRIPT, "--formats"], capture_output=True,
                          text=True, encoding="utf-8", errors="replace")
