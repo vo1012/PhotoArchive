@@ -152,7 +152,14 @@ class TestFindNearDupImage:
         # forces the O(n) fallback scan, not the cheap aspect-bucket path.
         pool.find_near_dup_image(0.7, "ffffffffffffffff")
         elapsed = time.perf_counter() - start
-        assert elapsed < 0.05, (
+        # Threshold tightened 2026-07-17 (third-review finding): the cached-int path measures
+        # ~0.3-0.4ms for 2000 entries, so 10ms still leaves a ~25-30x margin against slower CI
+        # hardware. The original 50ms threshold gave only a ~1.5x margin over the OLD broken
+        # implementation's measured ~75ms on a real reviewer machine -- a CI runner faster than
+        # that machine by more than 1.5x would have let the regression it's meant to catch pass
+        # silently. 10ms still requires the old hex-reparsing path to somehow get ~8x faster
+        # than measured to slip through, while giving the fixed path itself no realistic risk.
+        assert elapsed < 0.01, (
             f"near-dup fallback scan took {elapsed:.3f}s for 2000 entries -- likely a "
             f"perf regression in Pool.find_near_dup_image()'s hot loop")
 

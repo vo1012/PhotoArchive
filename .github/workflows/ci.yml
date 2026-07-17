@@ -74,7 +74,7 @@ jobs:
   build:
     name: Build PhotoArchive.exe
     runs-on: windows-latest
-    needs: test
+    needs: [lint, unit-tests, test]
     steps:
       - uses: actions/checkout@v4
 
@@ -104,12 +104,13 @@ jobs:
           $env:Path = "$PWD\bin;" + $env:Path
           python ci/smoke_test_exe.py
 
-      # continue-on-error: this repo's Actions storage isn't the tight private-repo quota
-      # that made the private repo's equivalent step defensive about it (see dev-repo
-      # SESSION-HANDOFF.txt) -- kept anyway so a storage hiccup here can't fail a build that
-      # otherwise passed every real check above.
+      # No continue-on-error here (third-review finding, 2026-07-17): the release job below
+      # downloads this exact artifact on a tag push -- a silently swallowed upload failure
+      # would make `build` go green while `release` fails two jobs later on a confusing
+      # "artifact not found", instead of failing loudly where the actual problem is. This
+      # repo also doesn't have the private repo's tight artifact-storage quota that originally
+      # motivated tolerating upload failures, so there's no real hiccup left to protect against.
       - uses: actions/upload-artifact@v4
-        continue-on-error: true
         with:
           name: PhotoArchive-exe
           path: build/dist/PhotoArchive.exe
