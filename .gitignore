@@ -8,3 +8,13 @@ analyze_report.csv
 __служебные_файлы/
 PhotoArchive.exe
 __pycache__/
+
+# Bundled external binaries: intentionally NOT committed, see bin/README-BIN.md
+bin/*
+!bin/README-BIN.md
+
+# PyInstaller build output (build.bat runs from build/, producing build/build/ + build/dist/)
+build/build/
+build/dist/
+dist/
+*.spec
