@@ -68,5 +68,6 @@ github.com/vo1012/PhotoArchive.</sub>
 
 ---
 
-Готовы попробовать? Дальше — [буклет](./PhotoArchive_buklet.pdf) на одну страницу с сутью
-программы, а после него — [«Быстрый старт»](./QUICKSTART.md).
+Готовы попробовать? Дальше — [буклет](./PhotoArchive_buklet.pdf) (`PhotoArchive_buklet.pdf`)
+на одну страницу с сутью программы, а после него — [«Быстрый старт»](./QUICKSTART.md)
+(`QUICKSTART.md`).
