@@ -80,7 +80,7 @@ class TestFindAlbum:
     def test_profile_username_segment_is_dump(self):
         # A Windows/Unix profile username sitting directly under Users/Home is not a
         # meaningful album -- loose photos underneath it fall through to ByDate instead.
-        assert m.find_album("Users/HTPC/Pictures/photo.jpg") == (None, None, None)
+        assert m.find_album("Users/User1/Pictures/photo.jpg") == (None, None, None)
 
     def test_archive_own_name_becomes_album_when_disk_side_has_none(self):
         # 2026-07-11 finding: an archive's OWN filename anchors the album when nothing

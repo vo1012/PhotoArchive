@@ -2710,7 +2710,7 @@ def find_album(rel_path: str, archive_boundary_idx: int = None, *,
     cfg.dump_segment_prefixes_tuple, bare calls (tests) fall back to module defaults.
 
     A segment that is itself a Windows/Unix profile username (i.e. sits directly under a
-    "Users"/"Home" root, e.g. Users/HTPC/...) is treated as dump too: a personal profile
+    "Users"/"Home" root, e.g. Users/User1/...) is treated as dump too: a personal profile
     folder name is not a meaningful album, so photos loose inside it (Pictures/Downloads/...)
     fall through to date-based ByDate placement instead of being lumped under the username.
 

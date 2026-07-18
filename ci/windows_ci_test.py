@@ -2328,7 +2328,7 @@ def test_bare_launch_helpers_unit():
     code5 = (
         "import sys; sys.path.insert(0, %r)\n"
         "import photosort_win as m\n"
-        "long_path = 'C:/Users/HTPC/Desktop/archive-2026-07-09_20-14-47/archive.zip -> ' + 'a' * 100\n"
+        "long_path = 'C:/Users/User1/Desktop/archive-2026-07-09_20-14-47/archive.zip -> ' + 'a' * 100\n"
         "narrow = m._truncate_progress_note(long_path, maxlen=30)\n"
         "wide = m._truncate_progress_note(long_path, maxlen=120)\n"
         "print('narrow_shorter_than_wide:', len(narrow) < len(wide))\n"
