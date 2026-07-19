@@ -1,0 +1,20 @@
+title: PhotoArchive
+description: Портативная программа для надёжной раскладки семейного фотоархива на Windows
+theme: jekyll-theme-primer
+lang: ru
+
+# REVIEW-HANDOFF.md, раунд 13, тикет 1: единственная страница сайта (index.md) читает
+# PhotoArchive_ot_avtora.md через {% include_relative %} -- текст письма физически один,
+# не дублируется. Остальные .md-файлы репозитория (README/FAQ/QUICKSTART/...) не имеют
+# Jekyll front matter, поэтому Jekyll их не рендерит как страницы -- просто копирует как
+# статические файлы, никак не влияя на сайт.
+exclude:
+  - bin/
+  - build/
+  - ci/
+  - tests/
+  - licenses/
+  - "*.py"
+  - "*.exe"
+  - "*.csv"
+  - requirements.txt
