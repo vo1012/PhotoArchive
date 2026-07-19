@@ -135,8 +135,13 @@ def _parse_bydate_segment(dest: str):
     """Достаёт (year, month, day, place) из пути вида
     ...\\ByDate\\<year>\\<YYYY-MM[-DD]> [место][ [PhotoArchive]]\\file — под любую
     bydate_granularity (day/month/year/flat). Возвращает None, если по пути нельзя
-    восстановить хотя бы год (flat-раскладка, либо 0000-undated)."""
-    parts = dest.split(os.sep)
+    восстановить хотя бы год (flat-раскладка, либо 0000-undated).
+
+    `dest` -- всегда путь реального Windows TARGET (программа только для Windows), поэтому
+    разделитель фиксирован на `\\` явно, а не через os.sep -- иначе разбор ломается, когда сам
+    report.py импортируется под pytest на не-Windows раннере (public-репозиторий гоняет
+    tests/ на ubuntu-latest в CI), хотя реальные данные всегда приходят с Windows."""
+    parts = dest.split("\\")
     if "ByDate" not in parts:
         return None
     idx = parts.index("ByDate")
@@ -165,7 +170,8 @@ def _parse_bydate_segment(dest: str):
 
 
 def _parse_album(dest: str):
-    parts = dest.split(os.sep)
+    # Тот же случай, что и в _parse_bydate_segment() выше -- dest всегда Windows-путь.
+    parts = dest.split("\\")
     if "Albums" not in parts:
         return None
     idx = parts.index("Albums")

@@ -1892,6 +1892,14 @@ def test_exit_code_aggregation_across_sources():
     # test_target_lock_blocks_concurrent_run/test_disk_full_graceful_stop individually).
     code = (
         "import sys; sys.path.insert(0, %r)\n"
+        # Real invocations only get UTF-8 stdout via the reconfigure() at the bottom of
+        # photosort_win.py's own `if __name__ == "__main__":` block -- calling m._main()
+        # directly here (as an imported module, not run as __main__) bypasses that guard, so
+        # a runner whose default console codepage can't encode Cyrillic (observed on GitHub
+        # Actions windows-latest, cp1252) crashes the moment _finalize_target_report() logs
+        # "Отчёт: ...". Replicate the same reconfigure() here so this mock matches what a
+        # real run actually gets.
+        "sys.stdout.reconfigure(encoding='utf-8', errors='replace')\n"
         "import photosort_win as m\n"
         "_calls = []\n"
         "def _fake(source, target, dry_run, sample_limit, log=print, suppress_logs=False,\n"
