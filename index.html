@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PhotoArchive — надёжный локальный архиватор семейных фото для Windows</title>
+<meta name="description" content="Портативная программа для Windows: раскладывает фотоархив по датам и альбомам, находит дубликаты, ничего не удаляет и не отправляет в интернет.">
+<style>
+  :root{
+    --accent:#24544A;
+    --accent2:#A85A2A;
+    --bg:#F0F2EC;
+    --line:#B9C2B2;
+    --text:#2B2B26;
+    --muted:#6B6B5E;
+    --card:#ffffff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  html,body{overflow-x:hidden}
+  body{
+    margin:0;
+    font-family:"Segoe UI",-apple-system,Roboto,Arial,sans-serif;
+    color:var(--text);
+    background:var(--bg);
+    line-height:1.55;
+  }
+  .wrap{max-width:760px;margin:0 auto;padding:0 24px}
+  section{padding:64px 0}
+  h1{font-size:2.4rem;margin:0 0 12px;letter-spacing:-0.02em}
+  h2{font-size:1.5rem;margin:0 0 8px}
+  .lede{font-size:1.15rem;color:var(--muted);margin:0 0 40px;max-width:46ch}
+
+  /* ---------- hero ---------- */
+  .hero{padding-top:72px;padding-bottom:8px;text-align:center}
+  .hero .lede{margin-left:auto;margin-right:auto}
+  .cta{
+    display:inline-block;
+    background:var(--accent);
+    color:#fff;
+    text-decoration:none;
+    font-size:1.15rem;
+    font-weight:600;
+    padding:16px 40px;
+    border-radius:10px;
+    margin:8px 0 6px;
+    transition:transform .12s ease, box-shadow .12s ease;
+    box-shadow:0 2px 0 rgba(0,0,0,.08);
+  }
+  .cta:hover{transform:translateY(-1px);box-shadow:0 6px 14px rgba(36,84,74,.28)}
+  .cta-note{display:block;color:var(--muted);font-size:.85rem;margin-bottom:56px}
+
+  /* ---------- before/after mock ---------- */
+  .tree-compare{
+    display:grid;
+    grid-template-columns:1fr auto 1fr;
+    gap:20px;
+    align-items:center;
+    text-align:left;
+    margin:0 0 8px;
+  }
+  .tree-arrow{color:var(--accent);font-size:1.6rem;font-weight:700}
+  .tree{
+    min-width:0;
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:12px;
+    padding:18px 18px 20px;
+  }
+  .tree-label{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 10px;font-weight:600}
+  .tree ul{list-style:none;margin:0;padding-left:0}
+  .tree ul ul{padding-left:20px;border-left:1px dashed var(--line);margin-left:7px}
+  .tree li{margin:5px 0;font-size:.92rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tree .ic{display:inline-block;width:16px;height:16px;vertical-align:-3px;margin-right:6px}
+  .tree .folder .ic{color:#C9A063}
+  .tree .file .ic{color:var(--accent)}
+  .tree .muted{color:var(--muted)}
+  .tree.after{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+
+  /* ---------- trust block ---------- */
+  .trust{background:var(--card);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  .trust-grid{display:grid;grid-template-columns:1fr 1fr;gap:28px 32px;margin-top:28px}
+  .trust-item h3{font-size:1.02rem;margin:0 0 6px;display:flex;align-items:center;gap:8px}
+  .trust-item h3 .ic{width:20px;height:20px;color:var(--accent);flex:none}
+  .trust-item p{margin:0;color:var(--muted);font-size:.94rem}
+
+  /* ---------- report screenshot ---------- */
+  .report-shot{text-align:center}
+  .report-shot img{
+    max-width:100%;
+    height:auto;
+    border:1px solid var(--line);
+    border-radius:12px;
+    box-shadow:0 12px 32px rgba(43,43,38,.10);
+  }
+  .report-caption{color:var(--muted);font-size:.9rem;margin-top:14px}
+
+  /* ---------- support (muted) ---------- */
+  .support{text-align:center}
+  .support-btn{
+    display:inline-block;
+    background:transparent;
+    color:var(--muted);
+    border:1px dashed var(--line);
+    font-size:.9rem;
+    padding:9px 20px;
+    border-radius:8px;
+    cursor:default;
+  }
+  .support p{color:var(--muted);font-size:.88rem;margin-top:12px}
+
+  /* ---------- footer ---------- */
+  footer{border-top:1px solid var(--line);padding:40px 0 56px}
+  .foot-links{
+    display:flex;
+    flex-wrap:wrap;
+    gap:8px 28px;
+    list-style:none;
+    padding:0;
+    margin:0 0 20px;
+    font-size:.95rem;
+  }
+  .foot-links a{color:var(--text);text-decoration:none;border-bottom:1px solid var(--line)}
+  .foot-links a:hover{border-color:var(--accent);color:var(--accent)}
+  .foot-meta{color:var(--muted);font-size:.85rem;margin:0}
+
+  @media (max-width:640px){
+    h1{font-size:1.9rem}
+    section{padding:44px 0}
+    .tree-compare{grid-template-columns:1fr;gap:8px}
+    .tree-arrow{transform:rotate(90deg);text-align:center}
+    .trust-grid{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="ic-folder" viewBox="0 0 24 24"><path fill="currentColor" d="M10 4H3a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h18a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1h-9l-2-2z"/></symbol>
+  <symbol id="ic-file" viewBox="0 0 24 24"><path fill="currentColor" d="M6 2h9l5 5v15a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/></symbol>
+  <symbol id="ic-shield" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3z"/></symbol>
+  <symbol id="ic-lock" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2a4 4 0 0 0-4 4v3H7a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V10a1 1 0 0 0-1-1h-1V6a4 4 0 0 0-4-4zm-2 7V6a2 2 0 1 1 4 0v3z"/></symbol>
+  <symbol id="ic-copy" viewBox="0 0 24 24">
+    <rect x="3" y="3" width="13" height="13" rx="2" fill="currentColor" opacity=".5"/>
+    <rect x="8" y="8" width="13" height="13" rx="2" fill="currentColor"/>
+  </symbol>
+  <symbol id="ic-offline" viewBox="0 0 24 24">
+    <rect x="2" y="4" width="20" height="13" rx="2" fill="currentColor"/>
+    <rect x="9" y="19" width="6" height="2" fill="currentColor"/>
+  </symbol>
+</svg>
+
+<div class="wrap">
+
+  <section class="hero">
+    <h1>PhotoArchive</h1>
+    <p class="lede">Наведёт порядок в семейных фото и не потеряет ни одного файла — портативная программа для Windows, работает у вас на компьютере, без интернета.</p>
+
+    <div class="tree-compare">
+      <div class="tree">
+        <p class="tree-label">До</p>
+        <ul>
+          <li class="folder"><svg class="ic"><use href="#ic-folder"/></svg>DCIM</li>
+          <li><ul>
+            <li class="folder"><svg class="ic"><use href="#ic-folder"/></svg>100CANON <span class="muted">— 3 файла</span></li>
+          </ul></li>
+          <li class="folder"><svg class="ic"><use href="#ic-folder"/></svg>Загрузки <span class="muted">— 3 файла, 1 повтор</span></li>
+          <li class="folder"><svg class="ic"><use href="#ic-folder"/></svg>Рабочий стол</li>
+          <li class="folder"><svg class="ic"><use href="#ic-folder"/></svg>Отпуск 2015</li>
+          <li class="folder"><svg class="ic"><use href="#ic-folder"/></svg>Свадьба</li>
+        </ul>
+      </div>
+      <div class="tree-arrow">→</div>
+      <div class="tree after">
+        <p class="tree-label">После</p>
+        <ul>
+          <li class="folder"><svg class="ic"><use href="#ic-folder"/></svg>Albums</li>
+          <li><ul>
+            <li class="folder"><svg class="ic"><use href="#ic-folder"/></svg>Отпуск 2015 / Море</li>
+            <li class="folder"><svg class="ic"><use href="#ic-folder"/></svg>Свадьба</li>
+          </ul></li>
+          <li class="folder"><svg class="ic"><use href="#ic-folder"/></svg>ByDate</li>
+          <li><ul>
+            <li class="folder"><svg class="ic"><use href="#ic-folder"/></svg>2024-06 <span class="muted">— 3 файла</span></li>
+            <li class="folder"><svg class="ic"><use href="#ic-folder"/></svg>2024-03 <span class="muted">— 1 файл</span></li>
+            <li class="folder"><svg class="ic"><use href="#ic-folder"/></svg>2024-01 <span class="muted">— 1 файл</span></li>
+          </ul></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="hero" style="padding-top:0">
+    <a class="cta" href="https://github.com/vo1012/PhotoArchive/releases/latest">Скачать PhotoArchive</a>
+    <span class="cta-note">Бесплатно · портативный .exe · без установки</span>
+  </section>
+
+  <section class="trust">
+    <h2>Почему можно доверять</h2>
+    <div class="trust-grid">
+      <div class="trust-item">
+        <h3><svg class="ic"><use href="#ic-copy"/></svg>Точный дедуп</h3>
+        <p>Дубликаты — по SHA-256, похожие кадры — по перцептивному хешу. Ничего не теряется и не копируется дважды.</p>
+      </div>
+      <div class="trust-item">
+        <h3><svg class="ic"><use href="#ic-shield"/></svg>Атомарная запись</h3>
+        <p>Восстановление после сбоя — архив никогда не окажется в наполовину записанном состоянии.</p>
+      </div>
+      <div class="trust-item">
+        <h3><svg class="ic"><use href="#ic-lock"/></svg>Оригиналы неприкосновенны</h3>
+        <p>Программа не изменяет, не удаляет, не переносит и не переименовывает исходные файлы — только копирует.</p>
+      </div>
+      <div class="trust-item">
+        <h3><svg class="ic"><use href="#ic-offline"/></svg>Полностью офлайн</h3>
+        <p>Ни один файл, ни один байт не покидает ваш компьютер — интернет для работы не нужен.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="report-shot">
+    <h2>Наглядный отчёт после каждого прогона</h2>
+    <p class="lede" style="margin-left:auto;margin-right:auto;text-align:center">Сколько фото, какой охват по годам, что нашлось повторного — одной страницей.</p>
+    <img src="report-example.png" alt="Пример report.html: сводка архива, график фото по годам, типы медиа" loading="lazy" width="1400" height="960">
+    <p class="report-caption">Пример на синтетических данных — реальный отчёт строится по вашему архиву.</p>
+  </section>
+
+  <section class="support">
+    <span class="support-btn" role="button" aria-disabled="true">Поддержать разработку — скоро</span>
+    <p>Способ поддержки пока настраивается. Программа бесплатна в любом случае.</p>
+  </section>
+
+  <footer>
+    <ul class="foot-links">
+      <li><a href="https://github.com/vo1012/PhotoArchive/blob/main/QUICKSTART.md">Быстрый старт</a></li>
+      <li><a href="https://github.com/vo1012/PhotoArchive/blob/main/FAQ.md">Частые вопросы</a></li>
+      <li><a href="./PhotoArchive_buklet.pdf">Буклет (PDF)</a></li>
+      <li><a href="https://github.com/vo1012/PhotoArchive/blob/main/PhotoArchive_ot_avtora.md">Письмо автора</a></li>
+      <li><a href="https://github.com/vo1012/PhotoArchive">Репозиторий на GitHub</a></li>
+    </ul>
+    <p class="foot-meta">Некоммерческий проект, разработка в одиночку. Apache License 2.0.</p>
+  </footer>
+
+</div>
+</body>
+</html>
