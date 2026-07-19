@@ -5,6 +5,7 @@ work.db-journal
 crash.log
 crash.log.*
 analyze_report.csv
+report.html
 __служебные_файлы/
 PhotoArchive.exe
 __pycache__/

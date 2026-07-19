@@ -41,7 +41,8 @@ import textwrap
 import time
 import traceback
 import warnings
-from collections import defaultdict
+import webbrowser
+from collections import defaultdict, Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -50,6 +51,9 @@ import pillow_heif
 import imagehash
 import yaml
 from tqdm import tqdm as _tqdm
+
+import report  # PROMPT_archive_report.md, границы: отдельный модуль, ничего не импортирует
+                # обратно отсюда -- см. report.py docstring
 
 # 2026-07-11 live-run finding: Pillow prints "Palette images with Transparency expressed in
 # bytes should be converted to RGBA images" (UserWarning, via the `warnings` module -> stderr
@@ -61,7 +65,7 @@ from tqdm import tqdm as _tqdm
 # blanket ignore of all warnings, so any other future PIL/library warning still surfaces.
 warnings.filterwarnings("ignore", message="Palette images with Transparency.*", category=UserWarning)
 
-__version__ = "0.1.0"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
+__version__ = "0.1.1"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
                                  # с RULES_VERSION ниже (та про совместимость архива, а не exe)
 RULES_VERSION = "2026-07-12"   # дата последнего изменения бизнес-правил -- см. RULES.md;
                                 # менять руками при изменении логики раскладки/дедупа/дат
@@ -91,11 +95,11 @@ DONATION_TEXT = (  # тот же текст, дословно, что и P.S. в
     # при правке одного менять и все три места. Решение 2026-07-15: полный текст, не короткая
     # строка, т.к. --help может быть единственным местом, где пользователь вообще видит эту
     # программу (exe пересылается мессенджерами без README/письма от автора).
-    # 2026-07-17: этот текст (в отличие от PhotoArchive_ot_avtora.md/FAQ.md в dev-репозитории
-    # сборки "для своих") НИКОГДА не получает реальный номер карты ни в какой сборке -- здесь,
-    # в публичном репозитории, PDF вообще не собираются (GitHub рендерит .md сам), поэтому
-    # никакого механизма инъекции реквизитов тут и не может быть. --help всегда указывает на
-    # GitHub как на источник актуальных способов поддержать разработку.
+    # 2026-07-17: этот текст (в отличие от PhotoArchive_ot_avtora.md/FAQ.md) НИКОГДА не
+    # получает реальный номер карты, даже в билде "для своих" -- см. build/md_to_pdf.py,
+    # _inject_donation_details(): инъекция реальных реквизитов из локального DONATE.txt
+    # (никогда не коммитится) происходит только в PDF этих двух документов, --help всегда
+    # указывает на GitHub как на источник актуальных способов поддержать разработку.
     "Этот проект не преследует получение коммерческой выгоды -- программа бесплатна и\n"
     "останется такой для всех, вне зависимости от того, воспользуетесь вы этим предложением\n"
     "или нет. Если PhotoArchive окажется полезной и вы захотите поддержать её разработку --\n"
@@ -340,7 +344,7 @@ class ProgressReporter:
     """
 
     def __init__(self, total=None, desc="", unit="файл",
-                 log_interval_sec=5.0, log_interval_n=200):
+                 log_interval_sec=5.0, log_interval_n=200, disk_usage_path=None):
         self.desc = desc
         self.unit = unit
         self.total = total
@@ -352,6 +356,14 @@ class ProgressReporter:
         self.log_interval_sec = log_interval_sec
         self.log_interval_n = log_interval_n
         self._context_note = None  # see set_context()
+        # 2026-07-18, user request: показывать свободное место на TARGET в самой строке
+        # прогресса (не только в начале/по завершении прогона, см. существующие "Свободно на
+        # TARGET" log()-строки в run_for_source()). Пересчитывается РОВНО один раз за вызов
+        # update() (то есть на каждый обработанный файл, не на каждый внутренний refresh
+        # tqdm) -- по прямой просьбе пользователя, чтобы не плодить лишние disk_usage()
+        # syscall'ы на сетевом/внешнем диске.
+        self._disk_usage_path = disk_usage_path
+        self._disk_free_text = ""
         # 2026-07-11 live-run finding: tqdm's own DEFAULT no-total rendering path
         # unconditionally appends its own ": " after `desc`, even though set_description()
         # already appended one itself -- renders as "Фаза N — текст: : 7файл [...]" (doubled
@@ -428,12 +440,25 @@ class ProgressReporter:
         [MM:SS, X.Xфайл/с]"), с большим запасом на случай многочасового прогона с 6-значным
         счётчиком файлов."""
         columns = shutil.get_terminal_size(fallback=(80, 24)).columns
+        if self._disk_usage_path is not None:
+            # ", своб.9999.9ГБ" -- postfix, добавленный disk_usage_path (см. update()), тоже
+            # часть хвоста и должен учитываться в бюджете, иначе note обрежется криво.
+            tail_reserve += 20
         overhead = len(self.desc) + len(" — ") + tail_reserve
         return max(min_width, columns - overhead)
+
+    def _probe_free_space(self) -> str:
+        try:
+            free = shutil.disk_usage(winlong(self._disk_usage_path)).free
+        except OSError:
+            return "своб.на TARGET недоступно"
+        return f"своб.{free / 1024**3:.1f}ГБ"
 
     def update(self, n=1, note=None):
         self.count += n
         effective_note = note or self._context_note
+        if self._disk_usage_path is not None:
+            self._disk_free_text = self._probe_free_space()
         if self._bar is not None:
             # 2026-07-11 finding (live production run): previously only set_description()
             # when note was truthy -- tqdm's description is sticky, so a note from one large
@@ -442,6 +467,8 @@ class ProgressReporter:
             # Always (re)set it, falling back to the persistent context note (see
             # set_context()) or the plain phase description if neither is set.
             self._bar.set_description(f"{self.desc} — {effective_note}" if effective_note else self.desc)
+            if self._disk_usage_path is not None:
+                self._bar.set_postfix_str(self._disk_free_text)
             self._bar.update(n)
             return
         now = time.time()
@@ -457,7 +484,8 @@ class ProgressReporter:
         pct = f"{100 * self.count / self.total:.0f}%" if self.total else "?"
         total_part = f"/{self.total}" if self.total else ""
         extra = f" -- {note}" if note else ""
-        print(f"[{self.desc}] {self.count}{total_part} ({pct}), {rate:.1f} {self.unit}/с{extra}",
+        disk_extra = f", {self._disk_free_text}" if self._disk_free_text else ""
+        print(f"[{self.desc}] {self.count}{total_part} ({pct}), {rate:.1f} {self.unit}/с{extra}{disk_extra}",
               file=sys.stderr)
 
     def close(self):
@@ -2187,7 +2215,8 @@ def sha256_file_with_retry(path: str, retries: int, delay: float) -> str:
 
 
 def analyze_batch(items: list, retries: int = 3, retry_delay: float = 5.0,
-                   small_image_px: int = 640, log=print, skip_hash: bool = False) -> list:
+                   small_image_px: int = 640, log=print, skip_hash: bool = False,
+                   pool=None) -> list:
     """Phase 3: compute hashes/metadata/classification for a batch of SourceItem.
     Returns list of SourceRecord in the same order as items.
     A record with read_error=True means the file could not be read at all (locked /
@@ -2204,6 +2233,15 @@ def analyze_batch(items: list, retries: int = 3, retry_delay: float = 5.0,
     открылся, в quick-режиме сразу считается broken, без отложенного повтора в конце
     прогона; это осознанное упрощение read-only диагностического режима, не влияющее на
     поведение обычной сборки (skip_hash по умолчанию False, здесь ничего не меняется).
+
+    pool (опционально, Pool): если передан, точный sha256-дубль в пуле пропускает расчёт
+    pHash -- decide() (см. его image/video-ветки) всегда проверяет pool.find_exact(sha256)
+    раньше, чем читает rec.phash/rec.aspect, так что на этом пути результат заведомо не будет
+    прочитан (ревизорская находка раунда 4, REVIEW-HANDOFF.md). Размер кадра для
+    classify_image()/is_media всё равно нужен -- используется тот же дешёвый
+    image_size_only(), что и skip_hash (заголовок без полного декода), вместо дорогого
+    decode+DCT в image_phash_and_size()/video_phash_3frames(). Не влияет на итоговое решение:
+    точный дубль уходит в skipped_present до того, как decide() вообще читает phash/aspect.
     """
     image_video_paths = [it.read_path for it in items if it.ftype in ("image", "raw", "video")]
     tags_by_path = exiftool_batch(image_video_paths) if image_video_paths else {}
@@ -2237,6 +2275,8 @@ def analyze_batch(items: list, retries: int = 3, retry_delay: float = 5.0,
             rec.camera = camera_from_tags(tags)
             rec.gps_lat, rec.gps_lon = gps_from_tags(tags)
 
+        exact_dup = bool(pool is not None and rec.sha256 and pool.find_exact(rec.sha256))
+
         if it.ftype == "raw":
             # RAW formats (CR2/NEF/ARW/DNG) aren't decodable by Pillow; dedup for RAW is
             # SHA-256-only (see dedup.py), so no phash/aspect is needed. Always camera output.
@@ -2249,7 +2289,7 @@ def analyze_batch(items: list, retries: int = 3, retry_delay: float = 5.0,
             rec.is_media = True
 
         elif it.ftype == "image":
-            if skip_hash:
+            if skip_hash or exact_dup:
                 w, h = image_size_only(it.read_path)
                 ph = "-" if w is not None else None  # заглушка: не None -> "не broken"
             else:
@@ -2260,7 +2300,7 @@ def analyze_batch(items: list, retries: int = 3, retry_delay: float = 5.0,
                 rec.media_note = "unreadable_image"
                 records.append(rec)
                 continue
-            rec.phash, rec.width, rec.height = (None if skip_hash else ph), w, h
+            rec.phash, rec.width, rec.height = (None if (skip_hash or exact_dup) else ph), w, h
             rec.aspect = (w / h) if h else None
             is_media, note = classify_image(it.read_path, w, h, rec.camera, it.size,
                                                        small_image_px)
@@ -2275,7 +2315,7 @@ def analyze_batch(items: list, retries: int = 3, retry_delay: float = 5.0,
                 records.append(rec)
                 continue
             rec.duration, rec.width, rec.height, rec.bitrate = duration, w, h, bitrate
-            if not skip_hash:
+            if not skip_hash and not exact_dup:
                 frames = video_phash_3frames(it.read_path, duration or 1.0)
                 rec.phash = "|".join(frames) if frames else None
             rec.is_media = True
@@ -2469,6 +2509,9 @@ class Decision:
     note: str = None
     debug_detail: str = None  # p.5.3б: criterion string for [DEBUG] near_dup lines -- pure
                                # data (decide() stays a pure function, no logging inside it)
+    hamming: int = None  # near_dup_edges.csv (PROMPT_archive_report.md, 1.2б): same `dist`
+                          # already computed by find_near_dup_image/find_near_dup_video, just
+                          # not previously threaded out past the near-dup `note` text
 
 
 def decide(pool: Pool, rec: SourceRecord, mirror_raw: bool = True) -> Decision:
@@ -2509,7 +2552,7 @@ def decide(pool: Pool, rec: SourceRecord, mirror_raw: bool = True) -> Decision:
             detail = _image_compare_debug(candidate, entry)
             if image_is_strictly_better(candidate, entry):
                 return Decision("appended_better", matched_dest=entry.dest_path, note="better_quality_appended",
-                                 debug_detail=detail)
+                                 debug_detail=detail, hamming=dist)
             # p.5.7: near-dup no longer excludes the file from the archive -- a burst-shot
             # sequence can have one frame that matters (a bird mid-flight) that perceptual
             # hashing can't tell apart from its neighbors on technical metrics alone. Append
@@ -2517,9 +2560,10 @@ def decide(pool: Pool, rec: SourceRecord, mirror_raw: bool = True) -> Decision:
             # clean up duplicates later if they want to (source: user).
             return Decision("appended_near_dup", matched_dest=entry.dest_path,
                              note=f"near_dup_of={os.path.basename(entry.dest_path)}_hamming={dist}",
-                             debug_detail=detail)
+                             debug_detail=detail, hamming=dist)
 
-        return Decision("appended_crop", matched_dest=entry.dest_path, note="kept_both_possible_crop")
+        return Decision("appended_crop", matched_dest=entry.dest_path, note="kept_both_possible_crop",
+                         hamming=dist)
 
     if rec.item.ftype == "video":
         existing = pool.find_exact(rec.sha256)
@@ -2541,11 +2585,11 @@ def decide(pool: Pool, rec: SourceRecord, mirror_raw: bool = True) -> Decision:
         detail = _video_compare_debug(candidate, entry)
         if video_is_strictly_better(candidate, entry):
             return Decision("appended_better", matched_dest=entry.dest_path, note="better_quality_appended",
-                             debug_detail=detail)
+                             debug_detail=detail, hamming=dist)
         # p.5.7: same reasoning as the image branch above -- append instead of skip.
         return Decision("appended_near_dup", matched_dest=entry.dest_path,
                          note=f"near_dup_of={os.path.basename(entry.dest_path)}_hamming={dist}",
-                         debug_detail=detail)
+                         debug_detail=detail, hamming=dist)
 
     return Decision("appended_uncertain", note="unknown_type")
 
@@ -3086,10 +3130,17 @@ class TargetLock:
     реалистичного сценария ("забыл, что прогон уже идёт"), не для состязания с кем-то, кто
     специально хочет обойти защиту -- как и остальная "защита от дурака" в этом файле."""
 
-    def __init__(self, target: str, log=print):
+    def __init__(self, target: str, log=print, dry_run: bool = False):
         self.lock_path = os.path.join(target, "__служебные_файлы", "LOCK")
         self.log = log
         self._acquired = False
+        # PROMPT_archive_report.md, 1.1а: report.html удаляется здесь ТОЛЬКО для реального
+        # archive-прогона (dry_run=False) -- CLI --dry-run тоже проходит через TargetLock
+        # (suppress_logs=False), но пишет СВОЙ отдельный файл в WORKDIR, а не в
+        # TARGET\__служебные_файлы\ -- удалять персистентный TARGET-отчёт из-за пробного
+        # прогона было бы неверно (см. раздел 1.1а: "перезаписывается только при успехе",
+        # dry_run никогда не в TARGET и есть "успех" в этом смысле).
+        self.dry_run = dry_run
 
     def __enter__(self):
         real_path = winlong(self.lock_path)
@@ -3102,11 +3153,15 @@ class TargetLock:
             except OSError:
                 age = LOCK_STALE_SECONDS + 1
             if age <= LOCK_STALE_SECONDS:
+                remaining = LOCK_STALE_SECONDS - age
+                rem_h, rem_m = int(remaining // 3600), int((remaining % 3600) // 60)
                 raise TargetLocked(
                     f"похоже, другой прогон PhotoArchive уже работает с этим TARGET -- "
                     f"файл {self.lock_path} создан {age:.0f} сек назад. Если это не так "
                     f"(прошлый прогон аварийно завершился только что) -- удалите файл "
-                    f"вручную и запустите снова."
+                    f"вручную и запустите снова. Если ничего не делать, программа сама "
+                    f"снимет устаревший LOCK и позволит запуститься примерно через "
+                    f"{rem_h}ч {rem_m}мин."
                 ) from None
             self.log(f"ВНИМАНИЕ: обнаружен устаревший LOCK-файл ({age / 3600:.1f}ч) -- "
                      f"похоже, прошлый прогон был прерван аварийно (питание/крэш). "
@@ -3119,6 +3174,12 @@ class TargetLock:
         os.write(fd, str(os.getpid()).encode("ascii"))
         os.close(fd)
         self._acquired = True
+        if not self.dry_run:
+            report_path = os.path.join(os.path.dirname(self.lock_path), "report.html")
+            try:
+                os.remove(winlong(report_path))
+            except OSError:
+                pass  # несуществующий файл -- не ошибка (best-effort, как _write_row)
         return self
 
     def __exit__(self, exc_type, exc, tb):
@@ -3231,6 +3292,35 @@ def place_file(item: "SourceItem", dest_path: str, expected_sha256: str, cfg: "C
         stats["tar_verified_copy"] = stats.get("tar_verified_copy", 0) + 1
     atomic_copy(item.read_path, dest_path, expected_sha256, int(cfg.free_space_margin_gb * 1024**3))
 
+
+def _seed_archive_cache(conn, dest_path: str, size: int, sha256, phash, duration, width, height, bitrate) -> None:
+    """Раунд 5 ревью, вариант D (REVIEW-HANDOFF.md): файл, который этот же прогон только что
+    разместил через place_file(), уже имеет достоверные sha256/phash/duration/width/height/
+    bitrate из analyze_batch() -- нет смысла ждать следующего index_archive() (следующий SOURCE
+    того же batch'а или следующая сессия), который увидит этот путь как "незнакомый" и
+    перечитает те же самые байты с нуля только чтобы получить то, что уже известно сейчас.
+    Строго дешевле, не компромисс -- те же самые байты, не оценка (sha256 к тому же дважды
+    подтверждён верификацией внутри atomic_copy(), если copy шёл этим путём). Не меняет
+    инвариант "TARGET перепроверяется с нуля" для файлов, которые программа не размещала сама
+    -- только сеет кэш для тех, что разместила.
+
+    mtime берётся РЕАЛЬНЫМ os.stat() уже физически размещённого файла, а не из SourceRecord
+    источника -- именно (path,size,mtime) размещённого файла на TARGET index_archive() будет
+    сверять при следующем проходе (см. его cache-lookup), а не метаданные исходника."""
+    try:
+        st = os.stat(winlong(dest_path))
+    except OSError:
+        # Тот же класс гонки, что и guard'ы в index_archive()/_handle_archive() -- если файл
+        # уже пропал с TARGET между place_file() и этим stat(), просто не сеем кэш для него;
+        # следующий index_archive() либо не найдёт файл вовсе, либо перехеширует его заново.
+        return
+    conn.execute(
+        "INSERT OR REPLACE INTO archive_cache"
+        "(path,size,mtime,sha256,phash,duration,width,height,bitrate) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        (dest_path, st.st_size, st.st_mtime, sha256, phash, duration, width, height, bitrate),
+    )
+
 # ============================================================================
 # LOGS  (from pipeline/logs.py)
 # ============================================================================
@@ -3293,6 +3383,8 @@ class RunLogs:
         self._init_csv("albums_merged", ["timestamp", "album", "source_variant"])
         self._init_csv("unreadable", ["timestamp", "source", "error"])
         self._init_csv("rejected_noise", ["timestamp", "source", "reason"])
+        self._init_csv("near_dup_edges", ["timestamp", "source", "dest", "matched_dest", "category", "hamming"])
+        self._init_csv("undated_media", ["timestamp", "source", "dest"])
         actions_path = os.path.join(logs_dir, "actions.log")
         _rotate_log_if_needed(actions_path)
         self.actions_log = open(winlong(actions_path), "a", encoding="utf-8")
@@ -3315,62 +3407,108 @@ class RunLogs:
     def _ts(self):
         return time.strftime("%Y-%m-%d %H:%M:%S")
 
+    def _write_row(self, name, row):
+        """TARGET can vanish mid-run (disk unplugged) -- confirmed via real-hardware test
+        2026-07-18: a write/flush failure here used to propagate out of _log_write_failure()
+        (which calls unreadable() to log ANOTHER file's write error) and crash the entire run
+        with an unhandled traceback, defeating the "log it, count it, keep going" design that
+        function exists for. Every RunLogs method had the same unguarded flush(), not just
+        unreadable() -- centralized here so the fix can't drift out of sync between them.
+        Silently dropped on failure; the caller's own console message (_log_write_failure)
+        already told the user about the underlying write error."""
+        try:
+            self._writers[name].writerow(row)
+            self._files[name].flush()
+        except OSError:
+            pass
+
     def appended(self, source, dest, reason, flags=""):
-        self._writers["appended"].writerow([self._ts(), source, dest, reason, flags])
-        self._files["appended"].flush()
+        self._write_row("appended", [self._ts(), source, dest, reason, flags])
 
     def skipped(self, source, matched_with, reason):
-        self._writers["skipped"].writerow([self._ts(), source, matched_with, reason])
-        self._files["skipped"].flush()
+        self._write_row("skipped", [self._ts(), source, matched_with, reason])
 
     def disputed(self, source, reason, dest, was_hidden=False):
-        self._writers["disputes"].writerow([self._ts(), source, reason, dest, int(was_hidden)])
-        self._files["disputes"].flush()
+        self._write_row("disputes", [self._ts(), source, reason, dest, int(was_hidden)])
 
     def unreadable(self, source, error):
-        self._writers["unreadable"].writerow([self._ts(), source, error])
-        self._files["unreadable"].flush()
+        self._write_row("unreadable", [self._ts(), source, error])
 
     def rejected_noise(self, source, reason):
-        self._writers["rejected_noise"].writerow([self._ts(), source, reason])
-        self._files["rejected_noise"].flush()
+        self._write_row("rejected_noise", [self._ts(), source, reason])
 
     def date_review(self, dest, date_value, tier, confidence, evidence, source):
-        self._writers["dates_review"].writerow(
-            [self._ts(), dest, date_value.isoformat() if date_value else "", tier, confidence, evidence, source]
-        )
-        self._files["dates_review"].flush()
+        self._write_row("dates_review", [
+            self._ts(), dest, date_value.isoformat() if date_value else "", tier, confidence, evidence, source
+        ])
 
     def album_merged(self, album, source_variant):
-        self._writers["albums_merged"].writerow([self._ts(), album, source_variant])
-        self._files["albums_merged"].flush()
+        self._write_row("albums_merged", [self._ts(), album, source_variant])
+
+    def near_dup_edge(self, source, dest, matched_dest, category, hamming):
+        """PROMPT_archive_report.md, 1.2б: одно ребро графа near-dup-совпадений -- ЧЕМ
+        (matched_dest) обосновано решение appended_near_dup/appended_better/appended_crop.
+        Аддитивный лог, не меняет appended.csv/другие существующие -- Лист 3 отчёта строит
+        по этим рёбрам кластеры (union-find), а не парсит basename из текста note appended.csv."""
+        self._write_row("near_dup_edges", [self._ts(), source, dest, matched_dest, category, hamming])
+
+    def undated_media(self, source, dest):
+        """Ревизорская находка (REVIEW-HANDOFF.md, раунд 3): Tier D (`resolve_date()` ->
+        `date_value=None`) никогда не попадает в `dates_review.csv` -- та проверка гейтится на
+        `date_value is not None` (см. вызывающий код), а Tier D по конструкции всегда
+        `date_value=None`. Без сигнала report.py не может отличить Tier D от Tier A (оба
+        "не встретились в dates_review.csv"). НЕ расширяем dates_review.csv (документирован в
+        RULES.md/README/FAQ как "не-Tier-A даты, которые ЕСТЬ, но не по EXIF" -- Tier D это
+        не тот случай, значения нет вообще) -- новый аддитивный лог, тот же паттерн, что
+        near_dup_edges.csv."""
+        self._write_row("undated_media", [self._ts(), source, dest])
 
     def action(self, line):
-        self.actions_log.write(f"[{self._ts()}] {line}\n")
-        self.actions_log.flush()
+        try:
+            self.actions_log.write(f"[{self._ts()}] {line}\n")
+            self.actions_log.flush()
+        except OSError:
+            pass
 
     def debug_action(self, line):
         """p.5.3б: [DEBUG]-строка в actions.log -- caller gates this on cfg.debug, this
         method itself has no opinion on whether debug mode is on (keeps RunLogs config-
         agnostic, like every other method here)."""
-        self.actions_log.write(f"[{self._ts()}] [DEBUG] {line}\n")
-        self.actions_log.flush()
+        try:
+            self.actions_log.write(f"[{self._ts()}] [DEBUG] {line}\n")
+            self.actions_log.flush()
+        except OSError:
+            pass
 
     def archive_event(self, display, status, note=""):
-        self.archives_log.write(f"[{self._ts()}] {display}: {status} {note}\n".rstrip() + "\n")
-        self.archives_log.flush()
+        try:
+            self.archives_log.write(f"[{self._ts()}] {display}: {status} {note}\n".rstrip() + "\n")
+            self.archives_log.flush()
+        except OSError:
+            pass
 
     def write_summary(self, text: str):
         path = os.path.join(self.logs_dir, "summary.txt")
-        _rotate_log_if_needed(path)
-        with open(winlong(path), "a", encoding="utf-8") as f:
-            f.write(text)
+        try:
+            _rotate_log_if_needed(path)
+            with open(winlong(path), "a", encoding="utf-8") as f:
+                f.write(text)
+        except OSError:
+            pass
 
     def close(self):
+        # Same TARGET-vanished concern as _write_row -- close() can raise too, and one
+        # failed close() must not stop the rest from being attempted.
         for f in self._files.values():
-            f.close()
-        self.actions_log.close()
-        self.archives_log.close()
+            try:
+                f.close()
+            except OSError:
+                pass
+        for f in (self.actions_log, self.archives_log):
+            try:
+                f.close()
+            except OSError:
+                pass
 
 
 class NullRunLogs:
@@ -3386,6 +3524,74 @@ class NullRunLogs:
     def rejected_noise(self, *a, **kw): pass
     def date_review(self, *a, **kw): pass
     def album_merged(self, *a, **kw): pass
+    def near_dup_edge(self, *a, **kw): pass
+    def undated_media(self, *a, **kw): pass
+    def action(self, *a, **kw): pass
+    def debug_action(self, *a, **kw): pass
+    def archive_event(self, *a, **kw): pass
+    def write_summary(self, *a, **kw): pass
+    def close(self): pass
+
+
+class CollectingRunLogs:
+    """PROMPT_archive_report.md, 1.2а: третья реализация той же поверхности методов, что
+    RunLogs/NullRunLogs -- вместо файла на диске (RunLogs) или чистого no-op (NullRunLogs)
+    копит те же аргументы в память, строками в форме будущих CSV: каждый метод кладёт dict
+    в self.rows["<имя>"], где "<имя>" и имена ключей ДОСЛОВНО совпадают с именем/заголовком
+    соответствующего RunLogs._init_csv(...) -- report.py читает TARGET-уровень через
+    csv.DictReader по файлам логов и WORKDIR-уровень через CollectingRunLogs.rows напрямую,
+    обе формы идентичны, шаблону/чартам не нужно знать происхождение. Подставляется в ту же
+    точку инъекции, что и NullRunLogs (`run_logs = ...` в _run_impl) -- ноль изменений в
+    _process_record или где-либо в логике принятия решений."""
+
+    def __init__(self):
+        self.rows = {
+            "appended": [], "skipped": [], "disputes": [], "dates_review": [],
+            "albums_merged": [], "unreadable": [], "rejected_noise": [], "near_dup_edges": [],
+            "undated_media": [],
+        }
+
+    def _ts(self):
+        return time.strftime("%Y-%m-%d %H:%M:%S")
+
+    def appended(self, source, dest, reason, flags=""):
+        self.rows["appended"].append({"timestamp": self._ts(), "source": source, "dest": dest,
+                                       "reason": reason, "flags": flags})
+
+    def skipped(self, source, matched_with, reason):
+        self.rows["skipped"].append({"timestamp": self._ts(), "source": source,
+                                      "matched_with": matched_with, "reason": reason})
+
+    def disputed(self, source, reason, dest, was_hidden=False):
+        self.rows["disputes"].append({"timestamp": self._ts(), "source": source, "reason": reason,
+                                       "dest": dest, "was_hidden": int(was_hidden)})
+
+    def unreadable(self, source, error):
+        self.rows["unreadable"].append({"timestamp": self._ts(), "source": source, "error": error})
+
+    def rejected_noise(self, source, reason):
+        self.rows["rejected_noise"].append({"timestamp": self._ts(), "source": source, "reason": reason})
+
+    def date_review(self, dest, date_value, tier, confidence, evidence, source):
+        self.rows["dates_review"].append({
+            "timestamp": self._ts(), "dest": dest,
+            "date": date_value.isoformat() if date_value else "", "tier": tier,
+            "confidence": confidence, "evidence": evidence, "source": source,
+        })
+
+    def album_merged(self, album, source_variant):
+        self.rows["albums_merged"].append({"timestamp": self._ts(), "album": album,
+                                            "source_variant": source_variant})
+
+    def near_dup_edge(self, source, dest, matched_dest, category, hamming):
+        self.rows["near_dup_edges"].append({
+            "timestamp": self._ts(), "source": source, "dest": dest,
+            "matched_dest": matched_dest, "category": category, "hamming": hamming,
+        })
+
+    def undated_media(self, source, dest):
+        self.rows["undated_media"].append({"timestamp": self._ts(), "source": source, "dest": dest})
+
     def action(self, *a, **kw): pass
     def debug_action(self, *a, **kw): pass
     def archive_event(self, *a, **kw): pass
@@ -3447,63 +3653,69 @@ def index_archive(cfg: Config, conn, log=print):
         ):
             cache[row[0]] = row[1:]
 
-    # Дешёвая предпосчитывающая проходка (только имена файлов, без stat/hash) -- даёт total
-    # для бара с честным %/ETA; сама индексация не меняется, просто вложена в тот же цикл.
-    precount = sum(1 for root in roots if os.path.isdir(winlong(root))
-                   for _ in _walk_media_files(root, exclude_dirs=excludes_by_root.get(root)))
+    # Раунд 5 ревью (2026-07-18/19, REVIEW-HANDOFF.md): дерево архива обходится один раз
+    # (os.walk дорог на медленных/сетевых дисках -- целевая аудитория проекта), список
+    # материализуется в память -- даёт честный total для бара (%/ETA) без повторного os.walk.
+    entries = [
+        (root, path, ftype)
+        for root in roots if os.path.isdir(winlong(root))
+        for path, ftype in _walk_media_files(root, exclude_dirs=excludes_by_root.get(root))
+    ]
 
-    with ProgressReporter(total=precount or None, desc="Фаза 1 — индексация архива", unit="файл") as bar:
-        for root in roots:
-            if not os.path.isdir(winlong(root)):
+    with ProgressReporter(total=len(entries) or None, desc="Фаза 1 — индексация архива", unit="файл") as bar:
+        for root, path, ftype in entries:
+            try:
+                st = os.stat(winlong(path))
+            except OSError:
                 continue
-            for path, ftype in _walk_media_files(root, exclude_dirs=excludes_by_root.get(root)):
+            size, mtime = st.st_size, st.st_mtime
+            note = "большое видео" if ftype == "video" and size > 200 * 1024**2 else None
+
+            cached = cache.get(path)
+            if cached and cached[0] == size and abs(cached[1] - mtime) < 1e-6:
+                sha, phash, duration, width, height, bitrate = cached[2], cached[3], cached[4], cached[5], cached[6], cached[7]
+            else:
+                # Раунд 7 ревью (REVIEW-HANDOFF.md): тот же приём, что и фикс раунда 6 в
+                # run_for_source() (f33534d) -- note должен появиться на экране ДО блокирующего
+                # sha256_file()/video_phash_3frames(), не после, иначе бар всю паузу молча
+                # показывает состояние предыдущего файла. n=0 -- только текст, счётчик не трогаем.
+                bar.update(0, note=note)
+                width = height = bitrate = None
                 try:
-                    st = os.stat(winlong(path))
+                    sha = sha256_file(path)
                 except OSError:
+                    # Same class of race as the archive-scan guards in _handle_archive()
+                    # (2026-07-11, live user report) -- this indexes the user's OWN existing
+                    # archive (Phase 1, dedup base), so a file removed/renamed here from
+                    # outside the program between the os.stat() above and this read must not
+                    # crash the whole run either. Skipping it here just means Phase 1 doesn't
+                    # index a file that's no longer actually there -- same effect as if it
+                    # had never been stat-able in the first place (see the os.stat() guard).
                     continue
-                size, mtime = st.st_size, st.st_mtime
+                phash = None
+                duration = None
+                if ftype in ("image", "raw"):
+                    phash, width, height = image_phash_and_size(path)
+                elif ftype == "video":
+                    duration, width, height, bitrate = video_duration_and_resolution(path)
+                    frames = video_phash_3frames(path, duration)
+                    phash = "|".join(frames) if frames else None
+                if cfg.archive_hash_cache:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO archive_cache"
+                        "(path,size,mtime,sha256,phash,duration,width,height,bitrate) "
+                        "VALUES (?,?,?,?,?,?,?,?,?)",
+                        (path, size, mtime, sha, phash, duration, width, height, bitrate),
+                    )
 
-                cached = cache.get(path)
-                if cached and cached[0] == size and abs(cached[1] - mtime) < 1e-6:
-                    sha, phash, duration, width, height, bitrate = cached[2], cached[3], cached[4], cached[5], cached[6], cached[7]
-                else:
-                    width = height = bitrate = None
-                    try:
-                        sha = sha256_file(path)
-                    except OSError:
-                        # Same class of race as the archive-scan guards in _handle_archive()
-                        # (2026-07-11, live user report) -- this indexes the user's OWN existing
-                        # archive (Phase 1, dedup base), so a file removed/renamed here from
-                        # outside the program between the os.stat() above and this read must not
-                        # crash the whole run either. Skipping it here just means Phase 1 doesn't
-                        # index a file that's no longer actually there -- same effect as if it
-                        # had never been stat-able in the first place (see the os.stat() guard).
-                        continue
-                    phash = None
-                    duration = None
-                    if ftype in ("image", "raw"):
-                        phash, width, height = image_phash_and_size(path)
-                    elif ftype == "video":
-                        duration, width, height, bitrate = video_duration_and_resolution(path)
-                        frames = video_phash_3frames(path, duration)
-                        phash = "|".join(frames) if frames else None
-                    if cfg.archive_hash_cache:
-                        conn.execute(
-                            "INSERT OR REPLACE INTO archive_cache"
-                            "(path,size,mtime,sha256,phash,duration,width,height,bitrate) "
-                            "VALUES (?,?,?,?,?,?,?,?,?)",
-                            (path, size, mtime, sha, phash, duration, width, height, bitrate),
-                        )
-
-                cur.execute(
-                    "INSERT OR REPLACE INTO archive(path,root,size,mtime,sha256,phash,duration,type,width,height,bitrate) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                    (path, root, size, mtime, sha, phash, duration, ftype, width, height, bitrate),
-                )
-                total_files += 1
-                total_bytes += size
-                note = "большое видео" if ftype == "video" and size > 200 * 1024**2 else None
-                bar.update(1, note=note)
+            cur.execute(
+                "INSERT OR REPLACE INTO archive(path,root,size,mtime,sha256,phash,duration,type,width,height,bitrate) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (path, root, size, mtime, sha, phash, duration, ftype, width, height, bitrate),
+            )
+            total_files += 1
+            total_bytes += size
+            bar.update(1, note=note)
 
     if cfg.archive_hash_cache:
         # archive_cache -- единственная таблица work.db, персистентная между прогонами --
@@ -3551,12 +3763,29 @@ class AnalyzeStats:
     n_jpeg_without_raw: int = 0
     n_albums_detected: int = 0
     n_dump_items: int = 0
+    # PROMPT_archive_report.md, 1.2а: тот же счётчик, но по папке -- для Листа 3 report.html
+    # ("в каких папках свалка"), n_dump_items выше остаётся плоским int для существующего
+    # консольного вывода/analyze_report.csv, эта разбивка аддитивна, ничего не заменяет.
+    dump_items_by_folder: Counter = field(default_factory=Counter)
+    # PROMPT_archive_report.md, Лист 1/2 report.html: гистограмма "фото по годам"/"самое
+    # старое фото" для WORKDIR-уровня -- resolve_date() уже вызывается для любого режима
+    # (даже analyze-quick), просто раньше date_value нигде не сохранялся за пределами
+    # текущей итерации цикла.
+    dates_by_year: Counter = field(default_factory=Counter)
+    dates_by_year_month: Counter = field(default_factory=Counter)
+    oldest_date: object = None  # datetime | None
+    oldest_display: str = None
+    tier_counts: Counter = field(default_factory=Counter)  # "A"/"B"/"C"/"D" -> count
     # analyze / analyze-full (полный проход хеширования -- точный/near-дедуп):
     n_exact_dupes: int = 0
     n_diff_name_same_content: int = 0
     n_near_dupes: int = 0
     predicted_unique_count: int = 0
     predicted_unique_bytes: int = 0
+    # PROMPT_archive_report.md, 1.2б: рёбра near-dup-графа, та же форма строк, что у
+    # near_dup_edges.csv / CollectingRunLogs.rows["near_dup_edges"] -- decide() уже вычисляет
+    # matched_dest/hamming для analyze/analyze-full, раньше просто не сохранялось никуда.
+    near_dup_edges: list = field(default_factory=list)
     # analyze-full (+ сверка с TARGET):
     already_in_archive_count: int = 0
     target_free_bytes: int = 0
@@ -3617,6 +3846,7 @@ def run_analyze(cfg: Config, mode: str, log=print) -> AnalyzeStats:
             album_names.add(album)
         else:
             stats.n_dump_items += 1
+            stats.dump_items_by_folder[os.path.dirname(item.rel_path)] += 1
 
         if item.ftype == "raw" and not item.sibling_path:
             stats.n_raw_without_jpeg += 1
@@ -3635,7 +3865,7 @@ def run_analyze(cfg: Config, mode: str, log=print) -> AnalyzeStats:
 
         recs = analyze_batch([item], retries=cfg.read_retry_count, retry_delay=cfg.read_retry_delay,
                               small_image_px=cfg.small_image_px, log=log,
-                              skip_hash=(mode == "analyze-quick"))
+                              skip_hash=(mode == "analyze-quick"), pool=pool)
         rec = recs[0]
         if rec.read_error or rec.broken:
             stats.n_broken_or_zero += 1
@@ -3652,6 +3882,20 @@ def run_analyze(cfg: Config, mode: str, log=print) -> AnalyzeStats:
                 stats.n_future_date += 1
             elif date_value.year < 1990:
                 stats.n_before_1990 += 1
+            # PROMPT_archive_report.md, Лист 1/2: "фото по годам"/"самое старое фото" --
+            # resolve_date() уже вызывается безусловно для ЛЮБОГО analyze-режима (в отличие
+            # от decide(), которому нужен skip_hash=False) -- тот же принцип "не выбрасывать
+            # уже посчитанное", что и у dump_items_by_folder/near_dup_edges выше.
+            stats.dates_by_year[date_value.year] += 1
+            stats.dates_by_year_month[date_value.strftime("%Y-%m")] += 1
+            if stats.oldest_date is None or date_value < stats.oldest_date:
+                stats.oldest_date = date_value
+                stats.oldest_display = item.origin_display
+        # PROMPT_archive_report.md, Лист 2 "Надёжность дат" (донат A/B/C/D) -- та же логика,
+        # что near_dup_edges/dates_by_year выше: tier уже посчитан resolve_date() для каждого
+        # файла, n_tier_c_estimated ниже отражает только срез "C", донату нужна полная
+        # разбивка -- аддитивный Counter, существующий n_tier_c_estimated не трогаем.
+        stats.tier_counts[tier] += 1
         if tier == "C":
             stats.n_tier_c_estimated += 1
         elif tier == "D" and mtime_is_copy_artifact(date_ctx.dir_mtimes.get(dirname, [])):
@@ -3673,6 +3917,17 @@ def run_analyze(cfg: Config, mode: str, log=print) -> AnalyzeStats:
                 # skipped, so it counts toward predicted_unique_* like any other appended file.
                 if decision.decision in ("appended_better", "appended_crop", "appended_near_dup"):
                     stats.n_near_dupes += 1
+                    if decision.matched_dest is not None:
+                        # PROMPT_archive_report.md, 1.2б: как и в _process_record, но "dest"
+                        # здесь = item.origin_display -- analyze-уровень ничего не копирует,
+                        # нет реального dest_path, тот же плейсхолдер, что чуть ниже кладётся
+                        # в PoolEntry.dest_path для этого же item.
+                        stats.near_dup_edges.append({
+                            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                            "source": item.origin_display, "dest": item.origin_display,
+                            "matched_dest": decision.matched_dest,
+                            "category": decision.decision, "hamming": decision.hamming,
+                        })
                 stats.predicted_unique_count += 1
                 stats.predicted_unique_bytes += item.size
                 if item.ftype == "raw":
@@ -3933,6 +4188,11 @@ class _RunState:
         self.date_ctx = date_ctx
         self.run_logs = run_logs
         self.stats = stats
+        # Раунд 5 ревью, вариант D (REVIEW-HANDOFF.md): выделенное sqlite-соединение только
+        # для сева archive_cache во время Фазы 2 -- см. _run_impl(), где оно открывается/
+        # закрывается. None, если archive_hash_cache выключен или это dry_run (тогда
+        # place_file() не вызывается вовсе -- сеять нечего).
+        self.cache_conn = None
         self.dest_path_by_read_path = {}
         self.merged_albums_seen = set()
         self.stopped_for_space = False
@@ -4063,6 +4323,9 @@ def _process_record(rec, st: _RunState, log=print):
                 stats=stats)
             if not is_dup and not cfg.dry_run:
                 place_file(item, dest_path, rec.sha256, cfg, run_logs, stats=stats)
+                if st.cache_conn is not None:
+                    _seed_archive_cache(st.cache_conn, dest_path, item.size, rec.sha256, rec.phash,
+                                        rec.duration, rec.width, rec.height, rec.bitrate)
         except InsufficientSpace as e:
             log(f"ОСТАНОВКА: недостаточно места на TARGET ({e}). "
                 f"Освободите место и запустите снова.")
@@ -4132,6 +4395,9 @@ def _process_record(rec, st: _RunState, log=print):
             stats=stats)
         if not is_dup and not cfg.dry_run:
             place_file(item, dest_path, rec.sha256, cfg, run_logs, stats=stats)
+            if st.cache_conn is not None:
+                _seed_archive_cache(st.cache_conn, dest_path, item.size, rec.sha256, rec.phash,
+                                    rec.duration, rec.width, rec.height, rec.bitrate)
     except InsufficientSpace as e:
         log(f"ОСТАНОВКА: недостаточно места на TARGET ({e}). Освободите место и запустите снова.")
         return True
@@ -4155,11 +4421,22 @@ def _process_record(rec, st: _RunState, log=print):
     flags = rec.media_note if rec.media_note in ("small_image", "low_confidence_photo") else ""
     run_logs.appended(item.origin_display, dest_path, decision.note or decision.decision, flags=flags)
     run_logs.action(f"appended: {item.origin_display} -> {dest_path}")
+    if decision.matched_dest is not None and decision.decision in (
+            "appended_near_dup", "appended_better", "appended_crop"):
+        # PROMPT_archive_report.md, 1.2б: raw-путь не участвует -- decide() никогда не
+        # возвращает near-dup-семейство для raw, этот блок только для image/video.
+        run_logs.near_dup_edge(item.origin_display, dest_path, decision.matched_dest,
+                                decision.decision, decision.hamming)
     if tier != "A" and date_value is not None:
         run_logs.date_review(dest_path, date_value, tier, conf, evidence, item.origin_display)
         if cfg.debug:
             run_logs.debug_action(f"date: dest={dest_path} tier={tier} confidence={conf} "
                                    f"evidence={evidence} source={item.origin_display}")
+    elif tier == "D":
+        # REVIEW-HANDOFF.md, раунд 3: Tier D всегда date_value=None (resolve_date()), поэтому
+        # никогда не проходит условие выше -- без этого report.py не может отличить "нет даты
+        # вообще" от "точная EXIF-дата" (обе категории одинаково отсутствуют в dates_review.csv).
+        run_logs.undated_media(item.origin_display, dest_path)
     stats[final_decision] = stats.get(final_decision, 0) + 1
     stats["bytes_appended"] += item.size
     # А.4: разбивка "уникальных" по типу для итоговой сводки (фото vs видео)
@@ -4225,19 +4502,24 @@ def build_final_summary(stats: dict, walker: "SourceWalker", unreadable_count: i
     return "".join(lines)
 
 
-def run(cfg: Config, log=print):
+def run(cfg: Config, log=print, shared_pool=None):
     """p.5.4б: весь реальный прогон обёрнут TargetLock -- см. его докстринг про TOCTOU-гонку,
     единственную найденную дыру в защите TARGET от параллельных запусков. Исключение --
     cfg.suppress_logs (ТЗ-меню 2026-07-10, раздел 5): интерактивный "пробный прогон" никогда
     не пишет в TARGET (см. _run_impl), поэтому лочить нечего -- LOCK-файл сам по себе создал
-    бы __служебные_файлы\\, что suppress_logs как раз обязан НЕ делать."""
+    бы __служебные_файлы\\, что suppress_logs как раз обязан НЕ делать.
+
+    shared_pool (раунд 5 ревью, REVIEW-HANDOFF.md, вариант A): опциональный Pool из
+    предыдущего вызова run() в рамках ОДНОГО batch-процесса (несколько SOURCE подряд на один
+    TARGET) -- TargetLock тем не менее берётся заново на каждый SOURCE (дёшево, не архивный
+    пересканирование, риск гонки не выше уже принятого TOCTOU в докстринге TargetLock)."""
     if cfg.suppress_logs:
-        return _run_impl(cfg, log=log)
-    with TargetLock(cfg.target, log=log):
-        return _run_impl(cfg, log=log)
+        return _run_impl(cfg, log=log, shared_pool=shared_pool)
+    with TargetLock(cfg.target, log=log, dry_run=cfg.dry_run):
+        return _run_impl(cfg, log=log, shared_pool=shared_pool)
 
 
-def _run_impl(cfg: Config, log=print):
+def _run_impl(cfg: Config, log=print, shared_pool=None):
     run_start = time.monotonic()
     # p.5.3а: stats создаётся ДО отчёта окружения -- report_environment() тоже пишет в него
     # счётчики предупреждений (вложенность TARGET, кросс-volume tmp_extract), которые потом
@@ -4283,19 +4565,42 @@ def _run_impl(cfg: Config, log=print):
     report_environment(cfg, log=log, stats=stats)
     phase0_end = time.monotonic()
 
-    conn = db_reset(cfg.index_db)
+    if shared_pool is not None:
+        # Раунд 5 ревью (REVIEW-HANDOFF.md, вариант A): в рамках одного batch-процесса
+        # (несколько SOURCE подряд на один TARGET) архив уже был полностью проиндексирован
+        # первым источником, а pool.add() ниже по функции уже держит всё, что каждый
+        # следующий источник сам дописал в TARGET -- повторное индексирование здесь считало
+        # бы ту же самую (в рамках процесса неизменную, если не считать самой программы)
+        # файловую систему заново без надобности. Одиночный SOURCE (shared_pool=None,
+        # подавляющее большинство запусков) эту ветку не видит вообще -- полное
+        # индексирование при первом/единственном вызове run() в процессе не меняется.
+        log("=== Фаза 1: индекс архива (база дедупа) — пропущена, использован общий пул этого batch'а ===")
+        pool = shared_pool
+        phase1_end = time.monotonic()
+    else:
+        conn = db_reset(cfg.index_db)
+        log("=== Фаза 1: индекс архива (база дедупа) ===")
+        index_archive(cfg, conn, log=log)
+        pool = build_pool_from_archive_table(conn)
+        conn.close()  # не нужен дальше в этом прогоне; важно закрывать явно для --source all,
+                      # где run() вызывается многократно в одном процессе на один и тот же work.db
+        phase1_end = time.monotonic()
 
-    log("=== Фаза 1: индекс архива (база дедупа) ===")
-    index_archive(cfg, conn, log=log)
-    pool = build_pool_from_archive_table(conn)
-    conn.close()  # не нужен дальше в этом прогоне; важно закрывать явно для --source all,
-                  # где run() вызывается многократно в одном процессе на один и тот же work.db
-    phase1_end = time.monotonic()
-
-    run_logs = NullRunLogs() if cfg.suppress_logs else RunLogs(cfg.logs)
+    # PROMPT_archive_report.md, 1.2а: CollectingRunLogs -- третья реализация той же
+    # поверхности методов -- собирает report.html-данные в памяти для suppress_logs=True
+    # (интерактивный [2] "Пробный прогон", единственный вызывающий с этим флагом сегодня).
+    # CLI --dry-run (suppress_logs=False) продолжает писать настоящие CSV в TARGET, как
+    # раньше -- report.html для него читает те же файлы, что и TARGET-уровень (см.
+    # _finalize_target_report), не через этот класс.
+    run_logs = CollectingRunLogs() if cfg.suppress_logs else RunLogs(cfg.logs)
     date_ctx = DateContext()
 
     st = _RunState(cfg, pool, date_ctx, run_logs, stats)
+    # Раунд 5 ревью, вариант D: выделенное соединение для сева archive_cache в течение всей
+    # Фазы 2 -- Фаза 1 либо уже закрыла своё conn (ветка else выше), либо не открывала его
+    # вовсе (shared_pool). dry_run никогда не доходит до place_file() (см. _process_record),
+    # поэтому сеять там нечего -- не открываем соединение впустую.
+    st.cache_conn = connect(cfg.index_db) if (cfg.archive_hash_cache and not cfg.dry_run) else None
 
     log("=== Фаза 2/2а: обход источника ===")
 
@@ -4307,7 +4612,8 @@ def _run_impl(cfg: Config, log=print):
     # Задача 4: total неизвестен заранее (walker -- генератор, находит файлы и вложенные
     # архивы по ходу обхода) -- бар без total (только счётчик/скорость, без %/ETA, как и
     # предписано: ETA только там, где total известен).
-    with ProgressReporter(total=None, desc="Фаза 2-5 — обработка источника", unit="файл") as bar:
+    with ProgressReporter(total=None, desc="Фаза 2-5 — обработка источника", unit="файл",
+                           disk_usage_path=cfg.target) as bar:
         walker = SourceWalker(cfg, log=log, progress_cb=bar.set_context)
         # NB: items are analyzed and placed one at a time (no read-ahead batching).
         # Files extracted from an archive live in TMP_EXTRACT only until that archive's
@@ -4320,8 +4626,14 @@ def _run_impl(cfg: Config, log=print):
 
             note = "хеширование большого видео" if (
                 item.ftype == "video" and item.size > 200 * 1024**2) else None
+            # Раунд 6 ревью (REVIEW-HANDOFF.md, живой баг-репорт "программа зависла"): note
+            # должен появиться на экране ДО блокирующего analyze_batch(), не после -- иначе
+            # бар всю паузу молча показывает состояние предыдущего файла, что визуально
+            # неотличимо от зависания. n=0 -- только обновление текста, счётчик не трогаем
+            # (тот же приём, что и self.update(0) в ProgressReporter.__init__).
+            bar.update(0, note=note)
             records = analyze_batch([item], retries=cfg.read_retry_count, retry_delay=cfg.read_retry_delay,
-                                     small_image_px=cfg.small_image_px, log=log)
+                                     small_image_px=cfg.small_image_px, log=log, pool=pool)
 
             for rec in records:
                 processed_count += 1
@@ -4375,7 +4687,7 @@ def _run_impl(cfg: Config, log=print):
             log(f"Повторное чтение {len(pending_retry)} отложенных файлов в конце прогона...")
             for item in pending_retry:
                 records = analyze_batch([item], retries=1, retry_delay=cfg.read_retry_delay,
-                                         small_image_px=cfg.small_image_px, log=log)
+                                         small_image_px=cfg.small_image_px, log=log, pool=pool)
                 rec = records[0]
                 if rec.read_error:
                     run_logs.unreadable(item.origin_display, rec.read_error_msg)
@@ -4386,6 +4698,10 @@ def _run_impl(cfg: Config, log=print):
                     bar.update(1, note="повтор чтения (диск может быть медленным)")
                     break
                 bar.update(1, note="повтор чтения (диск может быть медленным)")
+
+    if st.cache_conn is not None:
+        st.cache_conn.commit()
+        st.cache_conn.close()
 
     phase2_end = time.monotonic()
 
@@ -4419,8 +4735,15 @@ def _run_impl(cfg: Config, log=print):
             summary_lines.append(f"  {k}: {v}\n")
     if unreadable_count:
         summary_lines.append(f"{unreadable_count} файлов не прочитано — см. unreadable.csv\n")
-    free = shutil.disk_usage(winlong(cfg.target)).free
-    summary_lines.append(f"Свободно на TARGET по завершении: {free / 1024**3:.2f} ГБ\n")
+    try:
+        # TARGET can vanish mid-run (disk unplugged) -- confirmed via real-hardware test
+        # 2026-07-18: this used to crash the whole run right at the finish line, after every
+        # file had already been processed (successfully or as write_failed) -- same class of
+        # bug as report_environment()'s guard above, just at the other end of the run.
+        free = shutil.disk_usage(winlong(cfg.target)).free
+        summary_lines.append(f"Свободно на TARGET по завершении: {free / 1024**3:.2f} ГБ\n")
+    except OSError:
+        summary_lines.append("Свободно на TARGET по завершении: не удалось определить (диск недоступен)\n")
     if st.stopped_for_space:
         summary_lines.append("ОСТАНОВЛЕНО: недостаточно места на TARGET. Освободите место и запустите снова.\n")
     summary_lines.append(build_final_summary(stats, walker, unreadable_count, pool, processed_count))
@@ -4429,7 +4752,11 @@ def _run_impl(cfg: Config, log=print):
     run_logs.close()
 
     log(summary_text)
-    return stats, processed_count, st.stopped_for_space
+    # PROMPT_archive_report.md, 1.2а: только CollectingRunLogs (suppress_logs=True, см. выше)
+    # имеет .rows -- RunLogs/NullRunLogs не имеют этого атрибута, getattr(..., None) вместо
+    # isinstance() держит эту функцию не завязанной на конкретный класс.
+    collected_rows = getattr(run_logs, "rows", None)
+    return stats, processed_count, st.stopped_for_space, collected_rows, pool
 
 # ============================================================================
 # STARTUP: конфиг, проверка бандленных бинарников, интерактивный ввод, CLI
@@ -4918,9 +5245,14 @@ class RunResult:
     stats: dict = None
     processed_count: int = 0
     stopped_for_space: bool = False
+    collected_rows: dict = None  # PROMPT_archive_report.md, 1.2а: только suppress_logs=True
+                                  # (CollectingRunLogs.rows), иначе None -- см. _run_impl
+    pool: "Pool" = None  # раунд 5 ревью, вариант A: для передачи вызывающему batch-циклу как
+                         # shared_pool следующего SOURCE -- None при failed=True (см. run_for_source)
 
 
-def run_for_source(source, target, dry_run, sample_limit, log=print, suppress_logs=False) -> RunResult:
+def run_for_source(source, target, dry_run, sample_limit, log=print, suppress_logs=False,
+                    shared_pool=None) -> RunResult:
     yaml_overrides = load_yaml_config(CONFIG_YAML_PATH, log=log)
     try:
         cfg = Config(source=source, target=target, dry_run=dry_run, sample_limit=sample_limit,
@@ -4929,13 +5261,14 @@ def run_for_source(source, target, dry_run, sample_limit, log=print, suppress_lo
         log(f"ОШИБКА КОНФИГУРАЦИИ: {e}")
         return RunResult(failed=True, exit_code=EXIT_CONFIG_ERROR)
     try:
-        stats, processed_count, stopped_for_space = run(cfg, log=log)
+        stats, processed_count, stopped_for_space, collected_rows, pool = run(
+            cfg, log=log, shared_pool=shared_pool)
     except TargetLocked as e:
         log(f"ОШИБКА: {e}")
         return RunResult(failed=True, exit_code=EXIT_TARGET_LOCKED)
     exit_code = EXIT_INSUFFICIENT_SPACE if stopped_for_space else 0
-    return RunResult(failed=False, exit_code=exit_code, stats=stats,
-                      processed_count=processed_count, stopped_for_space=stopped_for_space)
+    return RunResult(failed=False, exit_code=exit_code, stats=stats, collected_rows=collected_rows,
+                      processed_count=processed_count, stopped_for_space=stopped_for_space, pool=pool)
 
 
 def run_analyze_for_source(source, target, sample_limit, mode, log=print):
@@ -4954,6 +5287,64 @@ def run_analyze_for_source(source, target, sample_limit, mode, log=print):
     write_analyze_report_csv(report_path, stats)
     log(f"Машинный отчёт: {report_path}")
     return stats
+
+
+def _open_report_in_browser(out_path: str) -> None:
+    """webbrowser.open() не понимает \\\\?\\-префикс (winlong()) -- report.html/summary.txt
+    пути на практике коротки (рядом с TARGET/.exe, не глубоко в ByDate/Albums), обычный
+    os.path.abspath() ей достаточен."""
+    try:
+        webbrowser.open(os.path.abspath(out_path))
+    except Exception:
+        pass
+
+
+def _finalize_target_report(target: str, level: str, any_succeeded: bool, total_processed: int,
+                             open_browser: bool, log=print) -> None:
+    """PROMPT_archive_report.md, разделы 1.1/1.1а/1.2: report.html после archive-прогона
+    (level="target", файл персистентно в TARGET\\__служебные_файлы\\) или CLI --dry-run
+    (level="workdir", файл эфемерно в WORKDIR) -- ОБА читают одни и те же CSV-логи TARGET
+    (CLI --dry-run тоже пишет их по-настоящему, suppress_logs там всегда False, см.
+    build_arg_parser()), различаются только пунктом назначения файла и текстом-обёрткой
+    (level). Вызывается ОДИН раз на весь вызов (после цикла по expanded source), не на
+    каждый --source -- один прогон = один файл (раздел 1.1), а данные и так читаются из
+    файлов TARGET (кумулятивное состояние), не из in-memory дельты одного source.
+
+    any_succeeded=False -- TargetLocked/ошибка конфига для ВСЕГО вызова (одинаковы для всех
+    source в одном вызове, общий TARGET/конфиг) -- ничего не пишем, не удаляем (раздел 1.1а,
+    "если лок вообще не был захвачен")."""
+    if not any_succeeded:
+        return
+    photosort_dir = os.path.join(target, "__служебные_файлы")  # см. Config.photosort_dir
+    out_path = (os.path.join(photosort_dir, "report.html") if level == "target"
+                else os.path.join(WORKDIR, "report.html"))
+    if total_processed == 0:
+        report.generate_placeholder_report(
+            "Источник оказался недоступен или пуст — ни один файл не обработан.", out_path)
+    else:
+        data = report.parse_target_logs(os.path.join(photosort_dir, "logs"))
+        report.generate_report(data, out_path, level=level)
+    log(f"Отчёт: {out_path}")
+    if open_browser:
+        _open_report_in_browser(out_path)
+
+
+def _finalize_analyze_report(stats, open_browser: bool, log=print) -> None:
+    """analyze/analyze-quick/analyze-full (раздел 1.2): "один слот, не персистентно
+    per-источник" -- вызывается ВНУТРИ цикла по source (не после), каждый анализ
+    перезаписывает WORKDIR\\report.html независимо от исхода предыдущего (см. раздел 1.2,
+    "отчёт по последней операции"), в отличие от _finalize_target_report выше."""
+    if stats is None:
+        return  # run_analyze_for_source() уже вернула None при ошибке конфига -- не трогаем
+    out_path = os.path.join(WORKDIR, "report.html")
+    if stats.total_files == 0:
+        report.generate_placeholder_report(
+            "Источник оказался недоступен или пуст — ни один файл не обработан.", out_path)
+    else:
+        report.generate_report_from_analyze_stats(stats, out_path, level="analyze")
+    log(f"Отчёт: {out_path}")
+    if open_browser:
+        _open_report_in_browser(out_path)
 
 
 def resolve_sources(args) -> list:
@@ -5436,6 +5827,7 @@ def _bare_launch_run_view(sources: list, log=print):
     if stats is None:
         return
     _print_human_view_summary(_display_path(sources[0]), stats, log=log)
+    _finalize_analyze_report(stats, open_browser=True, log=log)
 
 
 def _bare_launch_run_dryrun(sources: list, target: str, input_fn=input, log=print):
@@ -5445,16 +5837,36 @@ def _bare_launch_run_dryrun(sources: list, target: str, input_fn=input, log=prin
     target = resolve_drive_root_conflict(sources, target, interactive=True, input_fn=input_fn, log=log)
     expanded = expand_sources(sources, target)
     results = []
+    total_processed = 0
+    merged_rows = {name: [] for name in report.CSV_NAMES}
+    shared_pool = None  # раунд 5 ревью, вариант A: не пересканировать TARGET на каждый SOURCE
+                        # этого batch'а -- см. _run_impl/run_for_source
     with _prevent_sleep():
         for s in expanded:
             if len(expanded) > 1:
                 log(f"\n########## SOURCE = {s} ##########")
             result = run_for_source(s, target, dry_run=True, sample_limit=0, log=log,
-                                     suppress_logs=True)
+                                     suppress_logs=True, shared_pool=shared_pool)
             if not result.failed:
                 results.append(result.stats)
+                total_processed += result.processed_count
+                shared_pool = result.pool
+                # PROMPT_archive_report.md, 1.2а: CollectingRunLogs.rows -- несколько source
+                # за один [2] складываются в один отчёт, тот же принцип, что _sum_stats()
+                # уже делает для консольной сводки чуть ниже.
+                for name, rows in (result.collected_rows or {}).items():
+                    merged_rows.setdefault(name, []).extend(rows)
     merged = _sum_stats(results)
     _print_human_dryrun_summary(target, merged, log=log)
+    if results:
+        out_path = os.path.join(WORKDIR, "report.html")
+        if total_processed == 0:
+            report.generate_placeholder_report(
+                "Источник оказался недоступен или пуст — ни один файл не обработан.", out_path)
+        else:
+            report.generate_report(merged_rows, out_path, level="workdir")
+        log(f"Отчёт: {out_path}")
+        _open_report_in_browser(out_path)
     return target
 
 
@@ -5475,16 +5887,25 @@ def _bare_launch_run_build(sources: list, target: str, input_fn=input, log=print
     # "Готово. Архив собран", даже если ни один файл фактически не скопировался.
     # any_succeeded отслеживает это.
     any_succeeded = False
+    total_processed = 0
+    shared_pool = None  # раунд 5 ревью, вариант A: не пересканировать TARGET на каждый SOURCE
+                        # этого batch'а -- см. _run_impl/run_for_source
     with _prevent_sleep():
         for s in expanded:
             if len(expanded) > 1:
                 log(f"\n########## SOURCE = {s} ##########")
-            if not run_for_source(s, target, dry_run=False, sample_limit=0, log=log).failed:
+            result = run_for_source(s, target, dry_run=False, sample_limit=0, log=log,
+                                     shared_pool=shared_pool)
+            if not result.failed:
                 any_succeeded = True
+                total_processed += result.processed_count
+                shared_pool = result.pool
     if not any_succeeded:
         log("")
         log("  Сборка не выполнена — см. сообщение об ошибке выше.")
         return None
+    _finalize_target_report(target, "target", any_succeeded, total_processed,
+                             open_browser=True, log=log)
     log("")
     log(f"  Готово. Архив собран в {_display_path(target)}")
     log("")
@@ -5763,20 +6184,38 @@ def _main():
     # прогона (один и тот же TARGET/photoarchive_config.yaml) -- порядок между ними самими не
     # важен, только чтобы 0 никогда не перекрывал уже увиденную ошибку.
     exit_code = 0
+    any_succeeded = False
+    total_processed = 0
+    shared_pool = None  # раунд 5 ревью, вариант A: не пересканировать TARGET на каждый SOURCE
+                        # этого batch'а (archive-режим) -- см. _run_impl/run_for_source
     with _prevent_sleep():
         for s in expanded:
             if len(expanded) > 1:
                 print(f"\n########## SOURCE = {s} ##########")
             if args.mode == "archive":
-                source_exit_code = run_for_source(
-                    s, target, args.dry_run, args.sample_limit, log=console_log).exit_code
+                result = run_for_source(s, target, args.dry_run, args.sample_limit, log=console_log,
+                                         shared_pool=shared_pool)
+                source_exit_code = result.exit_code
+                if not result.failed:
+                    any_succeeded = True
+                    total_processed += result.processed_count
+                    shared_pool = result.pool
             else:
                 stats = run_analyze_for_source(s, target, args.sample_limit, args.mode, log=console_log)
                 source_exit_code = EXIT_CONFIG_ERROR if stats is None else 0
+                # PROMPT_archive_report.md, раздел 1.2: analyze-* -- "один слот, не
+                # персистентно per-источник", каждый анализ перезаписывает WORKDIR\report.html
+                # -- внутри цикла, не после (в отличие от archive ниже).
+                _finalize_analyze_report(stats, open_browser=interactive_mode, log=console_log)
             if source_exit_code == EXIT_INSUFFICIENT_SPACE:
                 exit_code = EXIT_INSUFFICIENT_SPACE
             elif source_exit_code and not exit_code:
                 exit_code = source_exit_code
+
+    if args.mode == "archive":
+        level = "workdir" if args.dry_run else "target"
+        _finalize_target_report(target, level, any_succeeded, total_processed,
+                                 open_browser=interactive_mode, log=console_log)
 
     _pause_before_exit(interactive_mode)
     return exit_code

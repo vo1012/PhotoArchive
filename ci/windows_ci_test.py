@@ -1809,8 +1809,10 @@ def test_archive_cache_prunes_stale_paths():
         archived_a = os.path.join(tgt, "Albums", "Альбом", "a.jpg")
         check(os.path.isfile(archived_a), "cache-prune: a.jpg archived")
 
-        # A second run is what actually makes Phase 1 index the existing archive (a.jpg) for
-        # the first time -- that's when archive_cache gets its first row for a.jpg's path.
+        # Раунд 5 ревью, вариант D (REVIEW-HANDOFF.md): run #1 уже сеет archive_cache для
+        # a.jpg сразу при размещении (не дожидаясь Phase 1 run #2) -- run #2 здесь просто
+        # подтверждает, что запись пережила ещё один прогон (в т.ч. свою собственную Phase 1,
+        # у которой должен быть cache-hit, а не перехеш).
         image(os.path.join(src, "Альбом", "b.jpg"), 800, 600, exif=True, dt="2022:05:06 10:00:00")
         r2 = run_photosort(src, tgt)
         check(r2.returncode == 0, "cache-prune: second run exits 0")
@@ -1822,8 +1824,14 @@ def test_archive_cache_prunes_stale_paths():
         conn.close()
         check(archived_a in cached_paths, "cache-prune: archive_cache holds a.jpg's path after run #2")
 
-        # Simulate a photo the user manually removed from the archive between runs.
+        # Simulate a photo the user manually removed from the archive between runs. Must also
+        # remove it from SOURCE (не только TARGET) -- иначе, с вариантом D (сев archive_cache
+        # при размещении), decide() честно увидит его как отсутствующее в архиве и заново
+        # скопирует обратно из ещё не убранного source-файла того же прогона, что и должно:
+        # это не баг находки, а другой сценарий (файл ЛЕГИТИМНО вернулся в архив тем же
+        # run #3, а не "ушёл навсегда", который здесь и проверяется).
         os.remove(archived_a)
+        os.remove(os.path.join(src, "Альбом", "a.jpg"))
 
         image(os.path.join(src, "Альбом", "c.jpg"), 800, 600, exif=True, dt="2022:05:07 10:00:00")
         r3 = run_photosort(src, tgt)
@@ -1886,7 +1894,8 @@ def test_exit_code_aggregation_across_sources():
         "import sys; sys.path.insert(0, %r)\n"
         "import photosort_win as m\n"
         "_calls = []\n"
-        "def _fake(source, target, dry_run, sample_limit, log=print, suppress_logs=False):\n"
+        "def _fake(source, target, dry_run, sample_limit, log=print, suppress_logs=False,\n"
+        "          shared_pool=None):\n"
         "    _calls.append(source)\n"
         "    if len(_calls) == 1:\n"
         "        return m.RunResult(failed=True, exit_code=m.EXIT_TARGET_LOCKED)\n"
