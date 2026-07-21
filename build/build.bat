@@ -38,15 +38,23 @@ if exist "..\licenses" (
 )
 
 echo Конвертация пользовательской документации (README/QUICKSTART/FAQ/PhotoArchive_ot_avtora/
-echo THIRD_PARTY_LICENSES) в PDF отличалась бы форматом от dev-репозитория, где .md остаётся
-echo источником истины только на GitHub -- здесь, наоборот, .md рендерится самим GitHub, а
-echo релиз распространяется как отдельный .exe-asset, так что документация в dist\ остаётся
-echo в исходном .md-формате, конвертация в PDF НЕ выполняется.
+echo THIRD_PARTY_LICENSES) в PDF -- см. RELEASING.md. Требует "pip install markdown pypdf"
+echo (см. requirements.txt) и Microsoft Edge, установленный на этой машине (GitHub-hosted
+echo windows-latest runner несёт Edge предустановленным). Нужна только для отдельного
+echo ZIP-ассета релиза (dist\PhotoArchive\) -- .md источники на GitHub эта конвертация не
+echo затрагивает, там документация по-прежнему рендерится самим GitHub как есть.
+python md_to_pdf.py .. dist
+if errorlevel 1 (
+  echo [ERROR] Конвертация markdown -^> PDF не удалась -- см. вывод выше. dist\ НЕ содержит
+  echo пользовательскую документацию, ZIP-ассет релиза нельзя считать готовым.
+  exit /b 1
+)
 
 copy /Y ..\photoarchive_config.yaml.example dist\ >nul
 copy /Y ..\LICENSE dist\ >nul
 copy /Y ..\NOTICE dist\ >nul
-echo photoarchive_config.yaml.example/LICENSE/NOTICE скопированы в dist\.
+copy /Y ..\PhotoArchive_buklet.pdf dist\ >nul
+echo photoarchive_config.yaml.example/LICENSE/NOTICE/PhotoArchive_buklet.pdf скопированы в dist\.
 
 REM Живая находка 2026-07-15 (dev-репозиторий): dist\photoarchive_config.yaml (БЕЗ .example)
 REM появлялся между пересборками -- сам auto-create в photosort_win.py срабатывает только на
@@ -55,8 +63,26 @@ REM до этого кода, см. _main()), так что источник -- 
 REM отладки, а не сама сборка. На всякий случай подчищаем перед тем как считать dist\ готовым.
 if exist dist\photoarchive_config.yaml del /Q dist\photoarchive_config.yaml
 
+REM ZIP-ассет релиза (dist\PhotoArchive.zip) -- тот же комплект, что раньше планировался для
+REM ручного распространения на флешке (exe + пример конфига + вся документация в PDF +
+REM лицензии), теперь дополнительно скачивается отдельной кнопкой с сайта (см. index.html) --
+REM одно другому не мешает, флешка остаётся отдельным каналом распространения того же файла.
+if exist dist\PhotoArchive.zip del /Q dist\PhotoArchive.zip
+if exist dist\zip-staging rmdir /S /Q dist\zip-staging
+powershell -NoProfile -Command ^
+  "New-Item -ItemType Directory -Path dist\zip-staging\PhotoArchive -Force | Out-Null; ^
+   Get-ChildItem dist -Exclude zip-staging,PhotoArchive.zip | Copy-Item -Destination dist\zip-staging\PhotoArchive -Recurse; ^
+   Compress-Archive -Path dist\zip-staging\PhotoArchive -DestinationPath dist\PhotoArchive.zip -Force"
+if errorlevel 1 (
+  echo [ERROR] Упаковка dist\PhotoArchive.zip не удалась -- см. вывод выше.
+  exit /b 1
+)
+rmdir /S /Q dist\zip-staging
+echo dist\PhotoArchive.zip собран ^(папка PhotoArchive\ внутри: exe + документация PDF +
+echo лицензии + пример конфига^).
+
 echo.
-echo Готово: dist\PhotoArchive.exe (если сборка прошла без ошибок выше).
+echo Готово: dist\PhotoArchive.exe и dist\PhotoArchive.zip (если сборка прошла без ошибок выше).
 echo Перед ПУБЛИКАЦИЕЙ релиза -- см. ..\THIRD_PARTY_LICENSES.md.
 
 endlocal

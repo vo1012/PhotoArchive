@@ -116,6 +116,16 @@ jobs:
           path: build/dist/PhotoArchive.exe
           retention-days: 14
 
+      # ZIP-ассет (папка PhotoArchive\ внутри: exe + документация PDF + лицензии + пример
+      # конфига, build.bat собирает его сам) -- та же логика "не глотать ошибку загрузки
+      # молча", что и у exe-артефакта выше: release job ниже качает оба по имени, тихий сбой
+      # здесь всплыл бы там непонятной ошибкой "artifact not found".
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PhotoArchive-zip
+          path: build/dist/PhotoArchive.zip
+          retention-days: 14
+
   release:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
@@ -129,10 +139,17 @@ jobs:
           name: PhotoArchive-exe
           path: dist
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: PhotoArchive-zip
+          path: dist
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/PhotoArchive.exe
+          files: |
+            dist/PhotoArchive.exe
+            dist/PhotoArchive.zip
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
