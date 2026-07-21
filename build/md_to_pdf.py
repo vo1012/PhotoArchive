@@ -238,6 +238,16 @@ def convert_one(src_path: str, out_dir: str, edge: str, known_names: set) -> str
 
 
 def main() -> None:
+    # Живая находка 2026-07-21 (первый реальный прогон в CI публичного репозитория): скрипт
+    # печатает кириллицу ("байт") -- на windows-latest-раннере (cp1252) это падает с
+    # UnicodeEncodeError на первом же print(), тот же класс бага, что уже чинился для
+    # photosort_win.py/ci/windows_ci_test.py (см. там), просто не был перенесён сюда при
+    # портировании скрипта.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     if len(sys.argv) != 3:
         sys.exit("Использование: python md_to_pdf.py <корень репозитория> <папка вывода>")
     root, out_dir = sys.argv[1], sys.argv[2]
