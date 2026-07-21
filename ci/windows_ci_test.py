@@ -3127,11 +3127,15 @@ def test_third_party_licenses_wired_up():
           "build.bat no longer copies THIRD_PARTY_LICENSES.md into dist\\ as-is "
           "(superseded by the PDF pipeline)")
 
+    # RELEASING.md is a dev-repo-only internal doc (not published to the public repo, which
+    # mirrors this test file too) -- skip gracefully there instead of hard-failing on a file
+    # that was never supposed to exist outside the dev repo.
     releasing = os.path.join(ROOT, "RELEASING.md")
-    with open(releasing, encoding="utf-8") as f:
-        releasing_text = f.read()
-    check("bin/licenses" in releasing_text or "bin\\licenses" in releasing_text,
-          "RELEASING.md checklist mentions bin/licenses")
+    if os.path.isfile(releasing):
+        with open(releasing, encoding="utf-8") as f:
+            releasing_text = f.read()
+        check("bin/licenses" in releasing_text or "bin\\licenses" in releasing_text,
+              "RELEASING.md checklist mentions bin/licenses")
 
     readme = os.path.join(ROOT, "README.md")
     with open(readme, encoding="utf-8") as f:
@@ -3162,12 +3166,16 @@ def test_requirements_txt_pinned_and_wired_up():
     check("pip install pyinstaller pillow" not in build_text,
           "build.bat no longer has the old unpinned inline pip install list")
 
+    # README-BUILD.md is a dev-repo-only internal doc (not published to the public repo, which
+    # mirrors this test file too) -- skip gracefully there, same as the RELEASING.md check above.
     readme_build = os.path.join(ROOT, "README-BUILD.md")
-    with open(readme_build, encoding="utf-8") as f:
-        readme_build_text = f.read()
-    check("requirements.txt" in readme_build_text, "README-BUILD.md references requirements.txt")
-    check("pip install pyinstaller pillow" not in readme_build_text,
-          "README-BUILD.md no longer has the old unpinned inline pip install list")
+    if os.path.isfile(readme_build):
+        with open(readme_build, encoding="utf-8") as f:
+            readme_build_text = f.read()
+        check("requirements.txt" in readme_build_text,
+              "README-BUILD.md references requirements.txt")
+        check("pip install pyinstaller pillow" not in readme_build_text,
+              "README-BUILD.md no longer has the old unpinned inline pip install list")
 
 
 # 2026-07-17 (вторая рецензия): плоский список из 68 прямых вызовов раньше означал, что
