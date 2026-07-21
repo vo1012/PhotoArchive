@@ -29,10 +29,37 @@
   section{padding:64px 0}
   h1{font-size:2.4rem;margin:0 0 12px;letter-spacing:-0.02em}
   h2{font-size:1.5rem;margin:0 0 8px}
+  h3{margin:0 0 6px}
   .lede{font-size:1.15rem;color:var(--muted);margin:0 0 40px;max-width:46ch}
+  .center{text-align:center;margin-left:auto;margin-right:auto}
+  ul.plain{margin:0;padding:0;list-style:none}
+  ul.plain li{position:relative;padding:6px 0 6px 26px;color:var(--text)}
+  ul.plain li::before{content:"";position:absolute;left:0;top:15px;width:8px;height:8px;border-radius:2px;background:var(--accent)}
+
+  /* ---------- flat nav ---------- */
+  nav.topnav{
+    position:sticky;top:0;z-index:20;
+    background:var(--bg);
+    border-bottom:1px solid var(--line);
+  }
+  nav.topnav .inner{
+    max-width:760px;margin:0 auto;padding:0 24px;
+    display:flex;align-items:center;justify-content:space-between;
+    height:56px;gap:16px;
+  }
+  .brand{font-weight:700;color:var(--accent);text-decoration:none;font-size:1.05rem;white-space:nowrap}
+  .navlinks{display:flex;align-items:center;gap:22px;flex-wrap:wrap}
+  .navlinks a{color:var(--text);text-decoration:none;font-size:.92rem;border-bottom:1px solid transparent}
+  .navlinks a:hover{border-color:var(--accent);color:var(--accent)}
+  .nav-cta{
+    background:var(--accent);color:#fff !important;padding:8px 16px;border-radius:6px;
+    font-weight:600;border-bottom:none !important;
+  }
+  .nav-cta:hover{background:#1c4139;border-color:transparent !important}
+  @media (max-width:640px){ .navlinks a:not(.nav-cta){display:none} }
 
   /* ---------- hero ---------- */
-  .hero{padding-top:72px;padding-bottom:8px;text-align:center}
+  .hero{padding-top:56px;padding-bottom:8px;text-align:center}
   .hero .lede{margin-left:auto;margin-right:auto}
   .cta{
     display:inline-block;
@@ -42,13 +69,11 @@
     font-size:1.15rem;
     font-weight:600;
     padding:16px 40px;
-    border-radius:10px;
+    border-radius:8px;
     margin:8px 0 6px;
-    transition:transform .12s ease, box-shadow .12s ease;
-    box-shadow:0 2px 0 rgba(0,0,0,.08);
   }
-  .cta:hover{transform:translateY(-1px);box-shadow:0 6px 14px rgba(36,84,74,.28)}
-  .cta-note{display:block;color:var(--muted);font-size:.85rem;margin-bottom:56px}
+  .cta:hover{background:#1c4139}
+  .cta-note{display:block;color:var(--muted);font-size:.85rem;margin-bottom:16px}
 
   /* ---------- before/after mock ---------- */
   .tree-compare{
@@ -75,7 +100,49 @@
   .tree .folder .ic{color:#C9A063}
   .tree .file .ic{color:var(--accent)}
   .tree .muted{color:var(--muted)}
-  .tree.after{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+  .tree.after{border-color:var(--accent)}
+
+  /* ---------- generic section heading with icon ---------- */
+  .kicker{
+    display:inline-flex;align-items:center;gap:8px;
+    color:var(--accent);font-size:.82rem;font-weight:700;
+    text-transform:uppercase;letter-spacing:.06em;margin:0 0 10px;
+  }
+  .kicker .ic{width:18px;height:18px}
+
+  /* ---------- console / interface mockup ---------- */
+  .console{
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:12px;
+    overflow:hidden;
+    margin:28px 0;
+  }
+  .console-bar{
+    display:flex;gap:6px;align-items:center;
+    padding:10px 14px;background:var(--bg);border-bottom:1px solid var(--line);
+  }
+  .console-dot{width:9px;height:9px;border-radius:50%;background:var(--line)}
+  .console-title{margin-left:8px;font-size:.78rem;color:var(--muted)}
+  .console-body{padding:20px 22px;font-family:"Consolas","SFMono-Regular",Menlo,monospace;font-size:.92rem}
+  .console-body .step{
+    display:flex;align-items:baseline;gap:10px;padding:7px 0;
+    border-bottom:1px dashed var(--line);
+  }
+  .console-body .step:last-child{border-bottom:none}
+  .console-body .step b{color:var(--accent)}
+  .console-body .step span.desc{color:var(--muted);font-family:"Segoe UI",-apple-system,Roboto,Arial,sans-serif;font-size:.86rem}
+
+  .steps-explain{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:28px}
+  .step-card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px}
+  .step-card .num{
+    display:inline-flex;align-items:center;justify-content:center;
+    width:26px;height:26px;border-radius:50%;background:var(--accent);color:#fff;
+    font-size:.85rem;font-weight:700;margin-bottom:10px;
+  }
+  .step-card p{margin:0;color:var(--muted);font-size:.92rem}
+  .step-card h4{margin:0 0 6px;font-size:.98rem}
+  @media (max-width:640px){ .steps-explain{grid-template-columns:1fr} }
 
   /* ---------- trust block ---------- */
   .trust{background:var(--card);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
@@ -83,6 +150,25 @@
   .trust-item h3{font-size:1.02rem;margin:0 0 6px;display:flex;align-items:center;gap:8px}
   .trust-item h3 .ic{width:20px;height:20px;color:var(--accent);flex:none}
   .trust-item p{margin:0;color:var(--muted);font-size:.94rem}
+  @media (max-width:640px){ .trust-grid{grid-template-columns:1fr} }
+
+  /* ---------- quote panel ---------- */
+  .quote-panel{
+    background:var(--bg);border:1px solid var(--line);border-radius:12px;
+    padding:28px 30px;margin:32px 0;
+  }
+  .quote-panel blockquote{
+    margin:0 0 16px;font-size:1.2rem;font-weight:600;color:var(--accent);
+    font-style:normal;line-height:1.4;
+  }
+  .quote-panel blockquote::before{content:"«"}
+  .quote-panel blockquote::after{content:"»"}
+
+  /* ---------- safety two-col ---------- */
+  .two-col{display:grid;grid-template-columns:1fr 1fr;gap:36px;margin-top:24px}
+  .two-col h3{display:flex;align-items:center;gap:8px;font-size:1.05rem}
+  .two-col h3 .ic{width:20px;height:20px;color:var(--accent);flex:none}
+  @media (max-width:640px){ .two-col{grid-template-columns:1fr;gap:32px} }
 
   /* ---------- report screenshot ---------- */
   .report-shot{text-align:center}
@@ -91,9 +177,37 @@
     height:auto;
     border:1px solid var(--line);
     border-radius:12px;
-    box-shadow:0 12px 32px rgba(43,43,38,.10);
   }
   .report-caption{color:var(--muted);font-size:.9rem;margin-top:14px}
+  .report-points{
+    display:grid;grid-template-columns:repeat(3,1fr);gap:16px;
+    margin:28px 0 8px;text-align:left;
+  }
+  .report-points div{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .report-points p{margin:0;font-size:.88rem;color:var(--muted)}
+  @media (max-width:640px){ .report-points{grid-template-columns:1fr} }
+
+  /* ---------- free/open row ---------- */
+  .free-row{display:grid;grid-template-columns:repeat(4,1fr);gap:22px;margin-top:28px;text-align:center}
+  .free-row .ic{width:26px;height:26px;color:var(--accent);margin-bottom:8px}
+  .free-row p{margin:0;font-size:.88rem;color:var(--muted)}
+  @media (max-width:640px){ .free-row{grid-template-columns:1fr 1fr} }
+
+  /* ---------- mini faq ---------- */
+  .faq-item{border-bottom:1px solid var(--line);padding:18px 0}
+  .faq-item:last-of-type{border-bottom:none}
+  .faq-item h3{font-size:1.02rem;margin:0 0 6px}
+  .faq-item p{margin:0;color:var(--muted);font-size:.94rem}
+  .faq-more{margin-top:20px;font-size:.92rem}
+  .faq-more a{color:var(--accent)}
+
+  /* ---------- closing reassurance band ---------- */
+  .closing-band{background:var(--accent);color:#fff}
+  .closing-band .wrap{padding:48px 24px}
+  .closing-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:26px}
+  .closing-grid .ic{width:24px;height:24px;margin-bottom:10px;color:#fff}
+  .closing-grid p{margin:0;font-size:.94rem;opacity:.95}
+  @media (max-width:640px){ .closing-grid{grid-template-columns:1fr} }
 
   /* ---------- support (muted) ---------- */
   .support{text-align:center}
@@ -129,7 +243,6 @@
     section{padding:44px 0}
     .tree-compare{grid-template-columns:1fr;gap:8px}
     .tree-arrow{transform:rotate(90deg);text-align:center}
-    .trust-grid{grid-template-columns:1fr}
   }
 </style>
 </head>
@@ -148,9 +261,58 @@
     <rect x="2" y="4" width="20" height="13" rx="2" fill="currentColor"/>
     <rect x="9" y="19" width="6" height="2" fill="currentColor"/>
   </symbol>
+  <symbol id="ic-search" viewBox="0 0 24 24">
+    <circle cx="10" cy="10" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/>
+    <line x1="15" y1="15" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="ic-eye" viewBox="0 0 24 24">
+    <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+    <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/>
+  </symbol>
+  <symbol id="ic-refresh" viewBox="0 0 24 24">
+    <path d="M4 12a8 8 0 0 1 14-5.3M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M20 12a8 8 0 0 1-14 5.3M4 20v-5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="ic-sliders" viewBox="0 0 24 24">
+    <line x1="4" y1="7" x2="20" y2="7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="14" cy="7" r="2.2" fill="currentColor"/>
+    <line x1="4" y1="12" x2="20" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="9" cy="12" r="2.2" fill="currentColor"/>
+    <line x1="4" y1="17" x2="20" y2="17" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="16" cy="17" r="2.2" fill="currentColor"/>
+  </symbol>
+  <symbol id="ic-check" viewBox="0 0 24 24">
+    <path d="M4 12l5 5L20 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="ic-gift" viewBox="0 0 24 24">
+    <rect x="4" y="9" width="16" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/>
+    <rect x="3.5" y="6" width="17" height="4" rx="1" fill="none" stroke="currentColor" stroke-width="2"/>
+    <line x1="12" y1="6" x2="12" y2="20" stroke="currentColor" stroke-width="2"/>
+  </symbol>
+  <symbol id="ic-code" viewBox="0 0 24 24">
+    <path d="M8 6 3 12l5 6M16 6l5 6-5 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="ic-list" viewBox="0 0 24 24">
+    <line x1="4" y1="6" x2="20" y2="6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    <line x1="4" y1="12" x2="20" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    <line x1="4" y1="18" x2="20" y2="18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+  </symbol>
 </svg>
 
-<div class="wrap">
+<nav class="topnav">
+  <div class="inner">
+    <a class="brand" href="#top">PhotoArchive</a>
+    <div class="navlinks">
+      <a href="#how">Как это работает</a>
+      <a href="#trust">Доверие</a>
+      <a href="#report">Отчёт</a>
+      <a href="#faq">Вопросы</a>
+      <a class="nav-cta" href="https://github.com/vo1012/PhotoArchive/releases/latest">Скачать</a>
+    </div>
+  </div>
+</nav>
+
+<div class="wrap" id="top">
 
   <section class="hero">
     <h1>PhotoArchive</h1>
@@ -195,12 +357,49 @@
     <span class="cta-note">Бесплатно · портативный .exe · без установки</span>
   </section>
 
-  <section class="trust">
+  <section id="how">
+    <p class="kicker"><svg class="ic"><use href="#ic-eye"/></svg>Как это работает</p>
+    <h2>Сначала посмотреть, потом решить</h2>
+    <p class="lede">Три отдельных режима, не обязательная последовательность — можно сразу перейти к третьему, если первые два не нужны. Но для первого раза спокойнее пройти по порядку: ничего не изменится на диске, пока вы сами не согласитесь.</p>
+
+    <div class="console">
+      <div class="console-bar">
+        <span class="console-dot"></span><span class="console-dot"></span><span class="console-dot"></span>
+        <span class="console-title">PhotoArchive.exe — главное меню</span>
+      </div>
+      <div class="console-body">
+        <div class="step"><b>[1]</b> Сканирование источника <span class="desc">— read-only, ничего не пишет</span></div>
+        <div class="step"><b>[2]</b> Пробный прогон <span class="desc">— dry-run, тоже без записи</span></div>
+        <div class="step"><b>[3]</b> Сборка архива <span class="desc">— копирование начинается только сейчас</span></div>
+      </div>
+    </div>
+
+    <div class="steps-explain">
+      <div class="step-card">
+        <span class="num">1</span>
+        <h4>Посмотреть, что найдётся</h4>
+        <p>Сколько фото и видео, сколько места они займут — ничего не создаётся и не копируется.</p>
+      </div>
+      <div class="step-card">
+        <span class="num">2</span>
+        <h4>Пробный запуск</h4>
+        <p>Показывает, каким получится архив на самом деле — тоже ничего не копирует, только показывает.</p>
+      </div>
+      <div class="step-card">
+        <span class="num">3</span>
+        <h4>Создание архива</h4>
+        <p>Копирование начинается только после того, как вы сами согласились — не раньше.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="trust" id="trust">
+    <p class="kicker"><svg class="ic"><use href="#ic-shield"/></svg>Доверие</p>
     <h2>Почему можно доверять</h2>
     <div class="trust-grid">
       <div class="trust-item">
         <h3><svg class="ic"><use href="#ic-copy"/></svg>Точный дедуп</h3>
-        <p>Дубликаты — по SHA-256, похожие кадры — по перцептивному хешу. Ничего не теряется и не копируется дважды.</p>
+        <p>Дубликаты — по содержимому файла, похожие кадры — отдельно. Ничего не теряется и не копируется дважды.</p>
       </div>
       <div class="trust-item">
         <h3><svg class="ic"><use href="#ic-shield"/></svg>Атомарная запись</h3>
@@ -215,13 +414,105 @@
         <p>Ни один файл, ни один байт не покидает ваш компьютер — интернет для работы не нужен.</p>
       </div>
     </div>
+
+    <div class="quote-panel">
+      <blockquote>Там, где возможны разные решения, программа выбирает то, что безопаснее для ваших фотографий.</blockquote>
+      <ul class="plain">
+        <li>Никогда не удаляет ваши файлы — только копирует.</li>
+        <li>Если сомневается — сохраняет оба варианта, а не выбирает за вас.</li>
+        <li>Ведёт подробный журнал каждого решения — всегда можно проверить, куда делось любое фото.</li>
+      </ul>
+    </div>
+
+    <div class="two-col">
+      <div>
+        <h3><svg class="ic"><use href="#ic-refresh"/></svg>Если результат не такой, как ожидали</h3>
+        <p>Архив можно удалить и попробовать снова — исходные фотографии не пострадают, из источника ничего не удалялось. Получившийся архив можно даже использовать как источник для нового прогона.</p>
+      </div>
+      <div>
+        <h3><svg class="ic"><use href="#ic-sliders"/></svg>Раскладку можно подстроить</h3>
+        <p>По альбомам и по дате — под ваши папки, программа не навязывает единственный способ. А в журналах всегда видна точная причина, почему файл попал именно туда, куда попал.</p>
+      </div>
+    </div>
   </section>
 
-  <section class="report-shot">
+  <section id="order">
+    <p class="kicker"><svg class="ic"><use href="#ic-folder"/></svg>Раскладка</p>
+    <h2>Ваш порядок остаётся вашим</h2>
+    <p class="lede">Рутину программа берёт на себя, а то, что вы уже организовали сами, — уважает.</p>
+    <ul class="plain">
+      <li>Ваши собственные папки с понятным именем становятся альбомами как есть — программа не придумывает свой порядок вместо вашего.</li>
+      <li>Фото без понятной папки раскладываются по дате съёмки.</li>
+      <li>Точные повторы распознаются по содержимому файла, а не по имени, — лишние копии не создаются.</li>
+      <li>При повторном запуске добавляются только новые файлы — старое не копируется заново.</li>
+    </ul>
+    <p style="margin-top:18px"><b>После следующего отпуска или праздника</b> достаточно снова запустить программу — она сама найдёт только новые фотографии и сохранит ваш порядок, если он уже есть.</p>
+  </section>
+
+  <section class="report-shot" id="report">
+    <p class="kicker center"><svg class="ic"><use href="#ic-list"/></svg>Отчёт</p>
     <h2>Наглядный отчёт после каждого прогона</h2>
-    <p class="lede" style="margin-left:auto;margin-right:auto;text-align:center">Сколько фото, какой охват по годам, что нашлось повторного — одной страницей.</p>
+    <p class="lede center">Сколько фото, какой охват по годам, что нашлось повторного — одной страницей, без похода в технические логи.</p>
     <img src="report-example.png" alt="Пример report.html: сводка архива, график фото по годам, типы медиа" loading="lazy" width="1400" height="960">
     <p class="report-caption">Пример на синтетических данных — реальный отчёт строится по вашему архиву.</p>
+    <div class="report-points">
+      <div><p><b>Сколько всего</b><br>фото и видео, за какой период, сколько заняло места.</p></div>
+      <div><p><b>Похожие кадры серийной съёмки</b><br>сгруппированы для проверки — ничего не удалено само.</p></div>
+      <div><p><b>Что стоит проверить</b><br>приблизительные и отсутствующие даты видно сразу, не только по логам.</p></div>
+    </div>
+  </section>
+
+  <section id="free">
+    <h2 class="center">Бесплатна и открыта</h2>
+    <div class="free-row">
+      <div><svg class="ic"><use href="#ic-offline"/></svg><p>Не требует интернета</p></div>
+      <div><svg class="ic"><use href="#ic-gift"/></svg><p>Бесплатна и останется бесплатной</p></div>
+      <div><svg class="ic"><use href="#ic-folder"/></svg><p>Без установки — переносится на флешке</p></div>
+      <div><svg class="ic"><use href="#ic-code"/></svg><p>Исходный код открыт — <a href="https://github.com/vo1012/PhotoArchive">GitHub</a></p></div>
+    </div>
+  </section>
+
+  <section id="faq">
+    <p class="kicker"><svg class="ic"><use href="#ic-search"/></svg>Вопросы</p>
+    <h2>Частые сомнения</h2>
+    <div class="faq-item">
+      <h3>Она может что-то испортить или удалить в моих исходных фото?</h3>
+      <p>Нет. Программа только читает файлы источника — переименовать, переместить или удалить что-либо там она технически не умеет. Оригиналы остаются ровно в том виде, в каком были.</p>
+    </div>
+    <div class="faq-item">
+      <h3>Нужен ли для этого интернет?</h3>
+      <p>Нет. Вся обработка — на этом же компьютере, ничего никуда не отправляется.</p>
+    </div>
+    <div class="faq-item">
+      <h3>Кончилось место на диске прямо во время сборки — что теперь?</h3>
+      <p>Программа остановится с понятным сообщением, ничего не повредив. Освободите место и запустите ту же команду ещё раз — прогон продолжит с того, что уже дописано, не с начала.</p>
+    </div>
+    <div class="faq-item">
+      <h3>Можно ли прервать работу на середине и запустить заново?</h3>
+      <p>Да, в любой момент — Ctrl+C или просто закрыть окно. Архив устроен так, что недописанный файл не портит уже собранное.</p>
+    </div>
+    <p class="faq-more">Больше вопросов и ответов — <a href="https://github.com/vo1012/PhotoArchive/blob/main/FAQ.md">полный FAQ.md</a>.</p>
+  </section>
+
+</div>
+
+<div class="closing-band">
+  <div class="wrap">
+    <div class="closing-grid">
+      <div><svg class="ic"><use href="#ic-check"/></svg><p>Исходные фотографии всегда остаются на своих местах.</p></div>
+      <div><svg class="ic"><use href="#ic-copy"/></svg><p>Свободное место на диске всегда можно увеличить. Лишнюю копию всегда можно удалить. А потерянную семейную фотографию вернуть уже невозможно.</p></div>
+      <div><svg class="ic"><use href="#ic-sliders"/></svg><p>Все решения о вашем семейном архиве принимаете только вы.</p></div>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <section class="hero" id="download">
+    <h2>Готовы попробовать?</h2>
+    <p class="lede center">Первый шаг ничем не рискует — пункт [1] в меню только смотрит, что найдётся.</p>
+    <a class="cta" href="https://github.com/vo1012/PhotoArchive/releases/latest">Скачать PhotoArchive</a>
+    <span class="cta-note">Бесплатно · портативный .exe · без установки</span>
   </section>
 
   <section class="support">
