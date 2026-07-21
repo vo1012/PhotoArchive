@@ -1564,9 +1564,10 @@ def test_config_yaml_autocreate_before_first_prompt():
 
 def test_dump_segment_names_configurable():
     print("\n=== 2026-07-11: dump_segment_names/dump_segment_prefixes (photoarchive_config.yaml) -- "
-          "editable heuristic dump-folder-name list, split from the four self-protection "
-          "names (bydate/albums/raw/_unsorted) which stay hardcoded even with an emptied "
-          "config override -- and photoarchive_config.yaml auto-generation on first run ===")
+          "editable heuristic dump-folder-name list, split from the five self-protection "
+          "names (bydate/albums/raw/_unsorted/__photoarchive__) which stay hardcoded even with "
+          "an emptied config override -- and photoarchive_config.yaml auto-generation on first "
+          "run ===")
 
     # --- unit-level: constants split correctly, bare calls (no cfg) still use defaults,
     # Config computes the right effective sets, and load_yaml_config() auto-creates a
@@ -1574,8 +1575,8 @@ def test_dump_segment_names_configurable():
     code = (
         "import sys; sys.path.insert(0, %r)\n"
         "import photosort_win as m\n"
-        "print('protected_has_four:', m.DUMP_SEGMENT_NAMES_PROTECTED == "
-        "frozenset({'bydate', 'albums', 'raw', '_unsorted'}))\n"
+        "print('protected_has_five:', m.DUMP_SEGMENT_NAMES_PROTECTED == "
+        "frozenset({'bydate', 'albums', 'raw', '_unsorted', '__photoarchive__'}))\n"
         "print('default_excludes_protected:', not (set(n.lower() for n in "
         "m.DEFAULT_DUMP_SEGMENT_NAMES) & m.DUMP_SEGMENT_NAMES_PROTECTED))\n"
         "print('bare_desktop_dump:', m.is_dump_segment('Desktop') is True)\n"
@@ -1603,7 +1604,7 @@ def test_dump_segment_names_configurable():
                         encoding="utf-8", errors="replace")
     check(r.returncode == 0,
           f"dump_segment_names: unit script exits 0 (stderr={r.stderr[-500:]})")
-    for line in ("protected_has_four: True", "default_excludes_protected: True",
+    for line in ("protected_has_five: True", "default_excludes_protected: True",
                  "bare_desktop_dump: True", "bare_real_album_not_dump: True",
                  "protected_survives_empty_override: True", "extra_name_added: True",
                  "extra_prefix_added: True", "autogen_result_empty: True",
