@@ -923,15 +923,16 @@ def test_cli_version_help_routing():
     check(r3.returncode == 0, "B.3: top-level --help exits 0")
     check("analyze-quick" in r3.stdout and "analyze-full" in r3.stdout,
           "B.3: top-level --help lists analyze-* subcommands (not swallowed by the archive shim)")
-    check("github.com/vo1012/PhotoArchive" in r3.stdout,
-          "2026-07-15: --help epilog links the public repo")
+    check("vo1012.github.io/PhotoArchive" in r3.stdout,
+          "2026-07-20: --help epilog links the project site (SITE_URL), not the raw repo")
     check("актуальные способы" in r3.stdout and "коммерческой выгоды" in r3.stdout,
-          "2026-07-15: --help epilog carries the same donation text as "
-          "PhotoArchive_ot_avtora.md's P.S. (DONATION_TEXT), so it travels with the exe even "
-          "if the letter isn't opened. 2026-07-17: rewritten to point at GitHub instead of a "
-          "placeholder about the compromised card -- --help never gets the real card number, "
-          "not even in the manual-distribution build (see build/md_to_pdf.py's "
-          "_inject_donation_details, which only ever touches PhotoArchive_ot_avtora.md/FAQ.md)")
+          "2026-07-15: --help epilog carries the donation text (DONATION_TEXT). 2026-07-17: "
+          "rewritten to point at a source of current details instead of a placeholder about "
+          "the compromised card -- --help never gets the real card number, not even in the "
+          "manual-distribution build (see build/md_to_pdf.py's _inject_donation_details, "
+          "which only ever touches PhotoArchive_ot_avtora.md/FAQ.md). 2026-07-20: that source "
+          "is now the project site (SITE_URL), not GitHub -- wording diverged on purpose from "
+          "PhotoArchive_ot_avtora.md's P.S., which stays on GitHub since it's read there.")
     check("скомпрометирована" not in r3.stdout,
           "2026-07-17: stale compromised-card placeholder must not linger in --help")
 
@@ -1593,7 +1594,7 @@ def test_dump_segment_names_configurable():
         "print('autogen_result_empty:', result == {})\n"
         "print('autogen_file_created:', os.path.exists(p))\n"
         "with open(p, encoding='utf-8') as f: content = f.read()\n"
-        "print('autogen_looks_right:', content.startswith('# photo-sort-win') and "
+        "print('autogen_looks_right:', content.startswith('# PhotoArchive') and "
         "'dump_segment_names:' in content)\n"
         "result2 = m.load_yaml_config(p, log=logs.append)\n"
         "print('autogen_second_load_no_crash:', result2 == {})\n"
@@ -2091,20 +2092,20 @@ def test_drive_root_target_confirmation_unit():
     r2 = subprocess.run([sys.executable, "-c", code2], capture_output=True, text=True,
                          encoding="utf-8", errors="replace")
     check(r2.returncode == 0, f"drive-root: confirm unit test exits 0 (stderr={r2.stderr[-500:]})")
-    check("yes_result: /PhotoArchive" in r2.stdout,
-          "drive-root: answering 'да' redirects TARGET to a PhotoArchive subfolder")
+    check("yes_result: /__PhotoArchive__" in r2.stdout,
+          "drive-root: answering 'да' redirects TARGET to a __PhotoArchive__ subfolder")
     check("no_result: /" in r2.stdout,
           "drive-root: declining does NOT cancel -- TARGET stays the bare root as-is")
     check(f"unaffected: {normal_tgt}" in r2.stdout,
           "drive-root: a normal (non-root) TARGET is returned unchanged, never even prompts")
 
-    # Prompt wording must differ when PhotoArchive already exists (appending to an existing
+    # Prompt wording must differ when __PhotoArchive__ already exists (appending to an existing
     # archive on the same drive) -- "use it", not "create it". Monkeypatch _is_bare_drive_root()
     # to force the bare-root branch for an arbitrary test directory (real root detection is
-    # already covered above), so this can freely control whether PhotoArchive pre-exists inside
+    # already covered above), so this can freely control whether __PhotoArchive__ pre-exists inside
     # it without touching the real filesystem root.
     fake_root_existing = os.path.join(WORK, "confirm_drive_root_fake_existing")
-    os.makedirs(os.path.join(fake_root_existing, "PhotoArchive"), exist_ok=True)
+    os.makedirs(os.path.join(fake_root_existing, "__PhotoArchive__"), exist_ok=True)
     fake_root_missing = os.path.join(WORK, "confirm_drive_root_fake_missing")
     os.makedirs(fake_root_missing, exist_ok=True)
     code3 = (
@@ -2127,13 +2128,13 @@ def test_drive_root_target_confirmation_unit():
     ) % (ROOT, fake_root_existing, fake_root_missing)
     r3 = subprocess.run([sys.executable, "-c", code3], capture_output=True, text=True,
                          encoding="utf-8", errors="replace")
-    check(r3.returncode == 0, f"drive-root: existing-PhotoArchive wording unit test exits 0 (stderr={r3.stderr[-500:]})")
+    check(r3.returncode == 0, f"drive-root: existing-__PhotoArchive__ wording unit test exits 0 (stderr={r3.stderr[-500:]})")
     check("existing_prompt_says_use: True" in r3.stdout,
-          "drive-root: prompt offers to USE the existing PhotoArchive folder, not create it")
-    check(f"existing_result: {os.path.join(fake_root_existing, 'PhotoArchive')}" in r3.stdout,
-          "drive-root: answering 'да' when PhotoArchive already exists returns that folder")
+          "drive-root: prompt offers to USE the existing __PhotoArchive__ folder, not create it")
+    check(f"existing_result: {os.path.join(fake_root_existing, '__PhotoArchive__')}" in r3.stdout,
+          "drive-root: answering 'да' when __PhotoArchive__ already exists returns that folder")
     check("missing_prompt_says_create: True" in r3.stdout,
-          "drive-root: prompt offers to CREATE PhotoArchive when it doesn't exist yet")
+          "drive-root: prompt offers to CREATE __PhotoArchive__ when it doesn't exist yet")
 
 
 def test_bare_drive_letter_normalization_and_source_target_conflict():
@@ -2177,9 +2178,9 @@ def test_bare_drive_letter_normalization_and_source_target_conflict():
     r2 = subprocess.run([sys.executable, "-c", code2], capture_output=True, text=True,
                          encoding="utf-8", errors="replace")
     check(r2.returncode == 0, f"bare-letter: conflict-resolution unit test exits 0 (stderr={r2.stderr[-500:]})")
-    check("conflict_interactive: /PhotoArchive" in r2.stdout,
+    check("conflict_interactive: /__PhotoArchive__" in r2.stdout,
           "bare-letter: SOURCE==TARGET bare root auto-redirects without asking (interactive)")
-    check("conflict_cli: /PhotoArchive" in r2.stdout,
+    check("conflict_cli: /__PhotoArchive__" in r2.stdout,
           "bare-letter: SOURCE==TARGET bare root auto-redirects without asking (CLI/photoarchive_config.yaml too)")
 
     # No conflict (TARGET bare root, but no source matches it): a real choice -- interactive
@@ -2199,7 +2200,7 @@ def test_bare_drive_letter_normalization_and_source_target_conflict():
     r3 = subprocess.run([sys.executable, "-c", code3], capture_output=True, text=True,
                          encoding="utf-8", errors="replace")
     check(r3.returncode == 0, f"bare-letter: no-conflict unit test exits 0 (stderr={r3.stderr[-500:]})")
-    check("no_conflict_interactive: /PhotoArchive" in r3.stdout,
+    check("no_conflict_interactive: /__PhotoArchive__" in r3.stdout,
           "bare-letter: no conflict + interactive=True -- real choice, answering 'да' redirects")
     check("no_conflict_cli: /" in r3.stdout,
           "bare-letter: no conflict + interactive=False (CLI/photoarchive_config.yaml) -- never prompts, root as-is")
@@ -2504,9 +2505,9 @@ def test_bare_launch_menu_argv_gate_and_flow():
     check("Подробнее о параметрах запуска: PhotoArchive --help" in r2.stdout,
           "bare-menu view: 2026-07-12 -- the CLI-flags hint moved into the welcome banner "
           "(was a separate 'Опытным пользователям: ...' block after every menu choice)")
-    check("github.com/vo1012/PhotoArchive" in r2.stdout,
-          "bare-menu view: 2026-07-15 -- welcome banner links the public repo next to the "
-          "version line")
+    check("vo1012.github.io/PhotoArchive" in r2.stdout,
+          "bare-menu view: 2026-07-20 -- welcome banner links the project site (SITE_URL) "
+          "next to the version line, not the raw GitHub repo")
     check("Опытным пользователям" not in r2.stdout,
           "bare-menu view: 2026-07-12 -- old 'gatekeeping' wording is gone")
     check("Сканирование источника" in r2.stdout,
@@ -2773,7 +2774,7 @@ def test_place_failure_does_not_crash_run():
           "audit#1: run exits 0 despite one file's destination directory being unusable")
     check("Traceback" not in r.stdout and "Traceback" not in r.stderr,
           "audit#1: no raw traceback from the blocked destination")
-    check("ошибка записи" in r.stdout, "audit#1: the blocked file's failure is logged")
+    check("ОШИБКА записи" in r.stdout, "audit#1: the blocked file's failure is logged")
     check(os.path.isfile(os.path.join(tgt, "ByDate", "2024", "2024-06 [PhotoArchive]", "ok.jpg")),
           "audit#1: the later file in the same run is still archived normally")
 
@@ -3095,6 +3096,80 @@ def test_relative_path_rejected():
           "5.9: relative TARGET gets a clear Russian error message")
 
 
+def test_third_party_licenses_wired_up():
+    print("\n=== Phase-2 finding 5: THIRD_PARTY_LICENSES.md wired into build.bat/RELEASING.md ===")
+    licenses_path = os.path.join(ROOT, "THIRD_PARTY_LICENSES.md")
+    check(os.path.isfile(licenses_path), "THIRD_PARTY_LICENSES.md exists at repo root")
+    licenses_text = ""
+    if os.path.isfile(licenses_path):
+        with open(licenses_path, encoding="utf-8") as f:
+            licenses_text = f.read()
+    for name in ("ExifTool", "FFmpeg", "7-Zip", "UnRAR", "bin/licenses"):
+        check(name in licenses_text, f"THIRD_PARTY_LICENSES.md mentions {name}")
+
+    build_bat = os.path.join(ROOT, "build", "build.bat")
+    with open(build_bat, encoding="utf-8") as f:
+        build_text = f.read()
+    check("licenses" in build_text, "build.bat references bin/licenses")
+
+    # 2026-07-15: THIRD_PARTY_LICENSES.md is no longer copied as-is by build.bat -- it goes
+    # through build/md_to_pdf.py's DOCS list like the other user docs, so dist\ only ever
+    # contains THIRD_PARTY_LICENSES.pdf, never a stray .md (see RELEASING.md).
+    md_to_pdf = os.path.join(ROOT, "build", "md_to_pdf.py")
+    with open(md_to_pdf, encoding="utf-8") as f:
+        md_to_pdf_text = f.read()
+    check("THIRD_PARTY_LICENSES.md" in md_to_pdf_text,
+          "build/md_to_pdf.py converts THIRD_PARTY_LICENSES.md into dist\\THIRD_PARTY_LICENSES.pdf")
+    # build.bat still mentions "..\THIRD_PARTY_LICENSES.md" in dev-facing warnings/reminders
+    # (the file at the repo root genuinely has that name) -- what must NOT exist anymore is a
+    # command that copies it into dist\ as-is.
+    check("copy /Y ..\\THIRD_PARTY_LICENSES.md" not in build_text,
+          "build.bat no longer copies THIRD_PARTY_LICENSES.md into dist\\ as-is "
+          "(superseded by the PDF pipeline)")
+
+    releasing = os.path.join(ROOT, "RELEASING.md")
+    with open(releasing, encoding="utf-8") as f:
+        releasing_text = f.read()
+    check("bin/licenses" in releasing_text or "bin\\licenses" in releasing_text,
+          "RELEASING.md checklist mentions bin/licenses")
+
+    readme = os.path.join(ROOT, "README.md")
+    with open(readme, encoding="utf-8") as f:
+        readme_text = f.read()
+    check("THIRD_PARTY_LICENSES.md" in readme_text, "README.md links THIRD_PARTY_LICENSES.md")
+
+
+def test_requirements_txt_pinned_and_wired_up():
+    print("\n=== Phase-2 finding 6: pinned requirements.txt wired into build.bat/README-BUILD.md ===")
+    req_path = os.path.join(ROOT, "requirements.txt")
+    check(os.path.isfile(req_path), "requirements.txt exists at repo root")
+    packages = ("pyinstaller", "pillow", "pillow-heif", "imagehash", "reverse_geocoder", "pyyaml", "tqdm")
+    req_text = ""
+    if os.path.isfile(req_path):
+        with open(req_path, encoding="utf-8") as f:
+            req_text = f.read()
+    req_lines = [ln.strip() for ln in req_text.splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    for pkg in packages:
+        matches = [ln for ln in req_lines if ln.lower().startswith(pkg.lower() + "==")]
+        check(len(matches) == 1, f"requirements.txt lists {pkg} exactly once")
+        if matches:
+            check("==" in matches[0], f"requirements.txt pins {pkg} to an exact version (==)")
+
+    build_bat = os.path.join(ROOT, "build", "build.bat")
+    with open(build_bat, encoding="utf-8") as f:
+        build_text = f.read()
+    check("requirements.txt" in build_text, "build.bat references requirements.txt")
+    check("pip install pyinstaller pillow" not in build_text,
+          "build.bat no longer has the old unpinned inline pip install list")
+
+    readme_build = os.path.join(ROOT, "README-BUILD.md")
+    with open(readme_build, encoding="utf-8") as f:
+        readme_build_text = f.read()
+    check("requirements.txt" in readme_build_text, "README-BUILD.md references requirements.txt")
+    check("pip install pyinstaller pillow" not in readme_build_text,
+          "README-BUILD.md no longer has the old unpinned inline pip install list")
+
+
 # 2026-07-17 (вторая рецензия): плоский список из 68 прямых вызовов раньше означал, что
 # запустить один тест можно было только закомментировав остальные 67 -- при том, что каждый
 # тест поднимает несколько subprocess-ов, полный прогон идёт минуты, а отлаживаешь всегда
@@ -3170,6 +3245,8 @@ ALL_TESTS = [
     test_archive_symlink_rejected,
     test_archive_entry_count_mismatch_rejected,
     test_relative_path_rejected,
+    test_third_party_licenses_wired_up,
+    test_requirements_txt_pinned_and_wired_up,
 ]
 
 

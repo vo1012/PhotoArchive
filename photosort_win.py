@@ -85,26 +85,33 @@ __license__ = "Apache License 2.0"  # см. LICENSE/NOTICE -- ЕДИНСТВЕН
                       # Название уже включает слово "License" -- места, которые его печатают,
                       # не должны добавлять его ещё раз следом.
 
-GITHUB_URL = "https://github.com/vo1012/PhotoArchive"  # 2026-07-15: публичный репо
-    # (пока приватный, откроют позже) -- исходный код + пользовательская документация + exe,
-    # ОТДЕЛЬНЫЙ от репозитория разработки (photo-sort-win), в который не должны попасть
-    # внутренние файлы вроде ROADMAP.md/SESSION-HANDOFF.txt. При смене адреса поменять только
-    # здесь -- print_welcome_banner()/build_arg_parser() ссылаются на эту же константу.
+SITE_URL = "https://vo1012.github.io/PhotoArchive"  # 2026-07-20: сайт проекта (GitHub Pages
+    # того же публичного репо github.com/vo1012/PhotoArchive, корень, Jekyll) -- то, что видит
+    # пользователь программы (--help/--version/интерактивное меню). Сам репозиторий на GitHub
+    # по-прежнему существует и остаётся тем, на что ссылаются README.md и документы, читаемые
+    # НА GitHub (FAQ.md/QUICKSTART.md/PhotoArchive_ot_avtora.md ссылаются на github.com у себя
+    # в исходном .md -- см. build/md_to_pdf.py про то, где именно они переходят на SITE_URL для
+    # оффлайн-аудитории). При смене адреса сайта поменять только здесь -- print_welcome_banner()/
+    # build_arg_parser()/DONATION_TEXT ссылаются на эту же константу.
 
-DONATION_TEXT = (  # тот же текст, дословно, что и P.S. в PhotoArchive_ot_avtora.md/ FAQ.md --
-    # при правке одного менять и все три места. Решение 2026-07-15: полный текст, не короткая
-    # строка, т.к. --help может быть единственным местом, где пользователь вообще видит эту
-    # программу (exe пересылается мессенджерами без README/письма от автора).
-    # 2026-07-17: этот текст (в отличие от PhotoArchive_ot_avtora.md/FAQ.md) НИКОГДА не
-    # получает реальный номер карты, даже в билде "для своих" -- см. build/md_to_pdf.py,
-    # _inject_donation_details(): инъекция реальных реквизитов из локального DONATE.txt
-    # (никогда не коммитится) происходит только в PDF этих двух документов, --help всегда
-    # указывает на GitHub как на источник актуальных способов поддержать разработку.
+DONATION_TEXT = (  # 2026-07-20: указывает на SITE_URL, а не на GitHub -- в отличие от P.S. в
+    # PhotoArchive_ot_avtora.md/FAQ.md (те при чтении НА GitHub сознательно остаются со ссылкой
+    # на github.com, см. SITE_URL выше); текст здесь и там разошёлся дословно, синхронизировать
+    # больше не нужно. Оффлайн-PDF этих двух документов получает ту же формулировку про сайт,
+    # что и здесь -- через build/md_to_pdf.py, _inject_donation_details() (только когда рядом
+    # нет DONATE.txt -- см. ниже). Решение 2026-07-15: полный текст, не короткая строка, т.к.
+    # --help может быть единственным местом, где пользователь вообще видит эту программу (exe
+    # пересылается мессенджерами без README/письма от автора).
+    # 2026-07-17: этот текст НИКОГДА не получает реальный номер карты, даже в билде "для своих"
+    # -- см. build/md_to_pdf.py, _inject_donation_details(): инъекция реальных реквизитов из
+    # локального DONATE.txt (никогда не коммитится) происходит только в PDF
+    # PhotoArchive_ot_avtora.md/FAQ.md, --help всегда указывает на сайт как источник актуальных
+    # способов поддержать разработку.
     "Этот проект не преследует получение коммерческой выгоды -- программа бесплатна и\n"
     "останется такой для всех, вне зависимости от того, воспользуетесь вы этим предложением\n"
     "или нет. Если PhotoArchive окажется полезной и вы захотите поддержать её разработку --\n"
-    "актуальные способы сделать это указаны на странице проекта на GitHub:\n"
-    "github.com/vo1012/PhotoArchive."
+    "актуальные способы сделать это указаны на сайте проекта:\n"
+    f"{SITE_URL}."
 )
 
 
@@ -252,6 +259,132 @@ def log_line(msg, log=print):
         log(msg)
 
 
+class _COORD(ctypes.Structure):
+    _fields_ = [("X", ctypes.c_short), ("Y", ctypes.c_short)]
+
+
+class _SMALL_RECT(ctypes.Structure):
+    _fields_ = [
+        ("Left", ctypes.c_short), ("Top", ctypes.c_short),
+        ("Right", ctypes.c_short), ("Bottom", ctypes.c_short),
+    ]
+
+
+class _CONSOLE_SCREEN_BUFFER_INFO(ctypes.Structure):
+    """CONSOLE_SCREEN_BUFFER_INFO (WinAPI) -- определение самой структуры чистый ctypes, без
+    обращения к windll на этапе импорта, так что модуль по-прежнему безопасно импортировать
+    на Linux (dev/тесты/CI) -- тот же принцип, что и у остального кода в файле (см.
+    _prevent_sleep(): `if os.name != "nt"` гейт перед реальными WinAPI-вызовами, не перед
+    определением)."""
+    _fields_ = [
+        ("dwSize", _COORD),
+        ("dwCursorPosition", _COORD),
+        ("wAttributes", ctypes.c_ushort),
+        ("srWindow", _SMALL_RECT),
+        ("dwMaximumWindowSize", _COORD),
+    ]
+
+
+_STD_OUTPUT_HANDLE = -11
+_FOREGROUND_RED_BRIGHT = 0x0004 | 0x0008
+_BACKGROUND_MASK = 0x00F0
+_kernel32_console_prototypes_set = False
+
+
+def _configure_kernel32_console_prototypes():
+    """GetStdHandle возвращает HANDLE (указательного размера) -- без явного restype=c_void_p
+    ctypes по умолчанию считает его 32-битным c_int и обрежет значение на 64-битном Windows.
+    Настраивается один раз (флаг), только на Windows -- на остальных платформах ctypes.windll
+    не существует вообще, обращаться к нему нельзя даже под гейтом os.name без короткого
+    замыкания (см. вызывающих -- все проверяют os.name первым)."""
+    global _kernel32_console_prototypes_set
+    if _kernel32_console_prototypes_set:
+        return
+    kernel32 = ctypes.windll.kernel32
+    kernel32.GetStdHandle.restype = ctypes.c_void_p
+    kernel32.GetStdHandle.argtypes = [ctypes.c_uint]
+    kernel32.GetConsoleScreenBufferInfo.restype = ctypes.c_int
+    kernel32.GetConsoleScreenBufferInfo.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(_CONSOLE_SCREEN_BUFFER_INFO),
+    ]
+    kernel32.SetConsoleTextAttribute.restype = ctypes.c_int
+    kernel32.SetConsoleTextAttribute.argtypes = [ctypes.c_void_p, ctypes.c_ushort]
+    _kernel32_console_prototypes_set = True
+
+
+def _console_stdout_handle():
+    """WinAPI-хендл STDOUT для прямой работы с цветом консоли (SetConsoleTextAttribute) --
+    None везде, где это не применимо (не Windows, вывод не в реальный терминал) -- тот же
+    гейт, что и isatty() в console_log()/_terminal_wrap_width(), намеренно не красим при
+    перенаправлении в файл/пайп."""
+    if os.name != "nt" or not sys.stdout.isatty():
+        return None
+    _configure_kernel32_console_prototypes()
+    try:
+        handle = ctypes.windll.kernel32.GetStdHandle(_STD_OUTPUT_HANDLE)
+    except Exception:
+        return None
+    if not handle:
+        return None
+    return handle
+
+
+def _get_console_screen_buffer_info(handle):
+    info = _CONSOLE_SCREEN_BUFFER_INFO()
+    try:
+        ok = ctypes.windll.kernel32.GetConsoleScreenBufferInfo(handle, ctypes.byref(info))
+    except Exception:
+        return None
+    return info if ok else None
+
+
+def _get_console_attributes(handle):
+    info = _get_console_screen_buffer_info(handle)
+    return info.wAttributes if info is not None else None
+
+
+def _set_console_attributes(handle, attributes) -> bool:
+    try:
+        return bool(ctypes.windll.kernel32.SetConsoleTextAttribute(handle, attributes))
+    except Exception:
+        return False
+
+
+@contextlib.contextmanager
+def _console_red_text():
+    """Ярко-красный текст для одной строки-ошибки (см. console_log()) -- меняет ТОЛЬКО
+    foreground-нибл текущего атрибута консоли (сохраняя фон как есть, каким бы он ни был),
+    восстанавливает ИСХОДНЫЙ полный атрибут после строки -- иначе подсветка "протекла" бы на
+    все последующие строки лога до конца прогона (REVIEW-HANDOFF.md Раунд 15, п.3).
+
+    2026-07-19: белый фон при голом запуске (_console_bare_launch_colors(), тот же Раунд 15)
+    сделан и откачен в этой же сессии -- живая проверка на реальной машине показала, что
+    видимое поведение слишком зависит от хоста консоли (легаси conhost.exe vs Windows
+    Terminal/ConPTY): мигание чёрным перед выходом (диагностировано и было бы почти исправлено
+    через GetConsoleProcessList -- пропустить restore, если процесс единственный владелец
+    консоли), но статус-строка прогресса местами всё равно отображалась чёрной, хотя
+    WinAPI-хендл при прямой проверке через CONOUT$ читал правильный атрибут (0xF0) -- то есть
+    расхождение было на уровне рендеринга терминала, не в этом коде, и надёжно проверить это
+    для всех хостов консоли, которые встретятся у реальных пользователей, здесь нельзя. Красная
+    подсветка ОШИБКА (эта функция) жалоб не вызвала -- оставлена."""
+    handle = _console_stdout_handle()
+    if handle is None:
+        yield
+        return
+    original = _get_console_attributes(handle)
+    if original is None:
+        yield
+        return
+    colored = (original & _BACKGROUND_MASK) | _FOREGROUND_RED_BRIGHT
+    if not _set_console_attributes(handle, colored):
+        yield
+        return
+    try:
+        yield
+    finally:
+        _set_console_attributes(handle, original)
+
+
 def _terminal_wrap_width(fraction: float = 2 / 3, min_width: int = 40) -> int:
     """2026-07-12, интерфейс: пользователь пожаловался, что длинные строки в терминальном
     окне смотрятся некрасиво -- ограничиваем СВОИ переносы 2/3 реальной ширины терминала,
@@ -290,11 +423,21 @@ def console_log(msg):
     _wrap_console_text()). isatty()-гейт: перенос -- забота о реальном терминальном окне
     пользователя, поэтому включается только когда stdout реально tty, тем же паттерном, что
     уже использует ProgressReporter.is_tty выше -- при перенаправлении в файл/пайп текст
-    остаётся как есть, ничем не отличаясь от поведения до этой правки."""
+    остаётся как есть, ничем не отличаясь от поведения до этой правки.
+
+    2026-07-19 (REVIEW-HANDOFF.md Раунд 15, "цвет консоли"): строки, начинающиеся (после
+    отступа) с "ОШИБКА" -- единый признак ошибки по всей кодовой базе, см. _console_red_text()
+    -- печатаются ярко-красным. Крэш-хендлер и оба места, где раньше было строчное "ошибка ...",
+    приведены к этому же префиксу отдельно (см. _log_unexpected_crash(), :1678, :4247), чтобы
+    реально попасть под это условие, а не только новые строки."""
     text = str(msg)
     if sys.stdout.isatty():
         text = _wrap_console_text(text, _terminal_wrap_width())
-    log_line(text, log=print)
+    if text.lstrip().startswith("ОШИБКА"):
+        with _console_red_text():
+            log_line(text, log=print)
+    else:
+        log_line(text, log=print)
 
 
 class _RussianRateStream:
@@ -672,6 +815,14 @@ DUMP_SEGMENT_NAMES_PROTECTED = frozenset({
     "bydate", "albums", "raw",
     "_unsorted",  # disputed files' top-level home (see Config.dispute) -- same self-eating
                   # protection as bydate/albums/raw above
+    "__photoarchive__",  # 2026-07-20 (пятый заход): предлагаемое по умолчанию имя папки-
+                         # архива верхнего уровня (см. confirm_drive_root_target_interactively()/
+                         # resolve_drive_root_conflict()/prompt_target_submenu()) -- без этой
+                         # защиты сканирование ДИСКА ЦЕЛИКОМ (не самого архива, а всего, что
+                         # выше него) приняло бы "__PhotoArchive__" за имя альбома, и все
+                         # настоящие альбомы внутри (Albums\Свадьба\...) схлопнулись бы в один
+                         # притворный альбом с именем контейнера, тот же принцип, что и с
+                         # bydate/albums/raw/_unsorted выше, только для родительской папки.
 })
 DEFAULT_DUMP_SEGMENT_PREFIXES = ["whatsapp", "telegram"]
 # 2026-07-11, по запросу пользователя: ручной способ пометить конкретную папку-источник как
@@ -915,6 +1066,28 @@ class Config:
                 f"Укажите SOURCE вне дерева TARGET."
             )
         self.workdir = self.workdir or WORKDIR
+        # Review Round 22 (2026-07-20) [БЛОКЕР]: TARGET == WORKDIR (или TARGET внутри WORKDIR)
+        # раньше ничем не защищался -- confirm_drive_root_target_interactively()/
+        # resolve_drive_root_conflict() могли (до переименования папки в 18eb212) молча
+        # подставить TARGET = WORKDIR, а FAQ.md советует при неудаче "удалить TARGET целиком":
+        # если TARGET совпал с WORKDIR, это стирает саму программу+config+логи. Симметрично
+        # уже существующей проверке SOURCE/TARGET выше (по той же normcase(realpath(...))+
+        # startswith схеме).
+        workdir_real = os.path.normcase(os.path.realpath(self.workdir))
+        if target_real == workdir_real:
+            raise ValueError(
+                f"TARGET ({self.target}) совпадает с рабочей папкой программы ({self.workdir}) -- "
+                f"это папка, где лежат сам PhotoArchive.exe, photoarchive_config.yaml, work.db и "
+                f"логи. Использовать её как архив опасно: инструкция «при неудаче удалить TARGET "
+                f"целиком» (см. FAQ.md) стёрла бы саму программу вместе с настройками и логами. "
+                f"Укажите другую папку для TARGET."
+            )
+        if workdir_real.startswith(target_real + os.sep):
+            raise ValueError(
+                f"Рабочая папка программы ({self.workdir}) находится внутри TARGET ({self.target}) -- "
+                f"по той же причине, что и выше: TARGET целиком удалить было бы нельзя, не потеряв "
+                f"саму программу. Укажите TARGET вне папки, где лежит PhotoArchive.exe."
+            )
         self.index_db = os.path.join(self.workdir, "work.db")
         self.albums_root = os.path.join(self.target, "Albums")
         self.bydate_root = os.path.join(self.target, "ByDate")
@@ -1106,14 +1279,29 @@ def image_size_only(path: str):
         return None, None
 
 
+_hamming_format_warned = False
+
+
 def hamming(hash_a: str, hash_b: str) -> int:
+    global _hamming_format_warned
     if hash_a is None or hash_b is None:
         return 999
     try:
         ha = imagehash.hex_to_hash(hash_a)
         hb = imagehash.hex_to_hash(hash_b)
         return ha - hb
-    except Exception:
+    except Exception as e:
+        # REVIEW-HANDOFF.md round 13, ticket 2c: hash_a/hash_b can come from a persistent
+        # sqlite hash cache spanning years of runs -- if the hash format ever changes (e.g.
+        # imagehash upgrade between .exe builds), dedup could silently stop finding
+        # duplicates across the whole archive with zero trace. Warn once per process (not
+        # per call -- a format mismatch fires on every comparison, would otherwise flood the
+        # log) instead of staying fully silent.
+        if not _hamming_format_warned:
+            _hamming_format_warned = True
+            log_line(f"ВНИМАНИЕ: hamming() не смог разобрать формат хеша ({e!r}) -- "
+                     f"near-dup поиск может молча пропускать дубликаты (сообщение выводится "
+                     f"один раз за прогон)")
         return 999
 
 
@@ -1230,7 +1418,7 @@ def parse_exif_date(s):
         return None
 
 
-def exiftool_batch(paths, batch_size=200):
+def exiftool_batch(paths, batch_size=200, log=print):
     """Returns dict: path -> tag dict (raw exiftool JSON entry).
     Paths go through an -@ argfile, not raw argv: exiftool.exe on Windows does its own
     wildcard-expansion of command-line arguments (no shell globbing on Windows, so exiftool
@@ -1273,7 +1461,15 @@ def exiftool_batch(paths, batch_size=200):
                     sf = entry.get("SourceFile")
                     if sf:
                         results[sf] = entry
-        except Exception:
+        except Exception as e:
+            # REVIEW-HANDOFF.md round 13, ticket 2c: a chunk-wide failure here silently
+            # loses EXIF for every file in the chunk (dates fall back to Tier B/C) -- on a
+            # 20-50k file archive that's a large, invisible quality drop if exiftool trips
+            # on one chunk (corrupt argfile, timeout). One line per failed chunk, not per
+            # file, so this can't flood the log on a genuinely bad run.
+            log_line(f"ВНИМАНИЕ: exiftool не смог обработать чанк файлов {i}-{i + len(chunk)} "
+                     f"({e!r}) -- EXIF-даты для этих {len(chunk)} файлов будут заменены менее "
+                     f"точными", log=log)
             continue
         finally:
             if argfile_path:
@@ -1652,7 +1848,7 @@ def extract_archive(path: str, fmt: str, dest_dir: str, log=print) -> bool:
                         log(f"  пропущен файл в архиве (не удалось распаковать) {member.name}: {e}")
             return True
     except Exception as e:
-        log(f"  ошибка распаковки {path}: {e}")
+        log(f"  ОШИБКА распаковки {path}: {e}")
         return False
     return False
 
@@ -1810,6 +2006,10 @@ class SourceWalker:
         self._excluded_dir_hits = {}
         self.system_dir_skips = []  # list of (dirpath,)
         self._target_real = os.path.realpath(cfg.target)
+        # ROADMAP.md, analyze как "2 части": сырые пути (realpath) папок, чей родитель
+        # оказался найденным архивом (__служебные_файлы встречена где-то в дереве SOURCE) --
+        # см. классификацию/исключение вложенности в classify_found_archives().
+        self.found_archive_roots = []
 
     def _record_excluded_dir(self, name: str, reason: str):
         key = (reason, name)
@@ -1878,6 +2078,13 @@ class SourceWalker:
                 base_lower = base.lower()
                 if base_lower in HARD_EXCLUDE_DIRS:
                     self._record_excluded_dir(base_lower, "защищено программой, не настраивается")
+                    if base_lower == "__служебные_файлы":
+                        # ROADMAP.md, analyze как "2 части": побочный продукт того же обхода,
+                        # не отдельный проход -- любая папка __служебные_файлы, встреченная
+                        # где угодно в дереве SOURCE (кроме самого TARGET, см. self-eating
+                        # protection выше -- TARGET проверяется первым и никогда не доходит до
+                        # этой ветки), помечает своего родителя как найденный архив.
+                        self.found_archive_roots.append(os.path.realpath(os.path.dirname(cur_dirpath)))
                     continue
                 if base_lower in self.cfg.default_exclude_dirs_lower:
                     self._record_excluded_dir(base_lower, "по умолчанию -- настраивается через default_exclude_dirs")
@@ -1906,6 +2113,19 @@ class SourceWalker:
             except OSError as e:
                 self.log(f"  не удалось прочитать директорию {cur_dirpath}: {e}")
                 continue
+
+            # REVIEW-HANDOFF.md, Раунд 24 (2026-07-21): найденные архивы (found_archive_roots)
+            # раньше опознавались ТОЛЬКО по буквальному имени __служебные_файлы (см. выше) --
+            # в отличие от _target_has_existing_archive()/warn_if_target_nested_in_archive(),
+            # у которых уже есть fallback на Albums+ByDate, если служебную папку переименовали
+            # или удалили. entries уже прочитан строкой выше ради обычного разбора файлов/
+            # подпапок -- доп. проверка не стоит нового os.listdir/I-O. Дубликат с
+            # marker-детекцией выше (тот же корень найден и по __служебные_файлы, и по
+            # Albums+ByDate одновременно) безвреден -- classify_found_archives() дедуплицирует
+            # raw_roots перед классификацией.
+            entries_lower = {e.lower() for e in entries}
+            if "albums" in entries_lower and "bydate" in entries_lower:
+                self.found_archive_roots.append(os.path.realpath(cur_dirpath))
 
             if not cur_is_root:
                 if SKIP_MARKER in entries:
@@ -2244,7 +2464,7 @@ def analyze_batch(items: list, retries: int = 3, retry_delay: float = 5.0,
     точный дубль уходит в skipped_present до того, как decide() вообще читает phash/aspect.
     """
     image_video_paths = [it.read_path for it in items if it.ftype in ("image", "raw", "video")]
-    tags_by_path = exiftool_batch(image_video_paths) if image_video_paths else {}
+    tags_by_path = exiftool_batch(image_video_paths, log=log) if image_video_paths else {}
 
     records = []
     for it in items:
@@ -3790,6 +4010,13 @@ class AnalyzeStats:
     already_in_archive_count: int = 0
     target_free_bytes: int = 0
     fits_on_target: bool = True
+    # ROADMAP.md, analyze как "2 части", часть 2 ("на этом диске найден архив PhotoArchive"):
+    # top-level -- найденные архивы, НЕ вложенные в другой найденный архив (см.
+    # classify_found_archives()); nested -- родитель (top-level путь) -> список путей,
+    # найденных ВНУТРИ его Albums/ByDate/RAW/_Unsorted -- улика ручного вмешательства,
+    # эскалирует оговорку соответствующего блока части 2 (см. report.py).
+    found_archive_top_level: list = field(default_factory=list)
+    found_archive_nested: dict = field(default_factory=dict)
 
 
 def run_analyze(cfg: Config, mode: str, log=print) -> AnalyzeStats:
@@ -3952,6 +4179,8 @@ def run_analyze(cfg: Config, mode: str, log=print) -> AnalyzeStats:
             stats.n_archives_nested += 1
 
     stats.n_albums_detected = len(album_names)
+    stats.found_archive_top_level, stats.found_archive_nested = classify_found_archives(
+        walker.found_archive_roots, cfg, mode)
 
     if mode == "analyze-full":
         stats.already_in_archive_count = stats.n_exact_dupes
@@ -4000,13 +4229,28 @@ def print_analyze_report(stats: AnalyzeStats, log=print):
 
 
 def write_analyze_report_csv(path: str, stats: AnalyzeStats):
-    """Машинный аналог print_analyze_report(): metric,value. Пишется в WORKDIR (НЕ в
-    TARGET -- ни один analyze-режим не пишет в TARGET), перезаписывается на каждый прогон
-    (снимок текущего анализа, не append-only лог, в отличие от __служебные_файлы\\logs\\*.csv реальной сборки)."""
+    """Машинный аналог print_analyze_report(): metric,value -- ТОЛЬКО скалярные поля
+    AnalyzeStats (int/float/bool/str/None), тот же набор по духу, что печатает
+    print_analyze_report() в консоль. Пишется в WORKDIR (НЕ в TARGET -- ни один
+    analyze-режим не пишет в TARGET), перезаписывается на каждый прогон (снимок текущего
+    анализа, не append-only лог, в отличие от __служебные_файлы\\logs\\*.csv реальной сборки).
+
+    Аудит 2026-07-21 (SESSION-HANDOFF.txt, "потенциально лишние режимы/CLI-флаги/конфиги"):
+    до этой правки функция дампила буквально ВСЕ поля через vars(stats).items(), включая
+    структурные (Counter/list/dict -- dump_items_by_folder, dates_by_year, near_dup_edges,
+    tier_counts, found_archive_top_level/nested и т.п.), добавленные в AnalyzeStats уже
+    ПОСЛЕ появления этой функции (2026-07-08), ради report.html (появился 2026-07-18,
+    PROMPT_archive_report.md) -- в CSV они попадали как нечитаемые Python-repr строки вида
+    "Counter({2024: 12})", не парсящиеся ничем, кроме eval(). report.html показывает те же
+    данные нормально (графики/таблицы/чек-лист), так что здесь их просто пропускаем --
+    возвращаемся к изначальному контракту "metric,value" из докстринга, а не расширяем его
+    неявно каждым новым полем AnalyzeStats."""
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["metric", "value"])
         for field_name, value in vars(stats).items():
+            if isinstance(value, (Counter, list, dict)):
+                continue
             w.writerow([field_name, value])
 
 # ============================================================================
@@ -4140,6 +4384,49 @@ def _target_has_existing_archive(target: str) -> bool:
     return "__служебные_файлы" in entries or ("albums" in entries and "bydate" in entries)
 
 
+_FOUND_ARCHIVE_ORGANIZED_SEGMENTS = {"albums", "bydate", "raw", "_unsorted"}
+
+
+def classify_found_archives(raw_roots: list, cfg: Config, mode: str) -> tuple:
+    """ROADMAP.md, analyze как "2 части": raw_roots -- сырые пути (realpath), собранные
+    SourceWalker.found_archive_roots за время обхода SOURCE (каждый -- родитель встреченной
+    где-то в дереве папки __служебные_файлы). mode=="analyze-full" дополнительно добавляет
+    сам TARGET, если у него уже есть архив (_target_has_existing_archive) -- self-eating
+    protection SourceWalker'а никогда не даёт обходу найти __служебные_файлы TARGET изнутри
+    самого TARGET (см. SourceWalker._walk_dir), поэтому для TARGET нужна отдельная проверка,
+    не walk.
+
+    Возвращает (top_level: list[str], nested: dict[str, list[str]]):
+    - top_level -- найденные архивы, НЕ вложенные в дерево другого найденного архива (вложенный
+      архив НЕ считается отдельным найденным и не суммируется, см. ROADMAP.md).
+    - nested -- top-level путь -> список путей, найденных ВНУТРИ его организованной структуры
+      (Albums/ByDate/RAW/_Unsorted) -- прямая улика ручного вмешательства в обход программы,
+      эскалирует оговорку части 2 для этого архива (см. report.py). Вложенные архивы,
+      найденные ГДЕ-ТО ЕЩЁ внутри родителя (не в его Albums/ByDate/RAW/_Unsorted), тоже
+      исключаются из top_level, но не эскалируют предупреждение -- редкий случай, никакой
+      организованной структуры программа сама туда не кладёт."""
+    roots = list(dict.fromkeys(raw_roots))
+    if mode == "analyze-full" and _target_has_existing_archive(cfg.target):
+        target_real = os.path.realpath(cfg.target)
+        if target_real not in roots:
+            roots.append(target_real)
+
+    roots_nc = {r: os.path.normcase(r) for r in roots}
+    top_level = []
+    nested = {}
+    for r in roots:
+        r_nc = roots_nc[r]
+        parents = [p for p in roots if p != r and r_nc.startswith(roots_nc[p] + os.sep)]
+        if not parents:
+            top_level.append(r)
+            continue
+        parent = max(parents, key=lambda p: len(roots_nc[p]))
+        first_segment = os.path.relpath(r, parent).split(os.sep)[0].lower()
+        if first_segment in _FOUND_ARCHIVE_ORGANIZED_SEGMENTS:
+            nested.setdefault(parent, []).append(r)
+    return top_level, nested
+
+
 def report_environment(cfg: Config, log=print, stats: dict = None):
     log(f"SOURCE: {cfg.source}")
     log(f"TARGET: {cfg.target}")
@@ -4221,7 +4508,7 @@ def _log_write_failure(item, dest_hint, e, cfg, run_logs, stats, log):
     and continuing. Shared by all three call sites so the "log it, count it, keep going"
     behavior can't drift out of sync again. dest_hint is dest_dir, not dest_path -- dest_path
     may not exist yet if resolve_dest_path() itself is what failed."""
-    log(f"  ошибка записи {item.read_path} -> {dest_hint}: {e}")
+    log(f"  ОШИБКА записи {item.read_path} -> {dest_hint}: {e}")
     if cfg.debug:
         run_logs.debug_action("traceback: begin")
         for line in traceback.format_exc().splitlines():
@@ -4292,6 +4579,19 @@ def _process_record(rec, st: _RunState, log=print):
         # этого прогона. Near-dup (p.5.7) больше не сюда -- такие файлы теперь дописываются,
         # место для них не экономится.
         stats["bytes_saved_by_dedup"] += item.size
+        # 2026-07-20, по запросу пользователя ("отчёт должен быть такой, чтобы не нужно было
+        # заглядывать в логи"): source_album_seen -- сколько файлов из КАЖДОЙ исходной
+        # "альбомной" папки вообще встретилось за этот прогон (независимо от исхода), не
+        # только сколько реально дописалось (source_album_appended, ниже по функции) -- вместе
+        # они дают report.py посчитать альбомы, где 100% содержимого оказалось уже в архиве
+        # (см. _render_this_run()). Дешёвая чистая агрегация той же формы, что и
+        # album_merge_events -- find_album() не трогает диск, только парсит уже готовый
+        # rel_path.
+        seen_album, _, _ = find_album(item.rel_path, item.archive_boundary_idx,
+                                       dump_names=cfg.dump_segment_names_lower,
+                                       dump_prefixes=cfg.dump_segment_prefixes_tuple)
+        if seen_album:
+            stats["source_album_seen"][seen_album] = stats["source_album_seen"].get(seen_album, 0) + 1
         # 2026-07-11, по запросу пользователя: если найденный дубль физически уже лежит в
         # АЛЬБОМЕ (не в ByDate/RAW), а путь ЭТОГО файла-дубля в источнике указывает на ДРУГОЕ
         # физическое место -- это ровно тот случай "альбом пополняется из другого места",
@@ -4370,6 +4670,11 @@ def _process_record(rec, st: _RunState, log=print):
                 run_logs.debug_action(f"album_decision: segment='{deepest}' tag={tag_flag} -> dump")
     final_decision = decision.decision
     if album:
+        # "Видели" -- независимо от того, допишется файл или окажется дублем чуть ниже
+        # (is_dup) -- source_album_appended (там же, ниже) считает только реально дописанное.
+        # См. комментарий у первого использования source_album_seen (skipped_present, выше)
+        # -- вместе они дают report.py посчитать альбомы, где всё оказалось уже в архиве.
+        stats["source_album_seen"][album] = stats["source_album_seen"].get(album, 0) + 1
         album_dir = build_album_dest_dir(cfg.albums_root, album, subpath)
         if album not in st.merged_albums_seen:
             st.merged_albums_seen.add(album)
@@ -4441,6 +4746,8 @@ def _process_record(rec, st: _RunState, log=print):
     stats["bytes_appended"] += item.size
     # А.4: разбивка "уникальных" по типу для итоговой сводки (фото vs видео)
     stats["appended_images" if pool_ftype == "image" else "appended_videos"] += 1
+    if album:
+        stats["source_album_appended"][album] = stats["source_album_appended"].get(album, 0) + 1
     # Security audit finding #5: p.5.7 made near-dup always append (never skip) -- track its
     # bytes separately so unbounded growth from a hostile/corrupted burst-shot SOURCE is
     # visible in the summary instead of hiding inside the aggregate archive size.
@@ -4538,6 +4845,12 @@ def _run_impl(cfg: Config, log=print, shared_pool=None):
         # p.5.3а: счётчики предупреждений по типам, для обогащённого summary.txt
         "warn_nested_target": 0, "warn_cross_volume_tmp_extract": 0,
         "warn_path_truncated": 0, "warn_tier_c_long_path": 0,
+        # 2026-07-20: сколько файлов встретилось / реально дописалось по каждому исходному
+        # "альбому" (find_album() по item.rel_path) за этот прогон -- см. комментарии у
+        # обоих мест инкремента (_process_record) и report._render_this_run() -- вместе они
+        # дают отчёту показать альбомы, где ВСЁ оказалось уже в архиве (0 дописано из N
+        # увиденных), без необходимости лезть в logs\.
+        "source_album_seen": {}, "source_album_appended": {},
     }
 
     log("=== Фаза 0: окружение ===")
@@ -4735,6 +5048,15 @@ def _run_impl(cfg: Config, log=print, shared_pool=None):
             summary_lines.append(f"  {k}: {v}\n")
     if unreadable_count:
         summary_lines.append(f"{unreadable_count} файлов не прочитано — см. unreadable.csv\n")
+    # Тем же принципом, что build_final_summary() ниже (А.4: чистая агрегация уже посчитанных
+    # чисел, без новой бизнес-логики) -- стаскиваем в stats то, что иначе доступно только как
+    # параметры ЭТОГО вызова (unreadable_count/walker) и терялось бы при возврате из функции.
+    # PROMPT_archive_report.md, раздел "Этот прогон" (2026-07-20): report.html получает
+    # просуммированный по всем SOURCE stats (через RunResult.stats/_sum_stats()) -- без этого
+    # сохранения "нечитаемых"/"распакованных архивов" нечем было бы показать в отчёте отдельно
+    # от кумулятивной истории архива.
+    stats["unreadable_count"] = unreadable_count
+    stats["archives_extracted"] = sum(1 for _, status, _ in walker.archive_logs if status == "archive_extracted")
     try:
         # TARGET can vanish mid-run (disk unplugged) -- confirmed via real-hardware test
         # 2026-07-18: this used to crash the whole run right at the finish line, after every
@@ -4771,7 +5093,7 @@ CONFIG_YAML_PATH = os.path.join(WORKDIR, "photoarchive_config.yaml")
 # репозитория и не может просто скопировать photoarchive_config.yaml.example на диск, см.
 # load_yaml_config() ниже.
 DEFAULT_CONFIG_YAML_TEMPLATE = """\
-# photo-sort-win: необязательный файл расширенных настроек.
+# PhotoArchive: необязательный файл расширенных настроек.
 # Скопируйте в photoarchive_config.yaml (в ту же папку, где лежит PhotoArchive.exe / photosort_win.py) и
 # раскомментируйте/поправьте нужное -- если файла нет, используются значения по умолчанию
 # (те же, что показаны здесь).
@@ -5136,9 +5458,9 @@ def _is_bare_drive_root(target: str) -> bool:
 
 def confirm_drive_root_target_interactively(target: str, input_fn=input, log=print) -> str:
     """Если TARGET -- голый корень диска (см. _is_bare_drive_root), спрашивает пользователя,
-    добавить ли к пути папку PhotoArchive -- иначе весь __служебные_файлы\\/Albums\\/ByDate\\/RAW лёг
+    добавить ли к пути папку __PhotoArchive__ -- иначе весь __служебные_файлы\\/Albums\\/ByDate\\/RAW лёг
     бы прямо в корень тома, что не всегда красиво. Один и тот же бинарный вопрос ("добавить имя
-    папки к диску или нет"), но формулировка зависит от того, существует ли PhotoArchive уже:
+    папки к диску или нет"), но формулировка зависит от того, существует ли __PhotoArchive__ уже:
     при повторном прогоне на тот же диск (дозапись в уже существующий архив) вопрос "создать
     папку?" был бы вводящим в заблуждение -- она уже есть, предлагаем её ИСПОЛЬЗОВАТЬ, а не
     создать заново. В отличие от confirm_target_interactively(), отказ НЕ отменяет прогон --
@@ -5148,18 +5470,26 @@ def confirm_drive_root_target_interactively(target: str, input_fn=input, log=pri
     archive (analyze-* ничего не пишет в TARGET) -- явные --target из CLI/photoarchive_config.yaml никогда
     не показывают этот вопрос и пишут в корень как есть (согласовано с пользователем
     2026-07-10, по аналогии с confirm_target_interactively -- явный ввод для скриптов/
-    автоматизации не должен неожиданно перенаправляться)."""
+    автоматизации не должен неожиданно перенаправляться).
+
+    Имя папки -- __PhotoArchive__, не голое "PhotoArchive" (решение пользователя 2026-07-20,
+    пятый заход): подавляющее большинство пользователей и без подсказки программы заводят
+    папку "PhotoArchive" просто чтобы положить туда .exe -- на портативной установке (.exe и
+    архив на одном диске) это раньше означало, что предлагаемое имя архива совпадало с папкой
+    самой программы. Двойное подчёркивание продолжает уже принятый в проекте визуальный язык
+    "это не пользовательская папка" (__служебные_файлы) -- узнаваемо, но не то, что пользователь
+    наберёт интуитивно."""
     if not _is_bare_drive_root(target):
         return target
-    photoarchive_dir = os.path.join(target, "PhotoArchive")
+    photoarchive_dir = os.path.join(target, "__PhotoArchive__")
     if os.path.isdir(winlong(photoarchive_dir)):
         prompt = (
-            f"В корне диска ({target}) уже есть папка PhotoArchive — использовать её для "
+            f"В корне диска ({target}) уже есть папка __PhotoArchive__ — использовать её для "
             f"архива? Если нет — архив будет собран прямо в корне диска. (да/нет): "
         )
     else:
         prompt = (
-            f"TARGET указан как корень диска ({target}) — создать в нём папку PhotoArchive и "
+            f"TARGET указан как корень диска ({target}) — создать в нём папку __PhotoArchive__ и "
             f"архивировать туда? Если нет — архив будет собран прямо в корне диска. (да/нет): "
         )
     answer = input_fn(prompt).strip().lower()
@@ -5180,14 +5510,14 @@ def resolve_drive_root_conflict(sources: list, target: str, interactive: bool,
        Config.__post_init__ всё равно отклонил бы это с ошибкой "SOURCE и TARGET совпадают").
        Единственное разумное разрешение здесь одно, а не выбор из вариантов -- поэтому НИЧЕГО
        не спрашиваем (даже в интерактиве, где обычно спрашивают) и просто подставляем
-       {TARGET}\\PhotoArchive с информационной строкой в лог. Работает ОДИНАКОВО для
+       {TARGET}\\__PhotoArchive__ с информационной строкой в лог. Работает ОДИНАКОВО для
        CLI/photoarchive_config.yaml и интерактивного ввода -- иначе `--source C:\\ --target C:\\` в
        скрипте/автоматизации просто упал бы с ошибкой конфигурации, хотя намерение
        однозначно читается из самого ввода. SOURCE=all считается тем же случаем, если TARGET
        -- голый корень диска: expand_sources() больше не исключает диск TARGET (см. его
        докстринг), так что "all" гарантированно развернётся в т.ч. и в сам этот корень.
     2. TARGET -- голый корень диска, но НЕ совпадает ни с одним source -- настоящий выбор
-       (создать PhotoArchive\\ или писать прямо в корень), см.
+       (создать __PhotoArchive__\\ или писать прямо в корень), см.
        confirm_drive_root_target_interactively() -- но ТОЛЬКО в интерактиве, явные
        --target из CLI/photoarchive_config.yaml пишут в корень как есть без вопросов (как и раньше).
 
@@ -5201,7 +5531,7 @@ def resolve_drive_root_conflict(sources: list, target: str, interactive: bool,
         for s in sources
     )
     if conflicts:
-        redirected = os.path.join(target, "PhotoArchive")
+        redirected = os.path.join(target, "__PhotoArchive__")
         log(f"TARGET указан так же, как и один из источников ({target}) -- архив будет "
             f"собран в {redirected}, а не в самом корне диска (иначе прогон читал бы "
             f"собственную же запись как источник).")
@@ -5300,7 +5630,8 @@ def _open_report_in_browser(out_path: str) -> None:
 
 
 def _finalize_target_report(target: str, level: str, any_succeeded: bool, total_processed: int,
-                             open_browser: bool, log=print) -> None:
+                             open_browser: bool, log=print, run_stats: dict = None,
+                             run_start: str = None) -> str:
     """PROMPT_archive_report.md, разделы 1.1/1.1а/1.2: report.html после archive-прогона
     (level="target", файл персистентно в TARGET\\__служебные_файлы\\) или CLI --dry-run
     (level="workdir", файл эфемерно в WORKDIR) -- ОБА читают одни и те же CSV-логи TARGET
@@ -5312,9 +5643,28 @@ def _finalize_target_report(target: str, level: str, any_succeeded: bool, total_
 
     any_succeeded=False -- TargetLocked/ошибка конфига для ВСЕГО вызова (одинаковы для всех
     source в одном вызове, общий TARGET/конфиг) -- ничего не пишем, не удаляем (раздел 1.1а,
-    "если лок вообще не был захвачен")."""
+    "если лок вообще не был захвачен").
+
+    run_stats -- сумма RunResult.stats по всем SOURCE этого вызова -- секция "Пополнение
+    архива"/"Пробный прогон" в отчёте (report._render_this_run()). Передаётся ОБОИМ уровням
+    (2026-07-20, третий заход) -- level=="workdir" (CLI --dry-run) теперь тоже показывает эту
+    секцию (текст меняется на гипотетический -- см. _render_this_run()), просто без "Ваш
+    архив"/диаграмм следом (report._generate_from_model() решает по level).
+
+    run_start -- момент начала ЭТОГО вызова, до цикла по source -- делит Лист 3 на "новое в
+    этом пополнении"/"накопилось раньше" (report._split_rows_by_time()). Тоже передаётся
+    обоим уровням: для level=="workdir" report.py использует ТОЛЬКО "новое" (CLI --dry-run
+    пишет реальные CSV TARGET без реального копирования файла -- "раньше" может быть
+    засорено фантомными записями прошлых --dry-run, см. report._generate_from_model()).
+
+    2026-07-20, просьба пользователя: level=="target" больше НЕ открывает браузер здесь молча
+    -- возвращает путь к файлу (или None, если открывать не нужно/нечего), вызывающий код
+    передаёт его в _pause_before_exit(), которая открывает браузер ПОСЛЕ явного Enter, тем же
+    действием что и обычный выход. level=="workdir" (--dry-run) оставлен как был (открывается
+    сразу) -- Enter-гейтинг для WORKDIR-уровня по-прежнему не спроектирован (см. ROADMAP.md),
+    не трогать сейчас заодно с этим -- изменилось только СОДЕРЖАНИЕ отчёта, не момент показа."""
     if not any_succeeded:
-        return
+        return None
     photosort_dir = os.path.join(target, "__служебные_файлы")  # см. Config.photosort_dir
     out_path = (os.path.join(photosort_dir, "report.html") if level == "target"
                 else os.path.join(WORKDIR, "report.html"))
@@ -5323,10 +5673,13 @@ def _finalize_target_report(target: str, level: str, any_succeeded: bool, total_
             "Источник оказался недоступен или пуст — ни один файл не обработан.", out_path)
     else:
         data = report.parse_target_logs(os.path.join(photosort_dir, "logs"))
-        report.generate_report(data, out_path, level=level)
+        report.generate_report(data, out_path, level=level, run_stats=run_stats, run_start=run_start)
     log(f"Отчёт: {out_path}")
-    if open_browser:
-        _open_report_in_browser(out_path)
+    if level == "workdir":
+        if open_browser:
+            _open_report_in_browser(out_path)
+        return None
+    return out_path if open_browser else None
 
 
 def _finalize_analyze_report(stats, open_browser: bool, log=print) -> None:
@@ -5341,7 +5694,9 @@ def _finalize_analyze_report(stats, open_browser: bool, log=print) -> None:
         report.generate_placeholder_report(
             "Источник оказался недоступен или пуст — ни один файл не обработан.", out_path)
     else:
-        report.generate_report_from_analyze_stats(stats, out_path, level="analyze")
+        found_archives = (stats.found_archive_top_level, stats.found_archive_nested)
+        report.generate_report_from_analyze_stats(stats, out_path, level="analyze",
+                                                    found_archives=found_archives)
     log(f"Отчёт: {out_path}")
     if open_browser:
         _open_report_in_browser(out_path)
@@ -5388,7 +5743,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     analyze-режима (А.2, см. RULES.md) -- НЕ флаг DRY_RUN, отдельные подкоманды."""
     parser = argparse.ArgumentParser(
         description="PhotoArchive -- сборщик семейного фото- и видеоархива (см. README)",
-        epilog=f"Репозиторий проекта: {GITHUB_URL}\n\n{DONATION_TEXT}",
+        epilog=f"Сайт проекта: {SITE_URL}\n\n{DONATION_TEXT}",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", "-V", action="version",
                          version=f"PhotoArchive {__version__} -- Сборщик семейного фото- и "
@@ -5604,9 +5959,12 @@ def prompt_source_submenu(input_fn=input, log=print, allow_back: bool = False):
 
 def prompt_target_submenu(sources: list, input_fn=input, log=print, allow_back: bool = False):
     """ТЗ-меню 2026-07-10, раздел 3: выбор архива -- ТОЛЬКО для [2]/[3]. Диск-пункты всегда
-    предлагают `буква:\\PhotoArchive` целиком (снимает старый вопрос "создавать ли папку в
+    предлагают `буква:\\__PhotoArchive__` целиком (снимает старый вопрос "создавать ли папку в
     корне диска" -- confirm_drive_root_target_interactively() в этом пути больше не
     вызывается для диск-пунктов, только для «своей папки», если введён голый корень).
+    Имя папки -- __PhotoArchive__, не голое "PhotoArchive" (2026-07-20, пятый заход) -- см.
+    confirm_drive_root_target_interactively() за обоснованием (коллизия с папкой, которую
+    пользователь и так заводит для .exe).
     allow_back=True -- см. prompt_source_submenu()."""
     drives = enumerate_menu_drives()
     log("")
@@ -5618,7 +5976,7 @@ def prompt_target_submenu(sources: list, input_fn=input, log=print, allow_back: 
         for s in sources if s.strip().lower() != "all"
     }
     for i, d in enumerate(drives, 1):
-        candidate = os.path.join(d, "PhotoArchive")
+        candidate = os.path.join(d, "__PhotoArchive__")
         if os.path.isdir(winlong(candidate)) and _target_has_existing_archive(candidate):
             status = "уже есть — допишу новые фото"
         elif os.path.isdir(winlong(candidate)):
@@ -5644,7 +6002,7 @@ def prompt_target_submenu(sources: list, input_fn=input, log=print, allow_back: 
     if choice is _MENU_BACK:
         return _MENU_BACK
     if choice <= len(drives):
-        return os.path.join(drives[choice - 1], "PhotoArchive")
+        return os.path.join(drives[choice - 1], "__PhotoArchive__")
     path = input_fn("  Путь к папке (можно перетащить папку сюда мышкой): ").strip()
     return _strip_surrounding_quotes(path)
 
@@ -5662,6 +6020,13 @@ def _sum_stats(dicts: list) -> dict:
                 # объединять списки со всех источников, а не молча терять их (числовая ветка
                 # выше их просто отбросила бы).
                 total.setdefault(k, []).extend(v)
+            elif isinstance(v, dict):
+                # 2026-07-20: source_album_seen/source_album_appended -- {альбом: счётчик} по
+                # каждому SOURCE этого вызова -- тот же принцип, что список выше, только
+                # ключи нужно сложить поэлементно, не просто сконкатенировать.
+                merged = total.setdefault(k, {})
+                for album, n in v.items():
+                    merged[album] = merged.get(album, 0) + n
     return total
 
 
@@ -5748,16 +6113,26 @@ def _confirm_build_summary(sources: list, target: str, input_fn=input, log=print
     return True
 
 
-def _pause_before_exit(interactive_mode: bool, input_fn=input):
+def _pause_before_exit(interactive_mode: bool, input_fn=input, report_path: str = None):
     """ТЗ-меню 2026-07-10, раздел 0: пауза в конце ЛЮБОГО интерактивного сценария --
     критично для запуска мышкой (иначе окно моргнёт и пропадёт). НЕ ставится для полного
-    CLI (раздел 9а) -- консоль никуда не денется, а пауза повесит любой вызывающий скрипт."""
+    CLI (раздел 9а) -- консоль никуда не денется, а пауза повесит любой вызывающий скрипт.
+
+    report_path (2026-07-20, просьба пользователя): раньше report.html открывался в браузере
+    молча, сразу по завершении обработки, до того как пользователь успевал прочитать консоль
+    -- теперь тот же Enter, что и обычный выход, дополнительно открывает браузер, явно об
+    этом предупредив в самой подсказке, а не тихо. None -- отчёт не создавался/открывать не
+    нужно, подсказка та же, что была всегда."""
     if not interactive_mode:
         return
+    prompt = ("\nНажмите Enter, чтобы открыть отчёт в браузере и закрыть это окно: "
+              if report_path else "\nНажмите Enter для выхода: ")
     try:
-        input_fn("\nНажмите Enter для выхода: ")
+        input_fn(prompt)
     except EOFError:
         pass
+    if report_path:
+        _open_report_in_browser(report_path)
 
 
 def print_welcome_banner(log=print):
@@ -5773,7 +6148,7 @@ def print_welcome_banner(log=print):
     log("=" * 62)
     log("")
     log(f"   PhotoArchive версия {__version__}")
-    log(f"   Репозиторий: {GITHUB_URL}")
+    log(f"   Сайт: {SITE_URL}")
     log("   Бережная сборка семейного фотоархива")
     log("")
     log("   - Ваши оригиналы не изменяются и не удаляются")
@@ -5864,7 +6239,10 @@ def _bare_launch_run_dryrun(sources: list, target: str, input_fn=input, log=prin
             report.generate_placeholder_report(
                 "Источник оказался недоступен или пуст — ни один файл не обработан.", out_path)
         else:
-            report.generate_report(merged_rows, out_path, level="workdir")
+            # run_start не передаётся -- merged_rows и так только про этот прогон
+            # (CollectingRunLogs, suppress_logs=True, никакой истории TARGET не подмешано),
+            # делить по времени нечего (2026-07-20, третий заход).
+            report.generate_report(merged_rows, out_path, level="workdir", run_stats=merged)
         log(f"Отчёт: {out_path}")
         _open_report_in_browser(out_path)
     return target
@@ -5872,14 +6250,20 @@ def _bare_launch_run_dryrun(sources: list, target: str, input_fn=input, log=prin
 
 def _bare_launch_run_build(sources: list, target: str, input_fn=input, log=print):
     """Шаг [3] меню -- раздел 6 ТЗ. Единственное подтверждение (_confirm_build_summary,
-    развилка 4 раздела 11) перед реальной записью. Возвращает (возможно изменённый) target,
-    или None, если пользователь отказался (или сборка вообще не состоялась -- см.
-    2026-07-12 ниже) -- вызывающий код (run_bare_launch()) в обоих случаях трактует None как
-    «вернуться в главное меню», не как ошибку самого меню."""
+    развилка 4 раздела 11) перед реальной записью. Возвращает (возможно изменённый target,
+    report_path), или None, если пользователь отказался (или сборка вообще не состоялась --
+    см. 2026-07-12 ниже) -- вызывающий код (run_bare_launch()) в обоих случаях трактует None
+    как «вернуться в главное меню», не как ошибку самого меню. report_path -- см.
+    _finalize_target_report()/_pause_before_exit() (2026-07-20): браузер открывается не
+    здесь, а после явного Enter в самом конце."""
     target = resolve_drive_root_conflict(sources, target, interactive=True, input_fn=input_fn, log=log)
     if not _confirm_build_summary(sources, target, input_fn=input_fn, log=log):
         return None
     expanded = expand_sources(sources, target)
+    # 2026-07-20: момент ДО начала обработки -- report._split_rows_by_time() делит Лист 3
+    # отчёта на "новое в этом пополнении" (timestamp >= run_start) и "накопилось раньше" по
+    # этой границе. Тот же формат, что RunLogs._ts() пишет в каждую строку CSV-лога.
+    run_start = time.strftime("%Y-%m-%d %H:%M:%S")
     # 2026-07-12, живой репорт пользователя (запустил вторую копию программы в другом окне,
     # пока первая уже собирала архив в тот же TARGET): run_for_source() возвращает
     # RunResult(failed=True) и печатает "ОШИБКА: ..." при TargetLocked (LOCK-файл уже занят
@@ -5888,6 +6272,9 @@ def _bare_launch_run_build(sources: list, target: str, input_fn=input, log=print
     # any_succeeded отслеживает это.
     any_succeeded = False
     total_processed = 0
+    results = []  # RunResult.stats по каждому успешному SOURCE -- для секции "Этот прогон"
+                  # (report._render_this_run()), тот же принцип суммирования, что и
+                  # _bare_launch_run_dryrun() уже делает для консольной сводки [2].
     shared_pool = None  # раунд 5 ревью, вариант A: не пересканировать TARGET на каждый SOURCE
                         # этого batch'а -- см. _run_impl/run_for_source
     with _prevent_sleep():
@@ -5900,12 +6287,14 @@ def _bare_launch_run_build(sources: list, target: str, input_fn=input, log=print
                 any_succeeded = True
                 total_processed += result.processed_count
                 shared_pool = result.pool
+                results.append(result.stats)
     if not any_succeeded:
         log("")
         log("  Сборка не выполнена — см. сообщение об ошибке выше.")
         return None
-    _finalize_target_report(target, "target", any_succeeded, total_processed,
-                             open_browser=True, log=log)
+    report_path = _finalize_target_report(target, "target", any_succeeded, total_processed,
+                                           open_browser=True, log=log,
+                                           run_stats=_sum_stats(results), run_start=run_start)
     log("")
     log(f"  Готово. Архив собран в {_display_path(target)}")
     log("")
@@ -5917,7 +6306,7 @@ def _bare_launch_run_build(sources: list, target: str, input_fn=input, log=print
     # "чтобы убедиться".
     log("  Ваши исходные фотографии остались на месте — программа их не трогает.")
     log("  Архив — их полная копия, готовая к использованию.")
-    return target
+    return target, report_path
 
 
 _AFTER_VIEW_CHOICES = {
@@ -6030,7 +6419,8 @@ def run_bare_launch(input_fn=input, log=print):
         if result is None:
             log("  Возвращаемся в главное меню.")
             continue
-        return
+        _, report_path = result
+        return report_path
 
 
 def _log_unexpected_crash(log=print) -> None:
@@ -6052,7 +6442,10 @@ def _log_unexpected_crash(log=print) -> None:
             f.write(traceback.format_exc())
     except OSError:
         pass
-    log("\nПроизошла непредвиденная ошибка -- программа остановлена.")
+    # 2026-07-19 (REVIEW-HANDOFF.md Раунд 15): префикс "ОШИБКА" -- только на первой строке,
+    # это единственная реально пугающая часть; две следующие reassurance-строки нарочно
+    # остаются без подсветки, чтобы не выглядеть частью самой ошибки.
+    log("\nОШИБКА: Произошла непредвиденная ошибка -- программа остановлена.")
     log("Ваши исходные файлы программа не изменяет и не удаляет ни при каких обстоятельствах "
         "-- эта ошибка их не затронула.")
     log(f"Подробности сохранены в {os.path.join(_app_dir(), 'crash.log')} -- приложите этот "
@@ -6063,16 +6456,25 @@ def main():
     # Every subprocess.run() call in this file (exiftool/7z/ffmpeg/ffprobe/UnRAR) is spawned
     # without CREATE_NEW_PROCESS_GROUP, so Ctrl-C's CTRL_C_EVENT/SIGINT already reaches those
     # children together with this process -- no separate Popen+kill needed here.
+    # bare_launch: единый признак голого запуска, переиспользуется ниже для паузы перед
+    # выходом (_pause_before_exit()) -- раньше пересчитывался как len(sys.argv) <= 1 в 4 местах
+    # по отдельности. (2026-07-19: раньше тем же флагом ещё включался белый фон консоли --
+    # см. _console_red_text() докстрока, откачено в этой же сессии.)
+    bare_launch = len(sys.argv) <= 1
     try:
         sys.exit(_main())
     except KeyboardInterrupt:
-        print("\nПрервано пользователем.")
+        # 2026-07-19: через console_log(), не print() напрямую -- та же обёртка (перенос
+        # длинных строк, bar-safe печать через log_line()), что и у остального вывода.
+        # НЕ красная -- это штатное прерывание пользователем, не ошибка (см. console_log()
+        # -- красным идёт только текст с префиксом "ОШИБКА").
+        console_log("\nПрервано пользователем.")
         # 2026-07-11, live user report: on a bare double-click launch, Ctrl-C during
         # analyze/view mode printed this and closed the console window so fast it couldn't be
         # read -- this except block never called _pause_before_exit() at all, unlike every
         # normal-completion path in run_bare_launch(). Same fix, same reasoning as the
         # Exception handler below.
-        if len(sys.argv) <= 1:
+        if bare_launch:
             _pause_before_exit(True)
         sys.exit(130)
     except EOFError:
@@ -6082,16 +6484,20 @@ def main():
         # stdin at ANY interactive prompt (menu, "Откуда брать фото", risk confirmations)
         # raises EOFError -- previously an unhandled traceback + PyInstaller's
         # "Failed to execute script" banner, same bad experience Ctrl-C already avoids.
-        print("\nВвод прерван (нет данных на входе).")
+        console_log("\nВвод прерван (нет данных на входе).")
         # Same reasoning as the KeyboardInterrupt branch above -- this can itself raise
         # EOFError again if stdin is genuinely closed/redirected (not just Ctrl-Z), which
         # _pause_before_exit() already swallows internally.
-        if len(sys.argv) <= 1:
+        if bare_launch:
             _pause_before_exit(True)
         sys.exit(130)
     except Exception:
-        _log_unexpected_crash()
-        if len(sys.argv) <= 1:
+        # 2026-07-19: log=console_log (was the print() default) -- крэш-текст теперь идёт
+        # через ту же обёртку log_line()/перенос строк/подсветку "ОШИБКА", что и обычные
+        # ошибки пайплайна, вместо того чтобы единственный по-настоящему пугающий момент
+        # оставался неокрашенным и без переноса длинных строк (REVIEW-HANDOFF.md Раунд 15).
+        _log_unexpected_crash(log=console_log)
+        if bare_launch:
             # Bare double-click launch -- without this, the console window would flash the
             # message above and vanish before anyone could read it (same reasoning as
             # _pause_before_exit()'s own docstring). Not done for CLI/scripted invocations --
@@ -6107,8 +6513,8 @@ def _main():
         # клик по exe). Единственный случай, который заменяется меню (RULES.md, "ЗАПУСК"
         # п.3) -- любой хотя бы один аргумент (флаг, подкоманда, даже неполный набор вроде
         # одного --source без --target) идёт по обычной ветке ниже без изменений.
-        run_bare_launch(log=console_log)
-        _pause_before_exit(True)
+        report_path = run_bare_launch(log=console_log)
+        _pause_before_exit(True, report_path=report_path)
         return 0
     if argv and argv[0] in ("--version", "-V", "--help", "-h", "--formats"):
         # Глобальные флаги идут напрямую в верхний парсер -- НЕ подставлять "archive" перед
@@ -6186,6 +6592,11 @@ def _main():
     exit_code = 0
     any_succeeded = False
     total_processed = 0
+    run_start = time.strftime("%Y-%m-%d %H:%M:%S")  # см. _bare_launch_run_build() -- та же
+                                                      # граница для report._split_rows_by_time()
+    results = []  # RunResult.stats по успешным SOURCE (archive-режим) -- "Этот прогон" в
+                  # отчёте, тот же принцип, что и в _bare_launch_run_build()/
+                  # _bare_launch_run_dryrun() (_sum_stats() ниже).
     shared_pool = None  # раунд 5 ревью, вариант A: не пересканировать TARGET на каждый SOURCE
                         # этого batch'а (archive-режим) -- см. _run_impl/run_for_source
     with _prevent_sleep():
@@ -6200,6 +6611,7 @@ def _main():
                     any_succeeded = True
                     total_processed += result.processed_count
                     shared_pool = result.pool
+                    results.append(result.stats)
             else:
                 stats = run_analyze_for_source(s, target, args.sample_limit, args.mode, log=console_log)
                 source_exit_code = EXIT_CONFIG_ERROR if stats is None else 0
@@ -6212,12 +6624,14 @@ def _main():
             elif source_exit_code and not exit_code:
                 exit_code = source_exit_code
 
+    report_path = None
     if args.mode == "archive":
         level = "workdir" if args.dry_run else "target"
-        _finalize_target_report(target, level, any_succeeded, total_processed,
-                                 open_browser=interactive_mode, log=console_log)
+        report_path = _finalize_target_report(target, level, any_succeeded, total_processed,
+                                               open_browser=interactive_mode, log=console_log,
+                                               run_stats=_sum_stats(results), run_start=run_start)
 
-    _pause_before_exit(interactive_mode)
+    _pause_before_exit(interactive_mode, report_path=report_path)
     return exit_code
 
 

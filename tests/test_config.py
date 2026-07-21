@@ -77,3 +77,27 @@ def test_free_space_margin_gb_zero_is_allowed(tmp_path):
     # user choice.
     cfg = _make(tmp_path, free_space_margin_gb=0.0)
     assert cfg.free_space_margin_gb == 0.0
+
+
+def test_target_equals_workdir_rejected(tmp_path):
+    # Review Round 22 [БЛОКЕР]: TARGET == the app's own workdir must be rejected -- FAQ.md's
+    # "delete TARGET entirely on failure" advice would otherwise wipe the program+config+logs.
+    workdir = str(tmp_path / "app")
+    with pytest.raises(ValueError):
+        _make(tmp_path, target=workdir, workdir=workdir)
+
+
+def test_workdir_inside_target_rejected(tmp_path):
+    target = str(tmp_path / "archive")
+    workdir = str(tmp_path / "archive" / "app")
+    with pytest.raises(ValueError):
+        _make(tmp_path, target=target, workdir=workdir)
+
+
+def test_target_inside_workdir_is_allowed(tmp_path):
+    # Only the app's own folder (or TARGET landing exactly on it) is dangerous -- TARGET being
+    # a subfolder INSIDE workdir is not the FAQ.md self-deletion scenario and isn't blocked.
+    workdir = str(tmp_path / "app")
+    target = str(tmp_path / "app" / "archive")
+    cfg = _make(tmp_path, target=target, workdir=workdir)
+    assert cfg.target == target
