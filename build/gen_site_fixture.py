@@ -3,20 +3,17 @@
 реальные имена папок пользователя никогда не попадают в постоянные артефакты) для скриншотов
 сайта: смесь папок с понятными именами (-> Albums) и россыпи файлов без папки (-> ByDate).
 """
+import argparse
 import os
 import random
 import shutil
 import subprocess
-import sys
 import tempfile
 
 from PIL import Image
 
-SOURCE = r"C:\Users\HTPC\AppData\Local\Temp\claude\C--photo-sort-win\03081898-c2db-420e-9a54-69129033e6f5\scratchpad\site_fixture_source"
-TARGET = r"C:\Users\HTPC\AppData\Local\Temp\claude\C--photo-sort-win\03081898-c2db-420e-9a54-69129033e6f5\scratchpad\site_fixture_target"
-BIN = r"C:\Users\HTPC\AppData\Local\Temp\claude\C--photo-sort-win\03081898-c2db-420e-9a54-69129033e6f5\scratchpad\isolated_app\bin"
-EXIFTOOL = os.path.join(BIN, "exiftool.exe")
-FFMPEG = os.path.join(BIN, "ffmpeg.exe")
+EXIFTOOL = None
+FFMPEG = None
 
 
 def image(path, w, h, dt):
@@ -45,6 +42,18 @@ def image(path, w, h, dt):
 
 
 def main():
+    global EXIFTOOL, FFMPEG
+
+    parser = argparse.ArgumentParser(
+        description="Строит синтетический SOURCE для скриншотов сайта (см. модуль docstring).")
+    parser.add_argument("source", help="Папка SOURCE, будет создана/перезаписана")
+    parser.add_argument("bin_dir", help="Папка с exiftool.exe/ffmpeg.exe (например, bin/ репозитория)")
+    args = parser.parse_args()
+
+    SOURCE = args.source
+    EXIFTOOL = os.path.join(args.bin_dir, "exiftool.exe")
+    FFMPEG = os.path.join(args.bin_dir, "ffmpeg.exe")
+
     # Album folders (понятные имена -> Albums\...)
     for i in range(1, 6):
         image(os.path.join(SOURCE, "Свадьба", f"IMG_{i:04d}.jpg"), 1200, 800, "2018:06:16 14:20:00")
