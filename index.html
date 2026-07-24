@@ -120,7 +120,7 @@
     align-items:center;
     justify-content:center;
     gap:10px;
-    min-height:48px;
+    min-height:56px;
     padding:12px 28px;
     border-radius:var(--radius);
     font-size:1.05rem;
@@ -194,7 +194,7 @@
     color:#fff !important;
     padding:10px 18px !important;
     border-radius:10px;
-    min-height:44px;
+    min-height:56px;
     display:flex;
     align-items:center;
   }
@@ -254,6 +254,48 @@
     max-width:46ch;
   }
   .hero-cta{ margin-top:0.4em; }
+
+  .hero-visual{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:20px;
+    margin:36px auto;
+    flex-wrap:wrap;
+  }
+  .hero-visual-col{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    max-width:320px;
+  }
+  .hero-visual-col img{
+    width:100%;
+    height:auto;
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    background:var(--paper);
+  }
+  .hero-visual-label{
+    font-weight:700;
+    color:var(--accent);
+    margin-bottom:8px;
+  }
+  .hero-visual-caption{
+    margin:8px 0 0;
+    font-size:0.85rem;
+    color:var(--muted);
+    text-align:center;
+  }
+  .hero-visual-arrow{
+    font-size:32px;
+    color:var(--accent2);
+    stroke:var(--accent2);
+    flex-shrink:0;
+  }
+  @media (max-width:640px){
+    .hero-visual-arrow{ transform:rotate(90deg); }
+  }
 
   /* Problem */
   .problem-icons{
@@ -317,80 +359,51 @@
   .bullet-list .icon{ font-size:26px; margin-top:2px; }
   .bullet-list p{ margin:0; }
 
-  /* Report mockup */
+  /* Console preview + real report screenshot */
+  .console-report-wrap{ margin-top:48px; }
+  .console-intro{ color:var(--muted); max-width:var(--prose); }
+  .console-block{
+    background:#1b2420;
+    border-radius:var(--radius);
+    padding:22px 24px;
+    overflow-x:auto;
+  }
+  .console-block pre{
+    margin:0;
+    color:#dce6dc;
+    font-family:Consolas,"SFMono-Regular",monospace;
+    font-size:0.85rem;
+    line-height:1.5;
+    white-space:pre;
+  }
+  .console-caption{
+    margin-top:14px;
+    font-size:0.85rem;
+    color:var(--muted);
+    font-style:italic;
+    max-width:var(--prose);
+  }
+  .console-bridge{
+    margin-top:32px;
+    font-size:1.05rem;
+    max-width:var(--prose);
+  }
   .report-wrap{
-    margin-top:48px;
+    margin-top:20px;
     background:var(--paper);
     border:1px solid var(--line);
     border-radius:var(--radius);
-    padding:28px;
+    padding:20px;
   }
-  .report-mock{
-    background:#fff;
+  .report-screenshot{
+    width:100%;
+    height:auto;
+    display:block;
     border:1px solid var(--line);
     border-radius:8px;
-    padding:24px;
   }
-  .report-mock-head{
-    display:flex;
-    justify-content:space-between;
-    align-items:baseline;
-    border-bottom:1px solid var(--line);
-    padding-bottom:12px;
-    margin-bottom:20px;
-    flex-wrap:wrap;
-    gap:8px;
-  }
-  .report-mock-head h4{ margin:0; font-size:1.1rem; }
-  .report-mock-head span{ color:var(--muted); font-size:0.9rem; }
-  .report-grid{
-    display:grid;
-    grid-template-columns:1fr 1fr;
-    gap:28px;
-  }
-  .report-block h5{
-    margin:0 0 12px;
-    font-size:0.95rem;
-    color:var(--muted);
-    font-weight:600;
-  }
-  .donut{
-    width:120px; height:120px;
-    border-radius:50%;
-    background:conic-gradient(var(--accent) 0 68%, var(--accent2) 68% 88%, var(--line) 88% 100%);
-    position:relative;
-    flex-shrink:0;
-  }
-  .donut::after{
-    content:"";
-    position:absolute; inset:18px;
-    border-radius:50%;
-    background:#fff;
-  }
-  .donut-row{ display:flex; align-items:center; gap:20px; }
-  .legend{ list-style:none; margin:0; padding:0; font-size:0.92rem; }
-  .legend li{ display:flex; align-items:center; gap:8px; margin-bottom:6px; }
-  .swatch{ width:12px; height:12px; border-radius:3px; flex-shrink:0; }
-  .sw-a{ background:var(--accent); }
-  .sw-b{ background:var(--accent2); }
-  .sw-c{ background:var(--line); }
-
-  .hbar-row{ display:flex; align-items:center; gap:10px; margin-bottom:10px; font-size:0.9rem; }
-  .hbar-label{ width:96px; flex-shrink:0; color:var(--muted); }
-  .hbar-track{ flex:1; background:var(--bg); border-radius:5px; height:14px; overflow:hidden; }
-  .hbar-fill{ height:100%; background:var(--accent); border-radius:5px; }
-
-  .report-note{
-    margin-top:20px;
-    font-size:0.92rem;
-    color:var(--muted);
-    display:flex;
-    gap:10px;
-    align-items:flex-start;
-  }
-  .report-note .icon{ font-size:20px; margin-top:2px; }
   .report-caption{
-    margin-top:14px;
+    margin:14px 0 0;
     font-size:0.85rem;
     color:var(--muted);
     font-style:italic;
@@ -443,6 +456,33 @@
   }
   .not-list li{ display:flex; gap:12px; align-items:flex-start; color:var(--muted); }
   .not-list .icon{ font-size:22px; margin-top:2px; stroke:var(--muted); }
+
+  .code-note{ color:var(--muted); font-size:0.85rem; }
+  .code-note code{
+    background:var(--paper);
+    padding:0.1em 0.4em;
+    border-radius:4px;
+    font-family:Consolas,"SFMono-Regular",monospace;
+  }
+
+  .safety-net{
+    margin:44px auto 0;
+    max-width:var(--prose);
+    background:var(--paper);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    padding:28px 28px 24px;
+    text-align:center;
+  }
+  .safety-net .icon-md{ color:var(--accent2); stroke:var(--accent2); margin-bottom:10px; }
+  .safety-net h3{ margin-bottom:20px; }
+  .safety-net .not-list{ text-align:left; margin-bottom:20px; }
+  .safety-net-conclusion{
+    font-style:italic;
+    color:var(--ink);
+    margin:0;
+    font-size:1.02rem;
+  }
 
   /* Author */
   .author-wrap{
@@ -502,6 +542,11 @@
     text-align:left;
   }
   .reassure .icon{ font-size:22px; margin-top:2px; }
+  .download-specs{
+    margin:18px 0 0;
+    font-size:0.9rem;
+    color:var(--muted);
+  }
   .version-note{
     margin-top:20px;
     font-size:0.88rem;
@@ -627,6 +672,8 @@
 
 <symbol id="i-zip" viewBox="0 0 24 24"><path d="M3 3.5h18v17H3z"/><path d="M12 3.5v3M12 8v2M12 11.5v2M12 15v2"/></symbol>
 
+<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 14-5.3M20 12a8 8 0 0 1-14 5.3"/><path d="M18 3v4h-4M6 21v-4h4"/></symbol>
+
 </defs>
 </svg>
 
@@ -657,6 +704,20 @@
     <div class="container">
       <h1>PhotoArchive никогда не изменяет исходные фотографии и видео.</h1>
       <p class="subtitle">Бесплатная программа для Windows: собирает разбросанные семейные фото и видео в один аккуратный архив.</p>
+
+      <div class="hero-visual">
+        <div class="hero-visual-col">
+          <span class="hero-visual-label">До</span>
+          <img src="./hero-before.png" width="640" height="420" alt="Фотографии разбросаны по разным папкам, без единого порядка">
+          <p class="hero-visual-caption">Программа только читает эти файлы</p>
+        </div>
+        <svg class="hero-visual-arrow icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h16M14 6l6 6-6 6"/></svg>
+        <div class="hero-visual-col">
+          <span class="hero-visual-label">После</span>
+          <img src="./hero-after.png" width="640" height="420" alt="Те же фотографии разложены по альбомам и датам">
+        </div>
+      </div>
+
       <div class="hero-cta">
         <a class="btn btn-primary" href="#download">Скачать программу</a>
       </div>
@@ -735,45 +796,48 @@
         </li>
       </ul>
 
-      <!-- REPORT MOCKUP -->
-      <div class="report-wrap">
-        <h3>После любого режима — понятный отчёт</h3>
-        <p style="color:var(--muted); max-width:var(--prose)">Программа показывает, что нашлось
-        и что сделано, простым языком и наглядными диаграммами — а не список технических
-        записей. Отчёт открывается в браузере на вашем компьютере.</p>
+      <!-- CONSOLE + REPORT: намеренно простой процесс, но развёрнутый результат -->
+      <div class="console-report-wrap">
+        <h3>Управление — простое меню, без лишнего</h3>
+        <p class="console-intro">Программа не пытается стать вашей новой фотогалереей — не
+        навязывает свой просмотрщик и не требует учить новый интерфейс. Откроется окно с
+        текстом и меню из 3 пунктов: набираете цифру, нажимаете Enter. Это нормально — вот как
+        оно выглядит на самом деле:</p>
 
-        <div class="report-mock" aria-hidden="true">
-          <div class="report-mock-head">
-            <h4>Итоги обработки архива</h4>
-            <span>Пример на вымышленных данных</span>
-          </div>
-          <div class="report-grid">
-            <div class="report-block">
-              <h5>Тип медиа</h5>
-              <div class="donut-row">
-                <div class="donut"></div>
-                <ul class="legend">
-                  <li><span class="swatch sw-a"></span>Фото — 68%</li>
-                  <li><span class="swatch sw-b"></span>Видео — 20%</li>
-                  <li><span class="swatch sw-c"></span>RAW — 12%</li>
-                </ul>
-              </div>
-            </div>
-            <div class="report-block">
-              <h5>Топ альбомов по размеру</h5>
-              <div class="hbar-row"><span class="hbar-label">Свадьба</span><div class="hbar-track"><div class="hbar-fill" style="width:92%"></div></div></div>
-              <div class="hbar-row"><span class="hbar-label">Море</span><div class="hbar-track"><div class="hbar-fill" style="width:70%"></div></div></div>
-              <div class="hbar-row"><span class="hbar-label">Отпуск 2015</span><div class="hbar-track"><div class="hbar-fill" style="width:48%"></div></div></div>
-              <div class="hbar-row"><span class="hbar-label">Разное</span><div class="hbar-track"><div class="hbar-fill" style="width:30%"></div></div></div>
-            </div>
-          </div>
-          <div class="report-note">
-            <svg class="icon" aria-hidden="true"><use href="#i-lock-open"/></svg>
-            <span>Отчёт остаётся только на этом компьютере и никуда не отправляется.</span>
-          </div>
+        <div class="console-block">
+<pre>==============================================================
+
+   PhotoArchive версия 0.1.1
+   Сайт: https://vo1012.github.io/PhotoArchive
+   Бережная сборка семейного фотоархива
+
+   - Ваши оригиналы не изменяются и не удаляются
+   - Фотографии остаются на вашем компьютере — интернет не нужен
+   - Остановить в любой момент: Ctrl+C
+   - Подробнее о параметрах запуска: PhotoArchive --help
+
+==============================================================
+
+  Что сделать?
+
+    [1] Сканирование источника   (read-only)
+    [2] Пробный прогон   (dry-run, без записи)
+    [3] Сборка архива
+
+  Ваш выбор [по умолчанию 1]: </pre>
         </div>
-        <p class="report-caption">Названия альбомов и цифры на этом примере — вымышленные, для
-        иллюстрации. Реальный отчёт строится по вашему архиву.</p>
+        <p class="console-caption">Дословный вывод программы при запуске — ничего не
+        приукрашено. А результат открывается в обычном Проводнике — той же программе для
+        просмотра папок, которой вы уже пользуетесь.</p>
+
+        <p class="console-bridge">Простое управление — не значит бедный результат. После любого
+        режима вас ждёт куда более подробный отчёт:</p>
+
+        <div class="report-wrap">
+          <img class="report-screenshot" src="./report-screenshot.png" width="1400" height="2185" alt="Пример отчёта PhotoArchive: сводка архива, диаграммы по годам, типам файлов, надёжности дат и точным повторам">
+          <p class="report-caption">Настоящий отчёт программы (на тестовых данных, для
+          иллюстрации) — открывается в браузере на вашем компьютере и никуда не отправляется.</p>
+        </div>
       </div>
 
       <p class="bridge"><a href="#download">Готовы попробовать? → Скачать программу</a></p>
@@ -818,9 +882,20 @@
         </ul>
       </div>
 
-      <p class="prose center" style="margin-left:auto;margin-right:auto;color:var(--muted);font-size:0.95rem">Не верьте на слово — вот сама функция в открытом исходном коде, которая копирует файл
+      <p class="prose center code-note" style="margin-left:auto;margin-right:auto">Не верьте на слово — вот сама функция в открытом исходном коде, которая копирует файл
       в архив: читает исходный файл, но никогда не удаляет и не изменяет его —
       <a href="https://github.com/vo1012/PhotoArchive/blob/main/photosort_win.py#L3414-L3450"><code>atomic_copy()</code>, photosort_win.py</a>.</p>
+
+      <div class="safety-net">
+        <svg class="icon icon-md" aria-hidden="true"><use href="#i-refresh"/></svg>
+        <h3>Если результат получился не таким, как ожидали</h3>
+        <ul class="not-list">
+          <li><svg class="icon" aria-hidden="true"><use href="#i-folder-arrow"/></svg><p>Архив можно удалить и попробовать снова — исходные фотографии не пострадают, из источника ничего не удалялось.</p></li>
+          <li><svg class="icon" aria-hidden="true"><use href="#i-layers"/></svg><p>Раскладку по альбомам и по дате можно подстроить под ваши папки — программа не навязывает единственный способ.</p></li>
+          <li><svg class="icon" aria-hidden="true"><use href="#i-log"/></svg><p>В журналах всегда можно посмотреть точную причину любого решения: почему файл попал именно туда, куда попал.</p></li>
+        </ul>
+        <p class="safety-net-conclusion">Всегда можно начать заново, повлиять на спорный случай и понять, почему программа приняла то или иное решение.</p>
+      </div>
 
       <p class="bridge prose center" style="margin-left:auto;margin-right:auto"><a href="#download">Готовы попробовать? → Скачать программу</a></p>
     </div>
@@ -857,6 +932,9 @@
           <span>Первый шаг ничем не рискует — режим «Посмотреть, что найдётся» ничего не
           копирует и не изменяет.</span>
         </div>
+
+        <p class="download-specs">PhotoArchive.exe — 151 МБ · PhotoArchive.zip — 152 МБ ·
+        Windows 8.1 (64-бит) или новее</p>
 
         <div class="download-buttons">
           <div class="download-card">
