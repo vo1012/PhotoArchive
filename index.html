@@ -5,6 +5,19 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PhotoArchive — программа, которая никогда не меняет ваши фотографии</title>
 <meta name="description" content="Бесплатная портативная программа для Windows: собирает разбросанные семейные фото и видео в один аккуратный архив, находит дубликаты, ничего не удаляет и не отправляет в интернет.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="PhotoArchive">
+<meta property="og:title" content="PhotoArchive — программа, которая никогда не меняет ваши фотографии">
+<meta property="og:description" content="Бесплатная портативная программа для Windows: собирает разбросанные семейные фото и видео в один аккуратный архив, находит дубликаты, ничего не удаляет и не отправляет в интернет.">
+<meta property="og:url" content="https://vo1012.github.io/PhotoArchive/">
+<meta property="og:image" content="https://vo1012.github.io/PhotoArchive/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:locale" content="ru_RU">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="PhotoArchive — программа, которая никогда не меняет ваши фотографии">
+<meta name="twitter:description" content="Бесплатная портативная программа для Windows: собирает разбросанные семейные фото и видео в один аккуратный архив, находит дубликаты, ничего не удаляет и не отправляет в интернет.">
+<meta name="twitter:image" content="https://vo1012.github.io/PhotoArchive/og-image.png">
 <style>
   :root{
     --bg:#F0F2EC;
@@ -805,6 +818,10 @@
         </ul>
       </div>
 
+      <p class="prose center" style="margin-left:auto;margin-right:auto;color:var(--muted);font-size:0.95rem">Не верьте на слово — вот сама функция в открытом исходном коде, которая копирует файл
+      в архив: читает исходный файл, но никогда не удаляет и не изменяет его —
+      <a href="https://github.com/vo1012/PhotoArchive/blob/main/photosort_win.py#L3414-L3450"><code>atomic_copy()</code>, photosort_win.py</a>.</p>
+
       <p class="bridge prose center" style="margin-left:auto;margin-right:auto"><a href="#download">Готовы попробовать? → Скачать программу</a></p>
     </div>
   </section>
@@ -824,7 +841,7 @@
         </blockquote>
         <p class="author-sign">Владимир Олейников</p>
         <p class="author-role">Разработчик PhotoArchive</p>
-        <p><a href="https://github.com/vo1012/PhotoArchive/blob/main/PhotoArchive_ot_avtora.md">Читать письмо целиком →</a></p>
+        <p><a href="./letter.html">Читать письмо целиком →</a></p>
       </div>
     </div>
   </section>
@@ -890,7 +907,7 @@
           <p>Нет. Это отдельный файл без установки — его можно запускать хоть с флешки.</p>
         </div>
       </div>
-      <p class="faq-more"><a href="https://github.com/vo1012/PhotoArchive/blob/main/FAQ.md">Все вопросы и ответы →</a></p>
+      <p class="faq-more"><a href="./faq.html">Все вопросы и ответы →</a></p>
     </div>
   </section>
 
@@ -903,8 +920,9 @@
         <h4>Документация</h4>
         <ul>
           <li><a href="https://github.com/vo1012/PhotoArchive/blob/main/README.md">README</a></li>
-          <li><a href="https://github.com/vo1012/PhotoArchive/blob/main/QUICKSTART.md">Быстрый старт</a></li>
-          <li><a href="https://github.com/vo1012/PhotoArchive/blob/main/FAQ.md">Частые вопросы</a></li>
+          <li><a href="./quickstart.html">Быстрый старт</a></li>
+          <li><a href="./faq.html">Частые вопросы</a></li>
+          <li><a href="./letter.html">Письмо автора</a></li>
           <li><a href="./PhotoArchive_buklet.pdf">Буклет PhotoArchive (PDF) — версия для печати / переслать по почте</a></li>
         </ul>
       </div>
@@ -916,12 +934,20 @@
           <li><a href="https://github.com/vo1012/PhotoArchive/releases/latest">Все версии (Releases)</a></li>
         </ul>
       </div>
-      <div class="foot-col foot-donate-col">
-        <h4>Поддержать проект</h4>
-        <p class="foot-donate">PhotoArchive бесплатна и останется такой независимо ни от чего.
-        Если программа окажется полезной и вы захотите поддержать разработку — актуальный
-        способ указан на <a href="https://github.com/vo1012/PhotoArchive">странице проекта на
-        GitHub</a>. Это не связано ни с какими функциями программы.</p>
+      <div class="foot-col foot-donate-col" id="contacts">
+        <h4>Контакты</h4>
+        <div class="foot-donate">
+          <p>PhotoArchive бесплатна и останется такой независимо ни от чего. Если программа
+          окажется полезной и вы захотите поддержать разработку — можно написать автору
+          напрямую: <a class="js-email" data-u="0002evihcraotohp" data-d="ur.liam" href="#">адрес загружается…</a>.
+          Это не связано ни с какими функциями программы, решение обсуждается индивидуально.</p>
+          <p>Есть предложение, замечание или нашли ошибку? Пишите на тот же адрес:
+          <a class="js-email" data-u="0002evihcraotohp" data-d="ur.liam" href="#">адрес загружается…</a>
+          — или заведите <a href="https://github.com/vo1012/PhotoArchive/issues">issue на
+          GitHub</a>.</p>
+          <noscript><p>Адрес электронной почты собирается скриптом на странице — с
+          отключённым JavaScript воспользуйтесь <a href="https://github.com/vo1012/PhotoArchive/issues">issue на GitHub</a>.</p></noscript>
+        </div>
       </div>
     </div>
     <div class="foot-bottom">
@@ -948,6 +974,19 @@
       toggle.setAttribute('aria-expanded', 'false');
       icon.innerHTML = '<use href="#i-menu"/>';
     });
+  });
+})();
+
+(function(){
+  // Адрес не хранится готовой строкой в статическом HTML (ни как текст, ни в href) --
+  // каждая половина реверсирована в data-атрибуте и собирается в mailto: только здесь, в
+  // браузере. Не защита от целенаправленного бота, но поднимает планку выше простых
+  // сборщиков, которые просто ищут mailto: или @ в разметке (см. SITE_DESIGN_PROMPT.md, §6).
+  function deobfuscate(s){ return s.split('').reverse().join(''); }
+  document.querySelectorAll('a.js-email').forEach(function(el){
+    var addr = deobfuscate(el.getAttribute('data-u')) + '@' + deobfuscate(el.getAttribute('data-d'));
+    el.href = 'mailto:' + addr;
+    el.textContent = addr;
   });
 })();
 </script>
