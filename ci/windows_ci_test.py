@@ -755,6 +755,41 @@ def test_analyze_modes():
         os.remove(report_path)
 
 
+def test_raw_without_jpeg_in_album_gets_date_column():
+    print("\n=== REVIEW-HANDOFF.md, Раунд 30 [ЗАМЕЧАНИЕ]: regression на Раунд 29 [БЛОКЕР], "
+          "но через реальный пайплайн (_process_record/raw_mirrored), не через "
+          "report.build_model_from_rows() напрямую с вручную подставленной колонкой ===")
+    # Раунд 30 нашёл: tests/test_report.py's регресс-тест на этот же баг вручную подставляет
+    # "date" в строку и проверяет только report.py -- он был бы зелёным что до, что после
+    # фикса photosort_win.py. Этот тест гоняет одинокий .CR2 (без JPEG-пары) внутри папки
+    # альбома через ВЕСЬ реальный пайплайн (raw_layout по умолчанию -- mirror) и проверяет
+    # appended.csv напрямую -- именно то место, где был пропущен date= в raw_mirrored-ветке
+    # (photosort_win.py:4658-4692).
+    src = os.path.join(WORK, "src_raw_without_jpeg_album")
+    cr2_path = os.path.join(src, "Album", "IMG_0001.CR2")
+    os.makedirs(os.path.dirname(cr2_path), exist_ok=True)
+    with open(cr2_path, "wb") as f:
+        f.write(b"FAKE-CR2-NO-PAIR" + os.urandom(256))
+    # Тот же приём, что и test_undated_promotion -- узкое, НЕ "только что" mtime-окно, чтобы
+    # date-эвристика реально дала дату по mtime (у поддельного .CR2 нет читаемого EXIF).
+    forced_mtime = time.time() - 3600
+    os.utime(cr2_path, (forced_mtime, forced_mtime))
+
+    tgt = os.path.join(WORK, "target_raw_without_jpeg_album")
+    r = run_photosort(src, tgt)
+    check(r.returncode == 0, "raw-without-jpeg-album: run exits 0")
+    check(os.path.isfile(os.path.join(tgt, "RAW", "Albums", "Album", "IMG_0001.CR2")),
+          "raw-without-jpeg-album: RAW placed under RAW/Albums/Album/ (mirror layout, no JPEG pair)")
+
+    appended = read_csv(os.path.join(tgt, "__служебные_файлы", "logs", "appended.csv"))
+    rows = [row for row in appended if row.get("reason") == "raw_without_jpeg"]
+    check(len(rows) == 1, "raw-without-jpeg-album: exactly one raw_without_jpeg row in appended.csv")
+    if rows:
+        check(bool(rows[0].get("date")),
+              "raw-without-jpeg-album: appended.csv's date column is non-empty for the "
+              "raw_mirrored row (Раунд 29 [БЛОКЕР] fix, verified end-to-end)")
+
+
 def test_raw_layout_sibling():
     print("\n=== A.3: RAW_LAYOUT=sibling ===")
     src = os.path.join(WORK, "src_rawlayout")
@@ -925,14 +960,12 @@ def test_cli_version_help_routing():
           "B.3: top-level --help lists analyze-* subcommands (not swallowed by the archive shim)")
     check("vo1012.github.io/PhotoArchive" in r3.stdout,
           "2026-07-20: --help epilog links the project site (SITE_URL), not the raw repo")
-    check("актуальные способы" in r3.stdout and "коммерческой выгоды" in r3.stdout,
-          "2026-07-15: --help epilog carries the donation text (DONATION_TEXT). 2026-07-17: "
-          "rewritten to point at a source of current details instead of a placeholder about "
-          "the compromised card -- --help never gets the real card number, not even in the "
-          "manual-distribution build (see build/md_to_pdf.py's _inject_donation_details, "
-          "which only ever touches PhotoArchive_ot_avtora.md/FAQ.md). 2026-07-20: that source "
-          "is now the project site (SITE_URL), not GitHub -- wording diverged on purpose from "
-          "PhotoArchive_ot_avtora.md's P.S., which stays on GitHub since it's read there.")
+    check("Контакты" in r3.stdout and "коммерческой выгоды" in r3.stdout,
+          "2026-07-15: --help epilog carries the donation text (DONATION_TEXT). 2026-07-24: "
+          "points at the site's \"Контакты\" section as the single place where the real "
+          "contact/donation details live -- --help itself never spells out an email/card, "
+          "same principle as the earlier (now removed) DONATE.txt injection mechanism used "
+          "for card details.")
     check("скомпрометирована" not in r3.stdout,
           "2026-07-17: stale compromised-card placeholder must not linger in --help")
 
@@ -1789,7 +1822,7 @@ def test_log_rotation():
           "5.3в: current appended.csv is a fresh (small) file after rotation")
     with open(appended_path, encoding="utf-8") as f:
         first_line = f.readline().strip()
-    check(first_line == "timestamp,source,dest,reason,flags",
+    check(first_line == "timestamp,source,dest,reason,flags,date,duration",
           "5.3в: rotated-then-reopened appended.csv has its CSV header restored")
 
 
@@ -2490,14 +2523,25 @@ def test_bare_launch_menu_argv_gate_and_flow():
         check(rr.returncode == 0, f"bare-menu {tag}: exits 0 (stderr={rr.stderr[-500:]})")
         return rr
 
-    # [1] view -> "Что дальше?" menu, "0" = Главное меню (replaces the old да/нет -- see
-    # 2026-07-12 back-navigation) -> answers run out right as the mode menu is shown again,
-    # run_bare()'s EOFError handling ends the process cleanly -> nothing written to TARGET
-    # (analyze-quick never writes, and [1] doesn't even ask for a TARGET -- section 4 of the ТЗ).
+    # [1] view -> 2026-07-21: no more "Что дальше?" follow-up (see RULES.md, dated entry --
+    # removed by direct user request after the v0.1.1 live run) -- [1] now ends with a single
+    # shared "Работа окончена..." pause (_pause_for_report(), any scripted answer dismisses it)
+    # and returns straight to the main menu on its own, so answers run out right as the mode
+    # menu is shown again, run_bare()'s EOFError handling ends the process cleanly -> nothing
+    # written to TARGET (analyze-quick never writes, and [1] doesn't even ask for a TARGET --
+    # section 4 of the ТЗ).
     src2 = os.path.join(WORK, "bare_menu_view_src")
     tgt2 = os.path.join(WORK, "bare_menu_view_tgt")
     image(os.path.join(src2, "b.jpg"), 800, 600, exif=True, dt="2020:06:06 10:00:00")
-    r2 = run_bare("view", ["1", "1", src2, "0"])
+    r2 = run_bare("view", ["1", "1", src2, ""])
+    # NB: the "Работа окончена..." pause text lives entirely inside the input_fn() prompt
+    # argument (same convention as _pause_before_exit()'s "Нажмите Enter для выхода" -- never
+    # asserted here either) -- this harness's fake input_fn() ignores its prompt argument
+    # entirely (see run_bare()'s docstring above), so it never reaches stdout to check. The
+    # trailing "" answer above is what actually exercises the pause (dismisses it) -- if
+    # _pause_for_report() were broken (e.g. called with the wrong report_path and skipped, or
+    # not called at all), one fewer input_fn() call would happen and the LATER answers in
+    # other scenarios would shift by one, which the "" placeholders below are shaped to catch.
     check("Ваши оригиналы не изменяются" in r2.stdout,
           "bare-menu view: fully bare launch shows the new welcome banner")
     check("Ctrl+C" in r2.stdout,
@@ -2522,21 +2566,26 @@ def test_bare_launch_menu_argv_gate_and_flow():
     src3 = os.path.join(WORK, "bare_menu_enter_src")
     tgt3 = os.path.join(WORK, "bare_menu_enter_tgt")
     image(os.path.join(src3, "c.jpg"), 800, 600, exif=True, dt="2020:07:07 10:00:00")
-    run_bare("Enter-default", ["", "1", src3, "0"])
+    run_bare("Enter-default", ["", "1", src3, ""])
     check(not os.path.isdir(tgt3),
           "bare-menu Enter-default: a bare Enter lands on [1] (view), never writes to TARGET")
 
-    # Full ladder [1] -> [2] -> [3]: view, "1" (показать пробный прогон) on the new
-    # "Что дальше?" menu (TARGET asked here for the first time), "1" (собрать по-настоящему)
-    # on its own "Что дальше?" menu, then "да" to the final build confirmation -- ends with a
-    # real archived file on disk (SOURCE/TARGET threaded through the ladder, not re-asked once
-    # given).
+    # 2026-07-21: no more auto-chaining ladder between [1]/[2]/[3] -- each is a standalone,
+    # self-contained action that ends with the shared "Работа окончена..." pause and returns to
+    # the main menu on its own (see RULES.md, dated entry). This exercises all three modes in
+    # one process, explicitly re-entering the main menu and re-picking source/target each time
+    # (nothing is remembered across separate menu passes -- matches a real user who runs view,
+    # then dry-run, then the real build in three separate visits to the menu), ending with a
+    # real archived file on disk.
     src4 = os.path.join(WORK, "bare_menu_ladder_src")
     tgt4 = os.path.join(WORK, "bare_menu_ladder_tgt")
     image(os.path.join(src4, "d.jpg"), 800, 600, exif=True, dt="2020:08:08 10:00:00")
-    run_bare("ladder", ["1", "1", src4, "1", "1", tgt4, "1", "да"])
+    run_bare("ladder", ["1", "1", src4, "",
+                        "2", "1", src4, "1", tgt4, "",
+                        "3", "1", src4, "1", tgt4, "да", ""])
     check(os.path.isdir(os.path.join(tgt4, "__служебные_файлы")),
-          "bare-menu ladder: [1] -> [1] -> да reaches a real archive build (not just dry-run)")
+          "bare-menu ladder: [1] then [2] then [3] (each re-entered independently) reaches a "
+          "real archive build (not just dry-run)")
     check(any(fn == "d.jpg" for _, _, files in os.walk(tgt4) for fn in files),
           "bare-menu ladder: the real photo actually got copied onto disk, not just logged")
 
@@ -2545,21 +2594,24 @@ def test_bare_launch_menu_argv_gate_and_flow():
     src5 = os.path.join(WORK, "bare_menu_direct_build_src")
     tgt5 = os.path.join(WORK, "bare_menu_direct_build_tgt")
     image(os.path.join(src5, "e.jpg"), 800, 600, exif=True, dt="2020:09:09 10:00:00")
-    run_bare("direct build", ["3", "1", src5, "1", tgt5, "да"])
+    run_bare("direct build", ["3", "1", src5, "1", tgt5, "да", ""])
     check(os.path.isdir(os.path.join(tgt5, "__служебные_файлы")),
           "bare-menu direct build: choosing [3] directly builds the real archive after one confirmation")
 
-    # [2] dry-run, then "0" (Главное меню) on the new "Что дальше?" menu -> answers run out
-    # right as the mode menu is shown again, ends cleanly via run_bare()'s EOFError handling
-    # -- ТЗ раздел 5: suppress_logs=True means the dry-run rehearsal must NOT create
-    # __служебные_файлы\ or any TARGET content at all, unlike the CLI --dry-run contract
+    # [2] dry-run -> shared "Работа окончена..." pause (any scripted answer dismisses it) ->
+    # answers run out right as the mode menu is shown again, ends cleanly via run_bare()'s
+    # EOFError handling -- ТЗ раздел 5: suppress_logs=True means the dry-run rehearsal must NOT
+    # create __служебные_файлы\ or any TARGET content at all, unlike the CLI --dry-run contract
     # (which still writes __служебные_файлы\logs\*.csv).
     src6 = os.path.join(WORK, "bare_menu_dryrun_only_src")
     tgt6 = os.path.join(WORK, "bare_menu_dryrun_only_tgt")
     image(os.path.join(src6, "f.jpg"), 800, 600, exif=True, dt="2020:10:10 10:00:00")
-    r6 = run_bare("dry-run only", ["2", "1", src6, "1", tgt6, "0"])
-    check("Ничего не записано" in r6.stdout,
-          "bare-menu dry-run only: prints the human dry-run summary")
+    r6 = run_bare("dry-run only", ["2", "1", src6, "1", tgt6, ""])
+    # Пакет п.4 (SESSION-HANDOFF.txt): _print_human_dryrun_summary() (числовая консольная
+    # сводка, дублировавшая report.html) больше не вызывается для [2] -- report.html/
+    # dryrun_report.csv (WORKDIR, пакет п.1) теперь единственный источник этих цифр.
+    check("Скопирую в архив" not in r6.stdout,
+          "bare-menu dry-run only: no longer prints the human dry-run summary (duplicated report.html)")
     # suppress_logs skips __служебные_файлы\ (ensure_target_layout/RunLogs/TargetLock) and any real
     # file copy -- but resolve_dest_path() itself (engine-internal collision detection, out of
     # this ТЗ's "don't touch the engine" scope) unconditionally os.makedirs()'s the computed
@@ -2579,15 +2631,15 @@ def test_bare_launch_menu_argv_gate_and_flow():
     # ONE universal "[0] Главное меню" everywhere (no per-screen "step back one level" /
     # named "выбрать другой источник/архив" options) -- "0" always resets straight to the
     # mode menu, implemented as a single `while True` loop in run_bare_launch(), not a stack.
-    # Picking [1] (view) again after backing out, choosing the source, then going back to the
-    # main menu from the "Что дальше?" screen should behave exactly like a normal
-    # single-pass [1] run -- the mode menu and "Откуда взять фотографии?" screens are each
-    # shown twice (once before, once after backing out), then answers run out right as the
-    # mode menu is shown a third time, ending cleanly via run_bare()'s EOFError handling.
+    # Picking [1] (view) again after backing out, choosing the source, then dismissing the
+    # shared "Работа окончена..." pause should behave exactly like a normal single-pass [1]
+    # run -- the mode menu and "Откуда взять фотографии?" screens are each shown twice (once
+    # before, once after backing out), then answers run out right as the mode menu is shown a
+    # third time, ending cleanly via run_bare()'s EOFError handling.
     src7 = os.path.join(WORK, "bare_menu_back_to_mode_src")
     tgt7 = os.path.join(WORK, "bare_menu_back_to_mode_tgt")
     image(os.path.join(src7, "g.jpg"), 800, 600, exif=True, dt="2020:11:11 10:00:00")
-    r7 = run_bare("back to mode", ["1", "0", "1", "1", src7, "0"])
+    r7 = run_bare("back to mode", ["1", "0", "1", "1", src7, ""])
     check(r7.stdout.count("Откуда взять фотографии?") == 2,
           "bare-menu back-to-mode: '0' on the source submenu re-shows the mode menu, then the "
           "source submenu is shown a second time after choosing [1] again")
@@ -2603,7 +2655,7 @@ def test_bare_launch_menu_argv_gate_and_flow():
     image(os.path.join(src8, "h.jpg"), 800, 600, exif=True, dt="2020:12:12 10:00:00")
     r8 = run_bare("decline confirm then retarget",
                   ["3", "1", src8, "1", tgt8_declined, "нет",
-                   "3", "1", src8, "1", tgt8_final, "да"])
+                   "3", "1", src8, "1", tgt8_final, "да", ""])
     check("Возвращаемся в главное меню" in r8.stdout,
           "bare-menu decline-confirm: declining the final build confirmation prints the "
           "back-to-main-menu message instead of just exiting")
@@ -3207,6 +3259,7 @@ ALL_TESTS = [
     test_tar_source_never_uses_unverified_rename,
     test_place_file_archive_no_crc_forces_hash_verify,
     test_analyze_modes,
+    test_raw_without_jpeg_in_album_gets_date_column,
     test_raw_layout_sibling,
     test_photosort_marker_excludes_subtree,
     test_unsorted_is_not_marker_protected,

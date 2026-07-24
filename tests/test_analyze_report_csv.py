@@ -36,3 +36,27 @@ def test_write_analyze_report_csv_keeps_all_scalar_fields():
     # sanity: this dataclass does have a healthy number of plain scalar counters -- a test
     # that accidentally excluded everything would still pass an "absence" check like above.
     assert len(scalar_fields) > 20
+
+
+def test_write_dryrun_report_csv_skips_structural_fields(tmp_path):
+    """Пакет п.1 (SESSION-HANDOFF.txt): те же правила, что и write_analyze_report_csv() --
+    только скалярные поля _sum_stats(results) (+ free_disk_bytes, если вызывающий код
+    _bare_launch_run_dryrun() уже положил его в тот же словарь -- см. пакет п.2)."""
+    stats = {
+        "appended_images": 3, "appended_videos": 1, "bytes_appended": 12345,
+        "free_disk_bytes": 999,
+        "album_merge_events": [("Album", "prefix")],
+        "source_album_seen": {"Album": 2},
+    }
+    out_path = tmp_path / "dryrun_report.csv"
+    m.write_dryrun_report_csv(str(out_path), stats)
+
+    with open(out_path, newline="", encoding="utf-8") as f:
+        rows = {row["metric"]: row["value"] for row in csv.DictReader(f)}
+
+    assert rows["appended_images"] == "3"
+    assert rows["appended_videos"] == "1"
+    assert rows["bytes_appended"] == "12345"
+    assert rows["free_disk_bytes"] == "999"
+    assert "album_merge_events" not in rows
+    assert "source_album_seen" not in rows

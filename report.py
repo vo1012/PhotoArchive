@@ -51,6 +51,11 @@ CSV_NAMES = ("appended", "skipped", "disputes", "dates_review", "albums_merged",
 
 TOP_N = 10  # PROMPT_archive_report.md, раздел 0: топ-N + отсылка к полному CSV, не всё целиком
 
+# 4.9 (PROMPT_report_marketing.md): единый глоссарий терминов -- вынесен в отдельный
+# REPORT_TERM_GLOSSARY.md (2026-07-24, round 29 придирка: константа была справочной, не
+# использовалась программно ни в одном месте этого файла -- естественнее как документация,
+# не Python-словарь).
+
 
 def _winlong(path: str) -> str:
     """Локальная копия photosort_win.winlong() — глубоко вложенные ByDate/Albums-пути
@@ -196,6 +201,26 @@ def _parse_album(dest: str):
     return parts[idx + 1]
 
 
+_DATE_COLUMN_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+
+
+def _parse_date_column(date_str):
+    """Резерв для _parse_bydate_segment() -- файлы в Albums\\... (SESSION-HANDOFF.txt, баг 9)
+    не имеют сегмента ByDate в пути вообще, дату из dest никак не восстановить. RunLogs.appended()
+    пишет её отдельной колонкой ("date" в appended.csv) начиная с этой версии -- старые архивы
+    без этой колонки (row.get("date") -> None/"") просто не получают резерв, как и раньше до
+    фикса. place всегда None -- эта колонка не несёт место, geo-lookup для Albums-файлов вообще
+    не делается (см. photosort_win.py:_process_record) -- см. "place or album" ниже по коду."""
+    if not date_str:
+        return None
+    if len(date_str) == 4 and date_str.isdigit():
+        return (int(date_str), None, None, None)
+    m = _DATE_COLUMN_RE.match(date_str)
+    if not m:
+        return None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)), None)
+
+
 def _build_checklist_fields(data: dict) -> dict:
     """Поля Листа 3 ("Что стоит проверить") -- вынесено из build_model_from_rows() отдельной
     функцией 2026-07-20, чтобы её можно было вызвать ДВАЖДЫ на разных подмножествах строк
@@ -271,6 +296,10 @@ def build_model_from_rows(data: dict) -> dict:
     albums_count = Counter()
     oldest = None  # (sort_key, source_path, place_or_none)
     total_bytes = 0
+    video_duration_seconds = 0.0  # 4.6 (PROMPT_report_marketing.md): кумулятивно, по всему
+                                   # архиву -- сумма персистентной колонки "duration"
+                                   # (появилась вместе с этим разделом), дешёвое чтение CSV,
+                                   # не повторное чтение контейнера каждого видео при рендере.
 
     for row in appended:
         dest = row.get("dest", "") or ""
@@ -280,14 +309,33 @@ def build_model_from_rows(data: dict) -> dict:
         bytes_by_kind[kind] += size
         total_bytes += size
 
+        if kind == "video":
+            duration_str = row.get("duration")
+            if duration_str:
+                try:
+                    video_duration_seconds += float(duration_str)
+                except ValueError:
+                    pass  # старый архив/повреждённая строка -- не считается ошибкой
+
         album = _parse_album(dest)
         if album:
             albums_bytes[album] += size
             albums_count[album] += 1
 
-        if kind not in ("image", "video"):
-            continue  # RAW-зеркало/прочее не участвует во временной/гео-статистике
-        parsed = _parse_bydate_segment(dest)
+        # RAW с парным JPEG (raw_with_jpeg) осознанно не участвует во временной/гео-статистике
+        # -- та же дата уже учтена через сам JPEG, повторный учёт задвоил бы цифры. RAW БЕЗ
+        # пары (raw_without_jpeg) -- своя, не дублирующая ничей другой файл дата, ошибочно
+        # резалась тем же фильтром (SESSION-HANDOFF.txt, баг 8) -- у него нет причины быть
+        # невидимым для дат/года/города, путь RAW\ByDate\... парсится тем же _parse_bydate_segment.
+        if kind not in ("image", "video") and not (kind == "raw" and row.get("reason") == "raw_without_jpeg"):
+            continue
+        # Файлы в Albums\... не имеют сегмента ByDate в пути вообще -- _parse_bydate_segment()
+        # для них всегда None, независимо от того, насколько надёжна их дата (SESSION-HANDOFF.txt,
+        # баг 9). Резерв -- колонка "date" в appended.csv (см. RunLogs.appended()/photosort_win.py,
+        # call site у image/video), доступна только на архивах, собранных этой или более новой
+        # версией -- для старых архивов (колонки нет) поведение не меняется, файл по-прежнему
+        # пропускается, как и раньше.
+        parsed = _parse_bydate_segment(dest) or _parse_date_column(row.get("date"))
         if parsed is None:
             continue
         year, month, day, place = parsed
@@ -330,6 +378,7 @@ def build_model_from_rows(data: dict) -> dict:
         "counts": counts,
         "bytes_by_kind": bytes_by_kind,
         "total_bytes": total_bytes,
+        "video_duration_seconds": video_duration_seconds,
         "total_media": counts["image"] + counts["video"] + counts["raw"],
         "years": years,
         "year_months": year_months,
@@ -394,6 +443,17 @@ def _n_files(n: int) -> str:
     return f"{n} {_plural(n, 'файл', 'файла', 'файлов')}"
 
 
+def _fmt_video_duration(total_seconds: float) -> str:
+    """4.6 (PROMPT_report_marketing.md): суммарная длительность видео, округлённая до целых
+    часов -- минуты для архивов меньше часа (иначе "0 часов" читался бы как отсутствие видео,
+    а не маленькое, но реальное число)."""
+    hours = round(total_seconds / 3600)
+    if hours < 1:
+        minutes = max(round(total_seconds / 60), 1)
+        return f"{minutes} {_plural(minutes, 'минута', 'минуты', 'минут')}"
+    return f"{hours} {_plural(hours, 'час', 'часа', 'часов')}"
+
+
 # ============================================================================
 # 3. SVG-графики (инлайн, без внешних библиотек)
 # ============================================================================
@@ -405,12 +465,17 @@ def _svg_bar_chart(counter: Counter, width=680, height=220, color=COLOR_ACCENT) 
         return ""
     max_v = max(v for _, v in items) or 1
     n = len(items)
-    margin_left, margin_bottom, margin_top, margin_right = 8, 26, 20, 8
+    # margin_top 30, не 20 -- освобождает строку под подпись единицы измерения (см. ниже),
+    # не наезжая на числа-подписи над самыми высокими столбцами (SESSION-HANDOFF.txt баг 6:
+    # голое число без "шт."/"файлов" неоднозначно само по себе).
+    margin_left, margin_bottom, margin_top, margin_right = 8, 26, 30, 8
     plot_w = width - margin_left - margin_right
     plot_h = height - margin_bottom - margin_top
     gap = plot_w / n
-    bar_w = max(gap * 0.6, 4)
-    parts = []
+    bar_w = min(max(gap * 0.6, 4), 64)  # верхний предел -- иначе при n==1 (данные только за
+    # один год) единственный столбец растягивается почти на всю ширину графика (2026-07-21).
+    parts = [f'<text x="{width - margin_right}" y="14" font-size="10" text-anchor="end" '
+             f'fill="{COLOR_TEXT_MUTED}">число файлов</text>']
     for i, (label, v) in enumerate(items):
         bar_h = plot_h * (v / max_v)
         x = margin_left + i * gap + (gap - bar_w) / 2
@@ -422,17 +487,18 @@ def _svg_bar_chart(counter: Counter, width=680, height=220, color=COLOR_ACCENT) 
         parts.append(f'<text x="{x + bar_w / 2:.1f}" y="{max(y - 4, 12):.1f}" '
                       f'font-size="11" text-anchor="middle" fill="{COLOR_TEXT}">{v}</text>')
     return (f'<svg viewBox="0 0 {width} {height}" width="100%" height="{height}" role="img" '
-            f'aria-label="Фото по годам">' + "".join(parts) + "</svg>")
+            f'aria-label="Медиафайлы по годам">' + "".join(parts) + "</svg>")
 
 
-def _svg_pie(segments: list, size=170, value_fmt=str) -> tuple:
+def _svg_pie(segments: list, size=170, value_fmt=_n_files) -> tuple:
     """segments: [(label, value, color), ...]. Возвращает (svg, legend_html) -- полный круг
     с секторами от центра (не кольцо/донат) -- площадь сектора на глаз сравнить проще, чем
     толщину дугового кольца, а аудитория отчёта нетехническая (RULES.md/
     PROMPT_archive_report.md: 45-70 лет, ценит простоту, не дашборд).
 
-    value_fmt -- как показать value в легенде (по умолчанию как есть, для счётчиков файлов);
-    _fmt_bytes -- для диаграмм по объёму (см. "Объём по категориям" в _render_sheet2)."""
+    value_fmt -- как показать value в легенде (по умолчанию _n_files -- "45 файлов", с
+    единицей измерения, а не голое число, см. SESSION-HANDOFF.txt баг 6); _fmt_bytes -- для
+    диаграмм по объёму (см. "Объём по категориям" в _render_sheet2)."""
     segments = [(label, v, c) for label, v, c in segments if v > 0]
     total = sum(v for _, v, _ in segments)
     if total <= 0:
@@ -540,8 +606,13 @@ p {{ margin: 8px 0; }}
 .stat-row {{ display: flex; flex-wrap: wrap; gap: 18px 28px; margin-bottom: 6px; }}
 .stat {{ flex: 1 1 140px; min-width: 130px; }}
 .stat .value {{ font-size: 25px; font-weight: 600; color: var(--accent); }}
-.stat .label {{ font-size: 13px; color: var(--muted); }}
-.legend-row {{ font-size: 13px; margin: 4px 0; }}
+/* Раздел 7 приёмочного чек-листа (PROMPT_report_marketing.md, п.7): вспомогательный текст
+   был 12-13px -- источники ТЗ независимо сходятся на минимуме 16px для аудитории 45-70 лет;
+   поднято до 14px (не все 16px сразу -- 16px совпал бы с font-size .grid-3 h2/некоторых
+   заголовков и сгладил визуальную иерархию, дальше -- решение при следующем визуальном
+   аудите на реальном экране, не вслепую отсюда). */
+.stat .label {{ font-size: 14px; color: var(--muted); }}
+.legend-row {{ font-size: 14px; margin: 4px 0; }}
 .swatch {{ display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }}
 .chart-block {{ display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }}
 .chart-block .legend {{ min-width: 160px; }}
@@ -559,12 +630,12 @@ p {{ margin: 8px 0; }}
 .grid-2 .legend, .grid-3 .legend {{ min-width: 0; }}
 @media (max-width: 640px) {{ .grid-2 {{ grid-template-columns: 1fr; }} }}
 .city-list {{ display: flex; flex-wrap: wrap; gap: 6px 10px; padding: 0; margin: 0; list-style: none; }}
-.city-list li {{ background: var(--bg); border: 1px solid var(--line); border-radius: 999px; padding: 3px 12px; font-size: 13px; }}
+.city-list li {{ background: var(--bg); border: 1px solid var(--line); border-radius: 999px; padding: 3px 12px; font-size: 14px; }}
 .checklist {{ list-style: none; padding: 0; margin: 0; }}
 .checklist li {{ padding: 10px 0; border-bottom: 1px solid var(--line); }}
 .checklist li:last-child {{ border-bottom: none; }}
 .checklist .title {{ font-weight: 600; }}
-.checklist .detail {{ color: var(--muted); font-size: 13px; margin-top: 2px; }}
+.checklist .detail {{ color: var(--muted); font-size: 14px; margin-top: 2px; }}
 /* "Показать ещё N" -- <details> без JS, показывает все находки категории (не топ-N с
    отсылкой к CSV, решение пользователя 2026-07-20) без простыни на весь экран сразу. */
 .checklist li.expand {{ padding: 0; }}
@@ -577,8 +648,18 @@ p {{ margin: 8px 0; }}
 .checklist .nested {{ margin: 0 0 10px; }}
 .checklist .nested li {{ padding: 8px 0 8px 18px; }}
 .bridge {{ color: var(--accent); font-style: italic; margin-top: 12px; }}
-.muted {{ color: var(--muted); font-size: 13px; }}
-.footer {{ text-align: center; color: #8a8a7c; font-size: 12px; margin: 16px 0 24px; }}
+.muted {{ color: var(--muted); font-size: 14px; }}
+/* Раздел 7 приёмочного чек-листа: свой цвет #8a8a7c на --bg давал контраст 3.1:1, не
+   проходит WCAG AA для обычного текста (нужно >=4.5:1, посчитано явно, не принято на веру)
+   -- заменён на var(--muted), тот же цвет, что и остальной вспомогательный текст (4.79:1 на
+   --bg / 5.4:1 на белом фоне карточек -- оба проходят). */
+.footer {{ text-align: center; color: var(--muted); font-size: 13px; margin: 16px 0 24px; }}
+/* 4.1/4.3 (PROMPT_report_marketing.md): баннер доверия -- одна строка, не карточка, чтобы не
+   раздувать первый экран; чек-лист рядом -- компактный, с нейтральными зелёными отметками. */
+.trust-banner {{ font-size: 17px; font-weight: 600; color: var(--accent); margin: 4px 0 8px; }}
+.trust-list {{ list-style: none; padding: 0; margin: 0 0 20px; font-size: 14px; color: var(--text); }}
+.trust-list li {{ padding: 2px 0; }}
+.trust-list li::before {{ content: "✓  "; color: var(--accent); font-weight: 700; }}
 @media print {{ body {{ background: #fff; }} .card {{ break-inside: avoid; }} }}
 </style>
 </head>
@@ -607,7 +688,13 @@ def _write(out_path: str, html_doc: str) -> None:
 
 
 def generate_placeholder_report(reason: str, out_path: str, program_name: str = "PhotoArchive") -> None:
+    # 4.1 (PROMPT_report_marketing.md): баннер доверия -- "ещё важнее здесь, потому что
+    # заглушка появляется как раз в неоднозначных исходах" (источник не пишет ни один файл
+    # пользователя ни в каком из случаев, приводящих к заглушке -- см. вызывающий код).
+    trust_banner = ('<p class="trust-banner">Оригиналы не изменены и не удалены — программа '
+                     'работает только с копиями.</p>')
     body = f"""
+{trust_banner}
 <div class="card">
   <h1>{html.escape(program_name)}</h1>
   <p class="subtitle">{time.strftime("%Y-%m-%d %H:%M")}</p>
@@ -623,11 +710,23 @@ def generate_placeholder_report(reason: str, out_path: str, program_name: str = 
 # ============================================================================
 
 
-def _render_sheet1(model: dict) -> str:
+def _render_sheet1(model: dict, level: str = "target") -> str:
+    # 2026-07-24: level=="analyze" -- SOURCE ещё только просканирован, ничего не собрано и не
+    # "пополнено" -- заголовок/подписи "Ваш архив"/"с учётом только что добавленного в этом
+    # пополнении" были бы неправдой (живая находка 2026-07-21, подтверждена чтением кода в
+    # этой сессии: сборки в analyze-режимах нет вообще, run_stats для них не передаётся).
+    # Вызов из _render_found_archive_block() (найденный СУЩЕСТВУЮЩИЙ архив внутри SOURCE) не
+    # затронут -- level там не передаётся, остаётся по умолчанию "target", и это корректно:
+    # для найденного архива "Ваш архив" -- правда, там реально есть история прошлых прогонов.
+    is_scan = level == "analyze"
     total_media = model["total_media"]
     years = model["years"]
     stats = [f'<div class="stat"><div class="value">{total_media}</div>'
-             f'<div class="label">фото и видео в архиве</div></div>']
+             f'<div class="label">{"фото и видео найдено" if is_scan else "фото и видео в архиве"}</div></div>']
+
+    if model["total_bytes"]:
+        stats.append(f'<div class="stat"><div class="value">{_fmt_bytes(model["total_bytes"])}</div>'
+                      f'<div class="label">{"занимает на диске" if is_scan else "занимает архив"}</div></div>')
 
     if years:
         span = max(years) - min(years) + 1
@@ -638,13 +737,21 @@ def _render_sheet1(model: dict) -> str:
         stats.append(f'<div class="stat"><div class="value">{_fmt_bytes(model["bytes_saved"])}</div>'
                       f'<div class="label">сэкономлено на точных повторах</div></div>')
 
-    # Все данные отчёта -- из CSV-логов TARGET, которые копятся с первого прогона
-    # программы на этом архиве и никогда не очищаются между прогонами (см.
-    # _finalize_target_report/PROMPT_archive_report.md) -- без этой строки цифры читались
-    # бы как "результат вот этого пополнения", а на самом деле это история архива целиком.
-    parts = ['<div class="card">', "<h1>Ваш архив</h1>",
-             '<p class="subtitle">Цифры — по архиву целиком, с учётом только что добавленного '
-             'в этом пополнении, за всё время, что вы пользуетесь программой с этим архивом.</p>',
+    if is_scan:
+        heading, subtitle = "Что нашлось на этом диске", (
+            'Цифры — по всему, что программа увидела при сканировании прямо сейчас. Сборка '
+            'архива ещё не запускалась — ничего не скопировано и не изменено.')
+    else:
+        # Все данные отчёта -- из CSV-логов TARGET, которые копятся с первого прогона
+        # программы на этом архиве и никогда не очищаются между прогонами (см.
+        # _finalize_target_report/PROMPT_archive_report.md) -- без этой строки цифры читались
+        # бы как "результат вот этого пополнения", а на самом деле это история архива целиком.
+        heading, subtitle = "Ваш архив", (
+            'Цифры — по архиву целиком, с учётом только что добавленного в этом пополнении, '
+            'за всё время, что вы пользуетесь программой с этим архивом.')
+
+    parts = ['<div class="card">', f"<h1>{heading}</h1>",
+             f'<p class="subtitle">{subtitle}</p>',
              '<div class="stat-row">'] + stats + ["</div>"]
 
     oldest = model["oldest"]
@@ -657,7 +764,7 @@ def _render_sheet1(model: dict) -> str:
         else:
             date_str = str(year)
         place_str = f" ({html.escape(place)})" if place else ""
-        parts.append(f'<p><b>Самое старое фото:</b> {date_str}{place_str}</p>')
+        parts.append(f'<p><b>Самый старый файл:</b> {date_str}{place_str}</p>')
 
     if model["year_months"]:
         busiest_ym, busiest_n = model["year_months"].most_common(1)[0]
@@ -672,9 +779,36 @@ def _render_sheet1(model: dict) -> str:
         city_items = "".join(f"<li>{html.escape(c)}</li>" for c in top_cities)
         parts.append(f'<p><b>География:</b></p><ul class="city-list">{city_items}</ul>')
 
+    if model["video_duration_seconds"]:
+        parts.append(f'<p><b>Видео в архиве:</b> суммарно '
+                      f'{_fmt_video_duration(model["video_duration_seconds"])} отснятого материала</p>')
+
     parts.append('<p class="bridge">Дальше — ваш архив в цифрах.</p>')
     parts.append("</div>")
     return "".join(parts)
+
+
+def _render_trust_block(level: str) -> str:
+    """4.1/4.3 (PROMPT_report_marketing.md): баннер доверия -- самая частая рекомендация всех
+    шести источников маркетингового ТЗ, полностью отсутствовала в HTML (фраза была только в
+    консоли, photosort_win.py:6484/6209). Одна строка, НЕ карточка целиком (раздел 4.1 явно
+    просит не раздувать плотный первый экран) + компактный чек-лист из уже существующих фактов
+    рядом с ней (раздел 4.3, perplexity-источник) -- задача снять тревогу за первые секунды
+    просмотра, не сообщить что-то новое. В самом начале ЛЮБОГО отчёта (все level), включая
+    заглушку (см. generate_placeholder_report())."""
+    items = [
+        "Файлы не удалялись.",
+        "Оригиналы сохранены на своих местах.",
+        "Ошибки чтения показаны отдельно, не смешаны с остальным.",
+    ]
+    if level != "target":
+        items.append("Реальных изменений на диске нет — это предпросмотр.")
+    li = "".join(f"<li>{html.escape(t)}</li>" for t in items)
+    return (
+        '<p class="trust-banner">Оригиналы не изменены и не удалены — программа работает '
+        'только с копиями.</p>'
+        f'<ul class="trust-list">{li}</ul>'
+    )
 
 
 def _render_this_run(run_stats: dict, level: str = "target") -> str:
@@ -704,8 +838,13 @@ def _render_this_run(run_stats: dict, level: str = "target") -> str:
     n_skipped = run_stats.get("skipped_present", 0)
     n_disputed = run_stats.get("disputed", 0)
     n_unreadable = run_stats.get("unreadable_count", 0)
+    # 4.2 (PROMPT_report_marketing.md): триада исхода -- остановка по нехватке места ДОЛЖНА
+    # быть видна, даже если по совпадению ничего не успело дописаться (n_new_total==0) --
+    # без него в "any(...)" ниже такой прогон молча ушёл бы в пустую секцию, а отчёт выглядел
+    # бы неотличимо от "SOURCE был пуст".
+    stopped_for_space = bool(run_stats.get("stopped_for_space"))
 
-    if not any((n_new_total, n_skipped, n_disputed, n_unreadable)):
+    if not any((n_new_total, n_skipped, n_disputed, n_unreadable, stopped_for_space)):
         return ""  # SOURCE был пуст/всё уже было в архиве -- нет смысла в пустой секции
 
     preview = level != "target"
@@ -722,6 +861,13 @@ def _render_this_run(run_stats: dict, level: str = "target") -> str:
 
     stats_html = [f'<div class="stat"><div class="value">{n_new_total}</div>'
                   f'<div class="label">{added_label}</div></div>']
+    # Пакет п.2 (SESSION-HANDOFF.txt): объём этого прогона -- есть в run_stats с самого
+    # появления секции, просто не рендерился нигде (REPORT_STRUCTURE.md, "известные пробелы").
+    bytes_appended = run_stats.get("bytes_appended", 0)
+    if bytes_appended:
+        appended_label = "было бы добавлено в архив" if preview else "добавлено в архив"
+        stats_html.append(f'<div class="stat"><div class="value">{_fmt_bytes(bytes_appended)}</div>'
+                           f'<div class="label">{appended_label}</div></div>')
     bytes_saved = run_stats.get("bytes_saved_by_dedup", 0)
     if bytes_saved:
         stats_html.append(f'<div class="stat"><div class="value">{_fmt_bytes(bytes_saved)}</div>'
@@ -732,12 +878,37 @@ def _render_this_run(run_stats: dict, level: str = "target") -> str:
             f'<div class="stat"><div class="value">{archives_extracted}</div>'
             f'<div class="label">{_plural(archives_extracted, "архив распакован", "архива распаковано", "архивов распаковано")}</div></div>'
         )
+    # free_disk_bytes -- ТОЛЬКО [2] (_bare_launch_run_dryrun() кладёт его в merged перед
+    # вызовом generate_report(), см. photosort_win.py) -- прогноз именно на момент пробного
+    # прогона, report.py сам ничего не пересчитывает, просто читает переданное число.
+    free_disk_bytes = run_stats.get("free_disk_bytes", 0)
+    if free_disk_bytes:
+        stats_html.append(f'<div class="stat"><div class="value">{_fmt_bytes(free_disk_bytes)}</div>'
+                           f'<div class="label">свободно на диске сейчас</div></div>')
+    undated = run_stats.get("undated", 0)
+    if undated:
+        undated_label = ("не удалось бы распознать дату" if preview else
+                          "не удалось распознать дату")
+        stats_html.append(f'<div class="stat"><div class="value">{undated}</div>'
+                           f'<div class="label">{undated_label}</div></div>')
 
     parts = [
         '<div class="card">', f"<h2>{html.escape(heading)}</h2>",
         f'<p class="muted">{intro}</p>',
-        '<div class="stat-row">',
-    ] + stats_html + ["</div>"]
+    ]
+    if stopped_for_space:
+        # 4.2 (PROMPT_report_marketing.md): "успех с оговоркой", не тревога -- та же формулировка
+        # по смыслу, что уже честно говорит консоль (photosort_win.py, ОСТАНОВКА: недостаточно
+        # места), просто без слов "ошибка"/"критично" (раздел 2/6 этого же ТЗ). EXIT_INSUFFICIENT_SPACE
+        # реален и уже обрабатывается -- report.py раньше нигде не читал этот флаг, отчёт после
+        # частичной остановки выглядел точно так же, как отчёт после полного успеха.
+        parts.append(
+            '<p><b>Почти всё разложено.</b> Не хватило места на диске назначения — программа '
+            'остановилась, ничего не испортив. Освободите место и запустите ещё раз — '
+            'продолжится с того же места.</p>'
+        )
+    parts.append('<div class="stat-row">')
+    parts += stats_html + ["</div>"]
 
     segments = [
         ("Новые файлы", max(n_new_total - n_near_dup, 0), CATEGORY_PALETTE[0]),
@@ -782,13 +953,55 @@ def _render_this_run(run_stats: dict, level: str = "target") -> str:
     return "".join(parts)
 
 
+_YEAR_GAP_MIN_SPAN = 5  # 4.5: короче нескольких лет истории -- "провал" неотличим от шума
+_YEAR_GAP_MIN_NEIGHBOR_AVG = 5  # соседи сами малочисленны -- честно не с чем сравнивать
+_YEAR_GAP_MIN_RATIO = 10  # "на порядок меньше соседних", консервативный порог по тексту ТЗ
+
+
+def _find_year_gap(years: Counter):
+    """4.5 (PROMPT_report_marketing.md, лучшая находка gigachat-источника): мягкое,
+    консервативное наблюдение -- ищет ОДИН самый заметный провал (год с числом файлов на
+    порядок меньше среднего соседних лет), не более одного (раздел 4.5 явно просит не более
+    одного наблюдения) и только если истории достаточно, чтобы провал не был шумом на
+    маленьком архиве. Возвращает год-кандидат или None. Пороги -- консервативные по духу ТЗ
+    ("показывать только явные, бесспорные провалы"), не точная наука -- намеренно оставлены
+    константами выше, чтобы подстроить после того, как разработчик увидит реальные архивы
+    (раздел 4.5 самого ТЗ прямо разрешает донастройку без нового согласования)."""
+    if not years:
+        return None
+    all_years = sorted(years)
+    span = all_years[-1] - all_years[0] + 1
+    if span < _YEAR_GAP_MIN_SPAN:
+        return None
+    best_ratio, best_year = 0, None
+    for y in range(all_years[0] + 1, all_years[-1]):
+        neighbor_avg = (years.get(y - 1, 0) + years.get(y + 1, 0)) / 2
+        if neighbor_avg < _YEAR_GAP_MIN_NEIGHBOR_AVG:
+            continue  # соседи и сами малочисленны -- честно не с чем сравнивать
+        this_n = years.get(y, 0)
+        ratio = neighbor_avg / max(this_n, 1)
+        if ratio >= _YEAR_GAP_MIN_RATIO and ratio > best_ratio:
+            best_ratio, best_year = ratio, y
+    return best_year
+
+
 def _render_sheet2(model: dict) -> str:
-    parts = ['<div class="card">', "<h2>Фото по годам</h2>"]
+    parts = ['<div class="card">', "<h2>Медиафайлы по годам</h2>"]
     years_svg = _svg_bar_chart(model["years"])
     if years_svg:
         parts.append(years_svg)
     else:
         parts.append('<p class="muted">Недостаточно данных для графика.</p>')
+    gap_year = _find_year_gap(model["years"])
+    if gap_year is not None:
+        # Тон -- нейтральное наблюдение с намёком, НЕ утверждение и НЕ "проблема архива"
+        # (раздел 6 ТЗ, антипримеры) -- та же дисциплина тона, что уже принята для
+        # unreadable.csv/disputes.csv в остальном отчёте.
+        parts.append(
+            f'<p class="muted">Похоже, за {gap_year} год сохранилось заметно меньше снимков, '
+            f'чем за соседние годы — возможно, часть этих воспоминаний ждёт на другом диске '
+            f'или карте памяти.</p>'
+        )
     parts.append("</div>")
 
     pie_charts = [
@@ -796,7 +1009,7 @@ def _render_sheet2(model: dict) -> str:
             ("Фото", model["counts"]["image"], CATEGORY_PALETTE[0]),
             ("Видео", model["counts"]["video"], CATEGORY_PALETTE[1]),
             ("RAW", model["counts"]["raw"], CATEGORY_PALETTE[2]),
-        ], str),
+        ], _n_files),
         # Байты, не штуки -- та же тройка категорий, что "Тип медиа" выше, но по занятому
         # месту: видео обычно куда тяжелее по ГБ, чем по числу файлов, само по себе
         # интересное сравнение с первой диаграммой -- поэтому сразу следом, не через другие
@@ -816,13 +1029,13 @@ def _render_sheet2(model: dict) -> str:
             ("Похожие кадры сохранены", model["decisions"]["near_dup"], CATEGORY_PALETTE[2]),
             ("Не прочитано", model["decisions"]["unreadable"], CATEGORY_PALETTE[3]),
             ("Спорные", model["decisions"]["disputed"], CATEGORY_PALETTE[4]),
-        ], str),
+        ], _n_files),
         ("Надёжность дат", [
             ("Точная (EXIF)", model["tier_counts"].get("A", 0), CATEGORY_PALETTE[0]),
             ("Высокая", model["tier_counts"].get("B", 0), CATEGORY_PALETTE[1]),
             ("Оценочная", model["tier_counts"].get("C", 0), CATEGORY_PALETTE[2]),
             ("Низкая", model["tier_counts"].get("D", 0), CATEGORY_PALETTE[3]),
-        ], str),
+        ], _n_files),
         # Флаг из appended.csv (small_image/low_confidence_photo, см. RunLogs.appended()) --
         # раньше нигде не визуализировался, был доступен только тем, кто откроет сам CSV.
         # 2026-07-20, по запросу пользователя: отчёт должен закрывать это без похода в logs\.
@@ -830,7 +1043,7 @@ def _render_sheet2(model: dict) -> str:
             ("Обычные", model["quality_flags"].get("", 0), CATEGORY_PALETTE[0]),
             ("Маленькие фото", model["quality_flags"].get("small_image", 0), CATEGORY_PALETTE[1]),
             ("Низкая уверенность", model["quality_flags"].get("low_confidence_photo", 0), CATEGORY_PALETTE[3]),
-        ], str),
+        ], _n_files),
     ]
 
     # География -- топ-5 мест + "остальные" одним сектором (иначе десяток тонких клиньев не
@@ -843,7 +1056,7 @@ def _render_sheet2(model: dict) -> str:
                         for i, (name, v) in enumerate(top_cities)]
         if rest > 0:
             geo_segments.append(("Остальные места", rest, COLOR_LINE))
-        pie_charts.append(("География", geo_segments, str))
+        pie_charts.append(("География", geo_segments, _n_files))
 
     # Раскладка по типу подачи, не просто "рядом чтобы компактно" (решение пользователя
     # 2026-07-20): круговые диаграммы -- у всех подпись сбоку (circle+legend, одна визуальная
@@ -866,8 +1079,16 @@ def _render_sheet2(model: dict) -> str:
     # (2026-07-20), текст съёживался вдвое вместе с шириной колонки (viewBox фиксирован под
     # ~680px) и переставал читаться. hbar-графику ширина нужна по-настоящему, не для симметрии.
     if model["top_albums"]:
+        # 4.4 (PROMPT_report_marketing.md): объясняет ПОЧЕМУ файл оказался в альбоме, а не в
+        # папке по дате -- данные для этого уже есть (_parse_album/_parse_bydate_segment
+        # выше), просто не были проговорены текстом до этого раздела ТЗ.
         hbar = _svg_hbar_chart([(name, b, _fmt_bytes(b)) for name, b in model["top_albums"]])
-        parts.append(f'<div class="card"><h2>Топ альбомов по размеру</h2>{hbar}</div>')
+        parts.append(
+            '<div class="card"><h2>Топ альбомов по размеру</h2>'
+            '<p class="muted">Где у исходных папок были понятные названия — они сохранены '
+            'как альбомы. Остальное разложено по датам съёмки.</p>'
+            f'{hbar}</div>'
+        )
 
     return "".join(parts)
 
@@ -1006,14 +1227,15 @@ def _render_checklist_card(heading: str, items: list, intro: str = "") -> str:
 def _render_sheet3_single(model: dict, level: str) -> str:
     """WORKDIR/analyze/старые вызовы без run_start -- один неразделённый список, ОБЯЗАТЕЛЬНО
     кумулятивный за всю историю архива (для TARGET-уровня с run_start Лист 3 физически
-    разнесён на две части отчёта -- см. _render_recommendations()/_generate_from_model())."""
+    разнесён на две части отчёта -- см. _render_recommendations()/_generate_from_model()).
+
+    level=="analyze" раньше безусловно дописывал заглушку "рекомендации дорабатываются" --
+    убрано 2026-07-24: с реализацией analyze как "2 части" (ROADMAP.md) _build_checklist_items
+    уже строит настоящий рабочий чек-лист и для part 1 (сырой скан), и для найденных архивов
+    part 2 (_render_found_archive_block), заглушка рядом с реальными находками (near-dup-серии,
+    unreadable и т.п.) была не честной, а устаревшей (найдено живым прогоном 2026-07-21,
+    подтверждено чтением кода в этой сессии)."""
     items = _build_checklist_items(model)
-    if level == "analyze":
-        items.append(_li(
-            "Эта часть рекомендаций дорабатывается",
-            "Отдельный чек-лист для «источник для будущей сборки» / «уже готовый архив» "
-            "появится в одной из следующих версий.",
-        ))
     return _render_checklist_card("Что стоит проверить", items)
 
 
@@ -1122,7 +1344,16 @@ def build_model_from_analyze_stats(stats) -> dict:
     return {
         "counts": counts,
         "bytes_by_kind": Counter(),  # AnalyzeStats не хранит байты по типу медиа
-        "total_bytes": stats.predicted_unique_bytes,
+        # Пакет п.2 (SESSION-HANDOFF.txt): stats.total_bytes -- реальный объём просканированного
+        # SOURCE (уже пишется в analyze_report.csv на каждый [1]/analyze* прогон), не
+        # stats.predicted_unique_bytes -- та величина считает "что добавилось бы после дедупа"
+        # (доступна только analyze/analyze-full после полного прохода хеширования, для
+        # analyze-quick, т.е. самого [1], всегда 0) -- разные по смыслу числа, здесь нужен
+        # именно объём того, что программа увидела, а не прогноз дедупа.
+        "total_bytes": stats.total_bytes,
+        # 4.6: AnalyzeStats не пишет appended.csv (analyze-режимы ничего не архивируют) --
+        # источника для кумулятивной длительности видео здесь нет, плашка просто не появится.
+        "video_duration_seconds": 0.0,
         "total_media": stats.n_images + stats.n_videos + stats.n_raw,
         "years": Counter(stats.dates_by_year),
         "year_months": Counter(stats.dates_by_year_month),
@@ -1150,9 +1381,44 @@ def build_model_from_analyze_stats(stats) -> dict:
 # ============================================================================
 
 
+def _render_cta_block(level: str, target_path: str = None) -> str:
+    """4.7/4.8 (PROMPT_report_marketing.md): финальный блок отчёта -- "что дальше" (все шесть
+    источников ТЗ называют отсутствие явного финального действия пробелом) + для успешной
+    полной сборки единственный совет-не-апсейл про резервную копию (4.8, решение пользователя
+    2026-07-22: показывать всегда после успешной полной сборки, без порога по размеру архива).
+    HTML не может запустить программу заново -- честно ограничиться текстом/ссылкой на файл,
+    не изображать интерактивность, которой нет."""
+    parts = ['<div class="card">']
+    if level == "target":
+        if target_path:
+            # file://-ссылка на реальном Windows-браузере ведёт себя по-разному (некоторые
+            # ограничивают переходы file://->file:// из соображений безопасности) -- раздел 8
+            # ТЗ явно просит проверить на реальном железе (Windows-сессия) до того, как
+            # полагаться на неё как на основной CTA; путь продублирован текстом рядом на
+            # случай, если сама ссылка не сработает -- НЕ os.path (target_path -- всегда
+            # Windows-путь, тот же случай, что и у _win_dirname/_parse_bydate_segment выше,
+            # этот модуль импортируется под pytest и на не-Windows раннере).
+            href = "file:///" + target_path.replace("\\", "/")
+            parts.append(f'<p><a href="{html.escape(href)}">Открыть папку с архивом</a> '
+                          f'— {html.escape(target_path)}</p>')
+        parts.append('<p class="muted">Хотите проверить ещё один диск или флешку — запустите '
+                      'программу снова с новым источником.</p>')
+        parts.append(
+            '<p><b>Совет:</b> теперь, когда архив собран, стоит сделать его резервную копию '
+            'на другом диске или в облаке — так воспоминания не будут зависеть от одного '
+            'носителя.</p>'
+        )
+    else:
+        parts.append('<p class="muted">Нравится результат? Можно запустить настоящую сборку — '
+                      'ничего из увиденного здесь пока не записано.</p>')
+    parts.append('</div>')
+    return "".join(parts)
+
+
 def _generate_from_model(model: dict, out_path: str, level: str, program_name: str,
                           run_stats: dict = None, checklist_new: dict = None,
-                          checklist_before: dict = None, found_archives: tuple = None) -> None:
+                          checklist_before: dict = None, found_archives: tuple = None,
+                          target_path: str = None) -> None:
     # level=="workdir" (CLI --dry-run/интерактивный [2], решение пользователя 2026-07-20,
     # третий заход) -- ТОЛЬКО часть 1 ("Пробный прогон" + рекомендации по нему), без "Ваш
     # архив"/диаграмм: и содержательно нечего показывать (для [2] данные чисто in-memory,
@@ -1173,7 +1439,7 @@ def _generate_from_model(model: dict, out_path: str, level: str, program_name: s
     # одним общим блоком в хвосте -- иначе про "это только что произошедшее" читателю
     # приходится вспоминать уже после того, как рассказ ушёл в архив целиком.
     elif checklist_new is None and checklist_before is None:
-        body = (_render_this_run(run_stats, level) + _render_sheet1(model) + _render_sheet2(model)
+        body = (_render_this_run(run_stats, level) + _render_sheet1(model, level) + _render_sheet2(model)
                 + _render_sheet3_single(model, level))
     else:
         body = (
@@ -1188,12 +1454,19 @@ def _generate_from_model(model: dict, out_path: str, level: str, program_name: s
     if found_archives:
         top_level, nested = found_archives
         body += _render_found_archives(top_level, nested, program_name)
+    # 4.7/4.8: CTA-блок + совет про бэкап -- ровно в конце, после последнего чек-листа/части 2.
+    body += _render_cta_block(level, target_path)
+    # 4.1/4.3 (PROMPT_report_marketing.md): баннер доверия + компактный чек-лист -- в самом
+    # начале ЛЮБОГО отчёта (все уровни), не только report.generate_report()/generate_report_
+    # from_analyze_stats() по отдельности -- один общий хук здесь проще, чем дублировать вызов
+    # в обоих публичных входах.
+    body = _render_trust_block(level) + body
     _write(out_path, _page_shell(f"{program_name} — отчёт архива", body))
 
 
 def generate_report(data: dict, out_path: str, level: str = "target",
                      program_name: str = "PhotoArchive", run_stats: dict = None,
-                     run_start: str = None) -> None:
+                     run_start: str = None, target_path: str = None) -> None:
     """level: "target" (полный archive-прогон) | "workdir" ([2]/--dry-run) — оба читают
     dict[str, list[dict]] (CSV TARGET или CollectingRunLogs.rows). Для
     analyze/analyze-full/analyze-quick см. generate_report_from_analyze_stats().
@@ -1210,7 +1483,11 @@ def generate_report(data: dict, out_path: str, level: str = "target",
     level=="workdir" -- используется ТОЛЬКО "новое" (см. _generate_from_model()), "раньше"
     вычисляется, но сознательно не рендерится (CLI --dry-run пишет реальные CSV TARGET без
     реального копирования файла -- история там может быть засорена фантомными записями
-    прошлых --dry-run, см. _generate_from_model())."""
+    прошлых --dry-run, см. _generate_from_model()).
+
+    target_path (4.7, PROMPT_report_marketing.md): абсолютный путь TARGET -- используется
+    только при level=="target", для ссылки "Открыть папку с архивом" в CTA-блоке в конце
+    отчёта (_render_cta_block()). None -- ссылка не рендерится, остаётся только текст."""
     model = build_model_from_rows(data)
     checklist_new = checklist_before = None
     if run_start:
@@ -1218,7 +1495,8 @@ def generate_report(data: dict, out_path: str, level: str = "target",
         checklist_new = _build_checklist_fields(data_new)
         checklist_before = _build_checklist_fields(data_before)
     _generate_from_model(model, out_path, level, program_name, run_stats=run_stats,
-                          checklist_new=checklist_new, checklist_before=checklist_before)
+                          checklist_new=checklist_new, checklist_before=checklist_before,
+                          target_path=target_path)
 
 
 def generate_report_from_analyze_stats(stats, out_path: str, level: str = "analyze",

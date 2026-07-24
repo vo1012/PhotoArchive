@@ -92,25 +92,19 @@ SITE_URL = "https://vo1012.github.io/PhotoArchive"  # 2026-07-20: сайт пр�
     # НА GitHub (FAQ.md/QUICKSTART.md/PhotoArchive_ot_avtora.md ссылаются на github.com у себя
     # в исходном .md -- см. build/md_to_pdf.py про то, где именно они переходят на SITE_URL для
     # оффлайн-аудитории). При смене адреса сайта поменять только здесь -- print_welcome_banner()/
-    # build_arg_parser()/DONATION_TEXT ссылаются на эту же константу.
+    # build_arg_parser() ссылаются на эту же константу.
 
-DONATION_TEXT = (  # 2026-07-20: указывает на SITE_URL, а не на GitHub -- в отличие от P.S. в
-    # PhotoArchive_ot_avtora.md/FAQ.md (те при чтении НА GitHub сознательно остаются со ссылкой
-    # на github.com, см. SITE_URL выше); текст здесь и там разошёлся дословно, синхронизировать
-    # больше не нужно. Оффлайн-PDF этих двух документов получает ту же формулировку про сайт,
-    # что и здесь -- через build/md_to_pdf.py, _inject_donation_details() (только когда рядом
-    # нет DONATE.txt -- см. ниже). Решение 2026-07-15: полный текст, не короткая строка, т.к.
-    # --help может быть единственным местом, где пользователь вообще видит эту программу (exe
-    # пересылается мессенджерами без README/письма от автора).
-    # 2026-07-17: этот текст НИКОГДА не получает реальный номер карты, даже в билде "для своих"
-    # -- см. build/md_to_pdf.py, _inject_donation_details(): инъекция реальных реквизитов из
-    # локального DONATE.txt (никогда не коммитится) происходит только в PDF
-    # PhotoArchive_ot_avtora.md/FAQ.md, --help всегда указывает на сайт как источник актуальных
-    # способов поддержать разработку.
+DONATION_TEXT = (  # 2026-07-24: реальный контакт (почта) публикуется ТОЛЬКО в разделе
+    # "Контакты" на сайте -- --help по-прежнему указывает на сайт, не дублирует адрес
+    # текстом (тот же принцип единственного места публикации, что раньше применялся к
+    # номеру карты; см. историю решения в ROADMAP.md/CHANGELOG.md). Решение 2026-07-15:
+    # полный текст, не короткая строка, т.к. --help может быть единственным местом, где
+    # пользователь вообще видит эту программу (exe пересылается мессенджерами без
+    # README/письма от автора).
     "Этот проект не преследует получение коммерческой выгоды -- программа бесплатна и\n"
     "останется такой для всех, вне зависимости от того, воспользуетесь вы этим предложением\n"
     "или нет. Если PhotoArchive окажется полезной и вы захотите поддержать её разработку --\n"
-    "актуальные способы сделать это указаны на сайте проекта:\n"
+    "актуальный способ сделать это указан в разделе «Контакты» на сайте проекта:\n"
     f"{SITE_URL}."
 )
 
@@ -1903,10 +1897,24 @@ def find_reparse_point_in_tree(root: str):
     on disk -- the walker's cycle-detection (ancestors=...) only catches a loop back onto an
     already-open ancestor of the CURRENT walk, not a one-way escape to an unrelated directory.
     Worst case: a booby-trapped "family photos.zip" silently pulls unrelated files (e.g. the
-    victim's Documents folder) into the resulting archive. Whether 7z.exe/UnRAR.exe actually do
-    this on a real Windows machine is UNCONFIRMED (needs verification on real hardware, see
-    SESSION-HANDOFF.txt) -- this check costs nothing when it never triggers, and closes the gap
-    outright if it does. os.walk(followlinks=False) does not descend into a reparse point
+    victim's Documents folder) into the resulting archive.
+
+    PARTIALLY CONFIRMED on real hardware 2026-07-24 (still open for the specific code path this
+    function's own logic executes -- see SESSION-HANDOFF.txt): a zip member crafted as a Unix
+    symlink (S_IFLNK external_attr, same shape as ci/windows_ci_test.py's
+    test_archive_symlink_rejected) makes bin/7z.exe fail extraction OUTRIGHT on a normal,
+    non-elevated Windows account without Developer Mode -- "Cannot create symbolic link: client
+    does not have the required privilege" -- so `extract_archive()` already returns False and
+    the whole archive is rejected via `archive_extract_failed`, this function is never even
+    reached. That is itself a real, confirmed safety net for the overwhelming majority of
+    PhotoArchive's target users (regular Windows accounts). Whether 7z.exe/UnRAR.exe can still
+    materialize a reparse point when the *extracting* process DOES hold
+    SeCreateSymbolicLinkPrivilege (Developer Mode enabled, or elevated/admin) remains
+    unconfirmed -- attempted on this same machine, blocked short of a full verification by the
+    privilege only taking effect in a fresh logon session (a mid-session Developer Mode toggle
+    didn't unblock symlink creation without a restart). This check still costs nothing when it
+    never triggers, and remains the right defense-in-depth for that narrower, still-open case.
+    os.walk(followlinks=False) does not descend into a reparse point
     (so this scan itself can't be tricked into walking outside `root`), but still lists it once
     at its parent level -- enough to detect and reject it. Returns the first reparse point path
     found, or None if the tree is clean."""
@@ -3596,7 +3604,8 @@ class RunLogs:
         _makedirs_iterative(winlong(logs_dir))
         self._files = {}
         self._writers = {}
-        self._init_csv("appended", ["timestamp", "source", "dest", "reason", "flags"])
+        self._init_csv("appended",
+                        ["timestamp", "source", "dest", "reason", "flags", "date", "duration"])
         self._init_csv("skipped", ["timestamp", "source", "matched_with", "reason"])
         self._init_csv("disputes", ["timestamp", "source", "reason", "dest", "was_hidden"])
         self._init_csv("dates_review", ["timestamp", "dest", "date", "tier", "confidence", "evidence", "source"])
@@ -3642,8 +3651,20 @@ class RunLogs:
         except OSError:
             pass
 
-    def appended(self, source, dest, reason, flags=""):
-        self._write_row("appended", [self._ts(), source, dest, reason, flags])
+    def appended(self, source, dest, reason, flags="", date="", duration=""):
+        """date (SESSION-HANDOFF.txt, баг 9): реальная дата файла (`YYYY-MM-DD` -- полная,
+        либо `YYYY` -- только год, precision=="year", см. resolve_date()), а не то, что можно
+        восстановить разбором `dest` -- у файлов в Albums\\... нет сегмента ByDate в пути
+        вообще, report.py не может взять дату из dest для них никак иначе. "" -- дата
+        неизвестна (Tier D) либо вызывающий код её не передал (raw-зеркало, old call sites).
+
+        duration (4.6, PROMPT_report_marketing.md): длительность видео в секундах (float,
+        `rec.duration`, уже посчитана `video_duration_and_resolution()` при полном хешировании),
+        персистентная колонка -- по аналогии с `date` выше, чтобы кумулятивная сумма по всему
+        архиву считалась дешёвым чтением CSV, а не повторным чтением контейнера каждого видео
+        при каждом рендере отчёта (см. обсуждение "ось стоимости" в самом разделе 4.6). "" --
+        не видео либо длительность не удалось определить."""
+        self._write_row("appended", [self._ts(), source, dest, reason, flags, date, duration])
 
     def skipped(self, source, matched_with, reason):
         self._write_row("skipped", [self._ts(), source, matched_with, reason])
@@ -3774,9 +3795,10 @@ class CollectingRunLogs:
     def _ts(self):
         return time.strftime("%Y-%m-%d %H:%M:%S")
 
-    def appended(self, source, dest, reason, flags=""):
+    def appended(self, source, dest, reason, flags="", date="", duration=""):
         self.rows["appended"].append({"timestamp": self._ts(), "source": source, "dest": dest,
-                                       "reason": reason, "flags": flags})
+                                       "reason": reason, "flags": flags, "date": date,
+                                       "duration": duration})
 
     def skipped(self, source, matched_with, reason):
         self.rows["skipped"].append({"timestamp": self._ts(), "source": source,
@@ -4253,6 +4275,25 @@ def write_analyze_report_csv(path: str, stats: AnalyzeStats):
                 continue
             w.writerow([field_name, value])
 
+
+def write_dryrun_report_csv(path: str, stats: dict):
+    """Пакет п.1 (SESSION-HANDOFF.txt, "консольный вывод дублирует report.html"): по образцу
+    write_analyze_report_csv() выше -- machine-readable снимок [2] Пробный прогон в WORKDIR,
+    "metric,value", только скалярные поля `stats` (_sum_stats(results) + free_disk_bytes,
+    см. вызывающий код _bare_launch_run_dryrun() -- тот же словарь, что уже питает
+    report.html/консольную сводку) -- перезаписывается на каждый прогон, НЕ append-only (та
+    же логика, что и у analyze_report.csv, не полноценный RunLogs -- [2] эфемерен по
+    конструкции, история ему не нужна, см. ROADMAP.md). Без этого файла числа [2] сегодня
+    переживают только report.html (WORKDIR) и терминальный скроллбек -- закрыл вкладку
+    браузера или консоль, потерял."""
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["metric", "value"])
+        for key, value in stats.items():
+            if isinstance(value, (Counter, list, dict)):
+                continue
+            w.writerow([key, value])
+
 # ============================================================================
 # MAIN  (from pipeline/main.py)
 # ============================================================================
@@ -4616,6 +4657,18 @@ def _process_record(rec, st: _RunState, log=print):
 
     if decision.decision == "raw_mirrored":
         dest_dir = raw_dest_dir(item, rec, cfg, st.dest_path_by_read_path, date_ctx)
+        # REVIEW-HANDOFF.md, раунд 29 [БЛОКЕР]: без этого raw_without_jpeg в Albums\...
+        # оставался невидим для дат/года/города -- та же причина, что и баг 9 (report.py не
+        # может восстановить дату из dest без сегмента ByDate в пути), просто не покрытая
+        # фиксом бага 9, который писал date= только в image/video-ветке ниже.
+        date_value, _tier, _conf, _evidence, precision = resolve_date(
+            date_ctx, item.rel_path, item.mtime, rec.exif_dt, rec.exif_dt_source)
+        if date_value is None:
+            date_col = ""
+        elif precision == "year":
+            date_col = str(date_value.year)
+        else:
+            date_col = date_value.strftime("%Y-%m-%d")
 
         try:
             dest_path, is_dup = resolve_dest_path(
@@ -4636,7 +4689,7 @@ def _process_record(rec, st: _RunState, log=print):
         if not is_dup:
             pool.add(PoolEntry(sha256=rec.sha256, ftype="raw", dest_path=dest_path, size=item.size))
             st.dest_path_by_read_path[item.read_path] = dest_path
-            run_logs.appended(item.origin_display, dest_path, decision.note)
+            run_logs.appended(item.origin_display, dest_path, decision.note, date=date_col)
             run_logs.action(f"appended(raw): {item.origin_display} -> {dest_path}")
             stats["raw_mirrored"] += 1
             stats["bytes_appended"] += item.size
@@ -4724,7 +4777,22 @@ def _process_record(rec, st: _RunState, log=print):
     ))
     st.dest_path_by_read_path[item.read_path] = dest_path
     flags = rec.media_note if rec.media_note in ("small_image", "low_confidence_photo") else ""
-    run_logs.appended(item.origin_display, dest_path, decision.note or decision.decision, flags=flags)
+    # SESSION-HANDOFF.txt, баг 9: писать дату отдельной колонкой -- report.py не может
+    # восстановить её из dest для файлов в Albums\... (нет сегмента ByDate в пути вообще).
+    # precision=="year" -- только год достоверен (см. resolve_date()/build_bydate_dest_dir()),
+    # писать месяц/день оттуда же было бы ложной точностью.
+    if date_value is None:
+        date_col = ""
+    elif precision == "year":
+        date_col = str(date_value.year)
+    else:
+        date_col = date_value.strftime("%Y-%m-%d")
+    # 4.6 (PROMPT_report_marketing.md): длительность видео -- только для video, только если
+    # реально определена (ffprobe-подобное чтение контейнера может не суметь, rec.duration
+    # тогда None).
+    duration_col = str(rec.duration) if pool_ftype == "video" and rec.duration is not None else ""
+    run_logs.appended(item.origin_display, dest_path, decision.note or decision.decision,
+                       flags=flags, date=date_col, duration=duration_col)
     run_logs.action(f"appended: {item.origin_display} -> {dest_path}")
     if decision.matched_dest is not None and decision.decision in (
             "appended_near_dup", "appended_better", "appended_crop"):
@@ -4809,7 +4877,7 @@ def build_final_summary(stats: dict, walker: "SourceWalker", unreadable_count: i
     return "".join(lines)
 
 
-def run(cfg: Config, log=print, shared_pool=None):
+def run(cfg: Config, log=print, shared_pool=None, print_summary=True):
     """p.5.4б: весь реальный прогон обёрнут TargetLock -- см. его докстринг про TOCTOU-гонку,
     единственную найденную дыру в защите TARGET от параллельных запусков. Исключение --
     cfg.suppress_logs (ТЗ-меню 2026-07-10, раздел 5): интерактивный "пробный прогон" никогда
@@ -4819,14 +4887,17 @@ def run(cfg: Config, log=print, shared_pool=None):
     shared_pool (раунд 5 ревью, REVIEW-HANDOFF.md, вариант A): опциональный Pool из
     предыдущего вызова run() в рамках ОДНОГО batch-процесса (несколько SOURCE подряд на один
     TARGET) -- TargetLock тем не менее берётся заново на каждый SOURCE (дёшево, не архивный
-    пересканирование, риск гонки не выше уже принятого TOCTOU в докстринге TargetLock)."""
+    пересканирование, риск гонки не выше уже принятого TOCTOU в докстринге TargetLock).
+
+    print_summary (пакет п.4, SESSION-HANDOFF.txt): пробрасывается в _run_impl() как есть --
+    см. её докстринг."""
     if cfg.suppress_logs:
-        return _run_impl(cfg, log=log, shared_pool=shared_pool)
+        return _run_impl(cfg, log=log, shared_pool=shared_pool, print_summary=print_summary)
     with TargetLock(cfg.target, log=log, dry_run=cfg.dry_run):
-        return _run_impl(cfg, log=log, shared_pool=shared_pool)
+        return _run_impl(cfg, log=log, shared_pool=shared_pool, print_summary=print_summary)
 
 
-def _run_impl(cfg: Config, log=print, shared_pool=None):
+def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
     run_start = time.monotonic()
     # p.5.3а: stats создаётся ДО отчёта окружения -- report_environment() тоже пишет в него
     # счётчики предупреждений (вложенность TARGET, кросс-volume tmp_extract), которые потом
@@ -5073,7 +5144,14 @@ def _run_impl(cfg: Config, log=print, shared_pool=None):
     run_logs.write_summary(summary_text)
     run_logs.close()
 
-    log(summary_text)
+    # Пакет п.4 (SESSION-HANDOFF.txt): print_summary=False -- ТОЛЬКО _bare_launch_run_build()
+    # ([3] голого меню) передаёт его -- эта техническая сводка (тайминги/версии инструментов/
+    # build_final_summary()) дублирует то, что и так уже показывает report.html/короткие
+    # текстовые подтверждения того же шага. Обычный CLI archive (print_summary=True по
+    # умолчанию) не затронут -- контракт для headless-автоматизации не меняется (RULES.md).
+    # write_summary()/close() выше -- отдельные вызовы, самим параметром не затронуты.
+    if print_summary:
+        log(summary_text)
     # PROMPT_archive_report.md, 1.2а: только CollectingRunLogs (suppress_logs=True, см. выше)
     # имеет .rows -- RunLogs/NullRunLogs не имеют этого атрибута, getattr(..., None) вместо
     # isinstance() держит эту функцию не завязанной на конкретный класс.
@@ -5582,7 +5660,11 @@ class RunResult:
 
 
 def run_for_source(source, target, dry_run, sample_limit, log=print, suppress_logs=False,
-                    shared_pool=None) -> RunResult:
+                    shared_pool=None, print_summary=True) -> RunResult:
+    """print_summary (пакет п.4, SESSION-HANDOFF.txt): False только у _bare_launch_run_build()
+    ([3] голого меню) -- подавляет техническую консольную сводку внутри _run_impl() (дублирует
+    report.html), не трогая write_summary()/CSV-логи. Обычный CLI archive не передаёт этот
+    параметр (остаётся True по умолчанию) -- контракт для headless-автоматизации не меняется."""
     yaml_overrides = load_yaml_config(CONFIG_YAML_PATH, log=log)
     try:
         cfg = Config(source=source, target=target, dry_run=dry_run, sample_limit=sample_limit,
@@ -5592,7 +5674,7 @@ def run_for_source(source, target, dry_run, sample_limit, log=print, suppress_lo
         return RunResult(failed=True, exit_code=EXIT_CONFIG_ERROR)
     try:
         stats, processed_count, stopped_for_space, collected_rows, pool = run(
-            cfg, log=log, shared_pool=shared_pool)
+            cfg, log=log, shared_pool=shared_pool, print_summary=print_summary)
     except TargetLocked as e:
         log(f"ОШИБКА: {e}")
         return RunResult(failed=True, exit_code=EXIT_TARGET_LOCKED)
@@ -5625,6 +5707,34 @@ def _open_report_in_browser(out_path: str) -> None:
     os.path.abspath() ей достаточен."""
     try:
         webbrowser.open(os.path.abspath(out_path))
+    except Exception:
+        pass
+    _reclaim_console_focus()
+
+
+def _reclaim_console_focus() -> None:
+    """2026-07-21, по прямой просьбе пользователя: webbrowser.open() выше переключает фокус
+    Windows на окно браузера -- пользователь хочет, чтобы после формирования отчёта фокус
+    оставался на консоли (голое меню тут же ждёт следующего выбора режима). Явно возвращаем
+    фокус на консольное окно этого процесса (GetConsoleWindow()/SetForegroundWindow()) сразу
+    после запуска браузера. Пара попыток с паузой, не одна -- браузер запускает своё окно
+    асинхронно (для уже запущенного браузера обычно укладывается в первую попытку, холодный
+    старт браузера может успеть перехватить фокус уже ПОСЛЕ первой попытки — вторая наверстывает
+    без того, чтобы блокировать меню надолго). Best-effort и no-op вне Windows (dev/тест на
+    Linux) -- отсутствие фокуса на консоли не мешает работе программы, только удобство."""
+    if os.name != "nt":
+        return
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetConsoleWindow.restype = ctypes.c_void_p
+        user32 = ctypes.windll.user32
+        user32.SetForegroundWindow.restype = ctypes.c_int
+        user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+        for delay in (0.3, 0.7):
+            time.sleep(delay)
+            hwnd = kernel32.GetConsoleWindow()
+            if hwnd:
+                user32.SetForegroundWindow(hwnd)
     except Exception:
         pass
 
@@ -5673,7 +5783,8 @@ def _finalize_target_report(target: str, level: str, any_succeeded: bool, total_
             "Источник оказался недоступен или пуст — ни один файл не обработан.", out_path)
     else:
         data = report.parse_target_logs(os.path.join(photosort_dir, "logs"))
-        report.generate_report(data, out_path, level=level, run_stats=run_stats, run_start=run_start)
+        report.generate_report(data, out_path, level=level, run_stats=run_stats,
+                                run_start=run_start, target_path=target)
     log(f"Отчёт: {out_path}")
     if level == "workdir":
         if open_browser:
@@ -5682,13 +5793,20 @@ def _finalize_target_report(target: str, level: str, any_succeeded: bool, total_
     return out_path if open_browser else None
 
 
-def _finalize_analyze_report(stats, open_browser: bool, log=print) -> None:
+def _finalize_analyze_report(stats, open_browser: bool, log=print) -> str:
     """analyze/analyze-quick/analyze-full (раздел 1.2): "один слот, не персистентно
     per-источник" -- вызывается ВНУТРИ цикла по source (не после), каждый анализ
     перезаписывает WORKDIR\\report.html независимо от исхода предыдущего (см. раздел 1.2,
-    "отчёт по последней операции"), в отличие от _finalize_target_report выше."""
+    "отчёт по последней операции"), в отличие от _finalize_target_report выше.
+
+    Возвращает путь к отчёту (или None, если stats is None -- ошибка конфига, отчёт не
+    формировался). 2026-07-21: голое меню (_bare_launch_run_view()) теперь вызывает это с
+    open_browser=False и само решает, когда открыть браузer (после общей паузы
+    _pause_for_report(), см. run_bare_launch()) -- CLI-путь (_run_impl) по-прежнему передаёт
+    open_browser=interactive_mode и открывает сразу, как и раньше, возврат пути его не
+    касается."""
     if stats is None:
-        return  # run_analyze_for_source() уже вернула None при ошибке конфига -- не трогаем
+        return None  # run_analyze_for_source() уже вернула None при ошибке конфига -- не трогаем
     out_path = os.path.join(WORKDIR, "report.html")
     if stats.total_files == 0:
         report.generate_placeholder_report(
@@ -5700,6 +5818,7 @@ def _finalize_analyze_report(stats, open_browser: bool, log=print) -> None:
     log(f"Отчёт: {out_path}")
     if open_browser:
         _open_report_in_browser(out_path)
+    return out_path
 
 
 def resolve_sources(args) -> list:
@@ -6030,58 +6149,11 @@ def _sum_stats(dicts: list) -> dict:
     return total
 
 
-def _print_human_view_summary(source_display: str, stats, log=print):
-    """ТЗ-меню 2026-07-10, раздел 4: язык новичка, БЕЗ дубликатов/near-dup/сверки с архивом
-    (это уровень [2], не [1])."""
-    n_photos = stats.n_images + stats.n_raw
-    log("")
-    log(f"  Посмотрел {source_display}.")
-    log("")
-    log(f"    Нашёл фотографий:   {n_photos}")
-    log(f"    Видео:              {stats.n_videos}")
-    log(f"    Занимают места:     около {stats.total_bytes / 1024**3:.0f} ГБ")
-    log("")
-    if getattr(stats, "n_archives_found", 0):
-        log("  Смотрел и внутри сжатых файлов (zip, rar) — фотографии оттуда тоже посчитаны.")
-    log("  Ваши файлы не изменялись — я только посмотрел.")
-
-
-def _print_human_dryrun_summary(target: str, stats: dict, log=print):
-    """ТЗ-меню 2026-07-10, раздел 5: сослагательное будущее ("я сделаю"), детали уместны."""
-    n_new = stats.get("appended_images", 0) + stats.get("appended_videos", 0)
-    log("")
-    log("  Пробный прогон завершён. Вот что я сделаю при настоящей сборке:")
-    log("")
-    log(f"    Скопирую в архив:        {n_new} новых фото и видео")
-    if stats.get("skipped_present", 0):
-        log(f"    Уже есть в архиве:       {stats['skipped_present']} "
-            f"(копировать не буду — они уже сохранены)")
-    if stats.get("archives_seen", 0):
-        log(f"    Загляну внутрь:          {stats['archives_seen']} сжатых файлов (zip, rar)")
-    if stats.get("undated", 0):
-        log(f"    Не смог распознать дату: {stats['undated']} (сложу отдельно, не потеряю)")
-    log("")
-    bytes_needed = stats.get("bytes_appended", 0)
-    log(f"    Архиву понадобится:      около {bytes_needed / 1024**3:.1f} ГБ")
-    try:
-        free = shutil.disk_usage(winlong(target)).free
-        note = "места хватит" if free >= bytes_needed else "МЕСТА МОЖЕТ НЕ ХВАТИТЬ"
-        log(f"    Свободно на диске {target[:2]}     {free / 1024**3:.0f} ГБ — {note}")
-    except OSError:
-        pass
-    # 2026-07-11, по запросу пользователя ("как обыграть это при сухом прогоне"): предупредить
-    # ЗАРАНЕЕ, что альбом соберётся из нескольких разных папок источника -- обнаружение (см.
-    # _note_album_source()) не зависит от dry_run, только сама запись в файл-маркер внутри
-    # альбома при пробном прогоне пропускается.
-    merge_events = stats.get("album_merge_events") or []
-    if merge_events:
-        log("")
-        log("  Внимание: эти альбомы соберутся из НЕСКОЛЬКИХ разных папок источника (в них уже")
-        log("  есть похожие фото под другим именем папки):")
-        for album, prefix in merge_events:
-            log(f"    {album}  ←  {prefix}")
-    log("")
-    log("  Ничего не записано — это была только проверка.")
+# Пакет п.4 (SESSION-HANDOFF.txt): _print_human_view_summary()/_print_human_dryrun_summary()
+# (ТЗ-меню 2026-07-10, разделы 4/5) удалены целиком 2026-07-24 -- обе печатали числовую
+# сводку [1]/[2] непосредственно в консоль, полностью дублируя report.html (пп.1-3 той же
+# задачи сделали report.html/dryrun_report.csv самодостаточным источником этих цифр).
+# Единственные вызывающие места были _bare_launch_run_view()/_bare_launch_run_dryrun() ниже.
 
 
 def _confirm_build_summary(sources: list, target: str, input_fn=input, log=print) -> bool:
@@ -6133,6 +6205,25 @@ def _pause_before_exit(interactive_mode: bool, input_fn=input, report_path: str 
         pass
     if report_path:
         _open_report_in_browser(report_path)
+
+
+def _pause_for_report(report_path: str, input_fn=input, log=print):
+    """2026-07-21, по прямой просьбе пользователя (по итогам живого прогона релиза v0.1.1) --
+    общая пауза после ЛЮБОГО из трёх пунктов голого меню ([1]/[2]/[3]), не только после
+    сборки: работа уже закончена, результат уже виден на экране, Enter -- явный сигнал "я
+    прочитал", после которого открывается report.html и меню возвращается к выбору режима.
+    В отличие от _pause_before_exit() выше (которая используется только однократными
+    CLI-прогонами, где после неё программа ДЕЙСТВИТЕЛЬНО завершается) -- здесь программа не
+    закрывается, единственный способ выйти из голого меню целиком остаётся Ctrl+C/закрытие
+    окна (EOFError, если она всё же случится здесь -- например, стандартный ввод закрыт --
+    НЕ гасится, всплывает как обычно и завершает всю программу через main(), см. её docstring).
+
+    None -- отчёт не формировался (сборка отклонена/не удалась, или ни один SOURCE не
+    обработался) -- тогда ждать нечего, вызывающий код просто возвращается в меню сам."""
+    if not report_path:
+        return
+    input_fn("\nРабота окончена. Нажмите Enter, чтобы открыть отчёт и вернуться в главное меню: ")
+    _open_report_in_browser(report_path)
 
 
 def print_welcome_banner(log=print):
@@ -6192,23 +6283,29 @@ def prompt_bare_launch_menu(input_fn=input, log=print) -> str:
         log("  Не понял ввод — введите 1, 2 или 3.")
 
 
-def _bare_launch_run_view(sources: list, log=print):
+def _bare_launch_run_view(sources: list, log=print) -> str:
     """Шаг [1] меню -- read-only, ничего не пишет в TARGET, TARGET вообще не спрашивается
     (раздел 4 ТЗ). Технически всегда analyze-quick (только метаданные, без SHA/pHash) --
-    дубликаты/near-dup/сверка с архивом сюда не относятся, это уровень [2]/[3]."""
+    дубликаты/near-dup/сверка с архивом сюда не относятся, это уровень [2]/[3]. Возвращает
+    путь к отчёту (или None при ошибке конфига) -- браузер открывает вызывающий код
+    (run_bare_launch()) после общей паузы _pause_for_report(), не эта функция."""
     with _prevent_sleep():
         stats = run_analyze_for_source(sources[0], _VIEW_MODE_PLACEHOLDER_TARGET, 0,
                                         "analyze-quick", log=log)
     if stats is None:
-        return
-    _print_human_view_summary(_display_path(sources[0]), stats, log=log)
-    _finalize_analyze_report(stats, open_browser=True, log=log)
+        return None
+    # Пакет п.4 (SESSION-HANDOFF.txt): числовая консольная сводка (_print_human_view_summary(),
+    # удалена целиком выше) дублировала то, что и так показывает report.html -- убрано ТОЛЬКО
+    # после того, как отчёт стал самодостаточным источником этих цифр (пп.1-3 той же задачи).
+    return _finalize_analyze_report(stats, open_browser=False, log=log)
 
 
-def _bare_launch_run_dryrun(sources: list, target: str, input_fn=input, log=print):
+def _bare_launch_run_dryrun(sources: list, target: str, input_fn=input, log=print) -> str:
     """Шаг [2] меню -- раздел 5 ТЗ. НИКАКОГО подтверждения перед этим шагом (безопасен по
     определению): suppress_logs=True репетирует archive dry_run=True БЕЗ создания
-    __служебные_файлы\\ и БЕЗ CSV/summary.txt в TARGET -- результат только на экране."""
+    __служебные_файлы\\ и БЕЗ CSV/summary.txt в TARGET -- результат только на экране.
+    Возвращает путь к отчёту, или None, если ни один SOURCE не обработался вовсе (отчёт не
+    формировался) -- см. _bare_launch_run_view() про общую паузу перед открытием браузера."""
     target = resolve_drive_root_conflict(sources, target, interactive=True, input_fn=input_fn, log=log)
     expanded = expand_sources(sources, target)
     results = []
@@ -6228,34 +6325,54 @@ def _bare_launch_run_dryrun(sources: list, target: str, input_fn=input, log=prin
                 shared_pool = result.pool
                 # PROMPT_archive_report.md, 1.2а: CollectingRunLogs.rows -- несколько source
                 # за один [2] складываются в один отчёт, тот же принцип, что _sum_stats()
-                # уже делает для консольной сводки чуть ниже.
+                # уже делает для run_stats ниже.
                 for name, rows in (result.collected_rows or {}).items():
                     merged_rows.setdefault(name, []).extend(rows)
     merged = _sum_stats(results)
-    _print_human_dryrun_summary(target, merged, log=log)
-    if results:
-        out_path = os.path.join(WORKDIR, "report.html")
-        if total_processed == 0:
-            report.generate_placeholder_report(
-                "Источник оказался недоступен или пуст — ни один файл не обработан.", out_path)
-        else:
-            # run_start не передаётся -- merged_rows и так только про этот прогон
-            # (CollectingRunLogs, suppress_logs=True, никакой истории TARGET не подмешано),
-            # делить по времени нечего (2026-07-20, третий заход).
-            report.generate_report(merged_rows, out_path, level="workdir", run_stats=merged)
-        log(f"Отчёт: {out_path}")
-        _open_report_in_browser(out_path)
-    return target
+    if not results:
+        return None
+    # Пакет п.2 (SESSION-HANDOFF.txt): свободное место на диске -- прогноз именно для [2],
+    # не пересчитываемая report.py величина (в отличие от остального run_stats, который
+    # report.py сам не заново вычисляет, а просто читает переданное) -- считается здесь ОДИН
+    # раз, кладётся в merged, откуда идёт и в CSV (история), и в report.html
+    # (_render_this_run() читает run_stats.get("free_disk_bytes")) без второго вызова
+    # disk_usage(). Отсутствует в merged (диск недоступен) -- секция просто не рендерится,
+    # не считается ошибкой.
+    try:
+        merged["free_disk_bytes"] = shutil.disk_usage(winlong(target)).free
+    except OSError:
+        pass
+    write_dryrun_report_csv(os.path.join(WORKDIR, "dryrun_report.csv"), merged)
+    out_path = os.path.join(WORKDIR, "report.html")
+    if total_processed == 0:
+        report.generate_placeholder_report(
+            "Источник оказался недоступен или пуст — ни один файл не обработан.", out_path)
+    else:
+        # run_start не передаётся -- merged_rows и так только про этот прогон
+        # (CollectingRunLogs, suppress_logs=True, никакой истории TARGET не подмешано),
+        # делить по времени нечего (2026-07-20, третий заход).
+        report.generate_report(merged_rows, out_path, level="workdir", run_stats=merged)
+    log(f"Отчёт: {out_path}")
+    return out_path
 
 
-def _bare_launch_run_build(sources: list, target: str, input_fn=input, log=print):
+def _bare_launch_run_build(sources: list, target: str, input_fn=input, log=print) -> str:
     """Шаг [3] меню -- раздел 6 ТЗ. Единственное подтверждение (_confirm_build_summary,
-    развилка 4 раздела 11) перед реальной записью. Возвращает (возможно изменённый target,
-    report_path), или None, если пользователь отказался (или сборка вообще не состоялась --
-    см. 2026-07-12 ниже) -- вызывающий код (run_bare_launch()) в обоих случаях трактует None
-    как «вернуться в главное меню», не как ошибку самого меню. report_path -- см.
-    _finalize_target_report()/_pause_before_exit() (2026-07-20): браузер открывается не
-    здесь, а после явного Enter в самом конце."""
+    развилка 4 раздела 11) перед реальной записью. Возвращает путь к отчёту, или None, если
+    пользователь отказался (или сборка вообще не состоялась) -- вызывающий код
+    (run_bare_launch()) в обоих случаях просто возвращается в главное меню, отличие только в
+    том, печатать ли "Возвращаемся в главное меню" (report_path всегда truthy при успехе --
+    _finalize_target_report() с any_succeeded=True и open_browser=True никогда не вернёт None).
+
+    2026-07-21, по прямой просьбе пользователя: раньше [3] был единственным пунктом меню, не
+    возвращавшимся в главное меню после успеха -- вместо этого ждал явный Enter
+    ("_pause_before_exit(report_path=...)") и завершал всю программу, тогда как [1]/[2] уже
+    молча отрабатывали и возвращались в меню без вопросов. Асимметрия стала заметна именно
+    после того, как [1]/[2] лишились своих "Что дальше?"-развилок (см. ниже) -- пользователь
+    прямо указал привести [3] к тому же поведению, а после общего обсуждения -- единой паузой
+    "Работа окончена..." (_pause_for_report(), см. run_bare_launch()) перед открытием браузера
+    и возвратом в меню, а не молча/без паузы. Эта функция сама браузер больше не открывает --
+    только возвращает путь, открытие и пауза общие для всех трёх пунктов меню."""
     target = resolve_drive_root_conflict(sources, target, interactive=True, input_fn=input_fn, log=log)
     if not _confirm_build_summary(sources, target, input_fn=input_fn, log=log):
         return None
@@ -6272,6 +6389,11 @@ def _bare_launch_run_build(sources: list, target: str, input_fn=input, log=print
     # any_succeeded отслеживает это.
     any_succeeded = False
     total_processed = 0
+    any_stopped_for_space = False  # 4.2 (PROMPT_report_marketing.md): триада исхода --
+                                    # RunResult.stopped_for_space живёт ВНЕ result.stats
+                                    # (см. run_for_source()), _sum_stats(results) ниже его
+                                    # не увидит -- отслеживаем отдельно, тем же приёмом, что
+                                    # free_disk_bytes у [2] (_bare_launch_run_dryrun()).
     results = []  # RunResult.stats по каждому успешному SOURCE -- для секции "Этот прогон"
                   # (report._render_this_run()), тот же принцип суммирования, что и
                   # _bare_launch_run_dryrun() уже делает для консольной сводки [2].
@@ -6282,19 +6404,22 @@ def _bare_launch_run_build(sources: list, target: str, input_fn=input, log=print
             if len(expanded) > 1:
                 log(f"\n########## SOURCE = {s} ##########")
             result = run_for_source(s, target, dry_run=False, sample_limit=0, log=log,
-                                     shared_pool=shared_pool)
+                                     shared_pool=shared_pool, print_summary=False)
             if not result.failed:
                 any_succeeded = True
                 total_processed += result.processed_count
                 shared_pool = result.pool
                 results.append(result.stats)
+                any_stopped_for_space = any_stopped_for_space or result.stopped_for_space
     if not any_succeeded:
         log("")
         log("  Сборка не выполнена — см. сообщение об ошибке выше.")
         return None
+    merged = _sum_stats(results)
+    merged["stopped_for_space"] = any_stopped_for_space
     report_path = _finalize_target_report(target, "target", any_succeeded, total_processed,
                                            open_browser=True, log=log,
-                                           run_stats=_sum_stats(results), run_start=run_start)
+                                           run_stats=merged, run_start=run_start)
     log("")
     log(f"  Готово. Архив собран в {_display_path(target)}")
     log("")
@@ -6306,56 +6431,7 @@ def _bare_launch_run_build(sources: list, target: str, input_fn=input, log=print
     # "чтобы убедиться".
     log("  Ваши исходные фотографии остались на месте — программа их не трогает.")
     log("  Архив — их полная копия, готовая к использованию.")
-    return target, report_path
-
-
-_AFTER_VIEW_CHOICES = {
-    "0": "main_menu",
-    "": "main_menu",
-    "1": "dry_run",
-}
-
-
-def _prompt_after_view(input_fn=input, log=print) -> str:
-    """2026-07-12: заменяет старый да/нет-вопрос после [1] (просмотр) -- раньше отказ
-    завершал программу целиком (см. ROADMAP.md, живая находка 2026-07-11). Упрощено в тот же
-    день по прямой просьбе пользователя ("меню перегружено") с промежуточной версии
-    (отдельные "выбрать другой источник"/"выход") до одного универсального [0] Главное
-    меню -- Enter по умолчанию тоже туда, самый безопасный вариант."""
-    log("")
-    log("  Что дальше?")
-    log("")
-    log("    [1] Показать пробный прогон — что именно скопируется")
-    log("    [0] Главное меню")
-    log("")
-    while True:
-        answer = input_fn("  Ваш выбор [по умолчанию 0]: ").strip()
-        if answer in _AFTER_VIEW_CHOICES:
-            return _AFTER_VIEW_CHOICES[answer]
-        log("  Не понял ввод — введите 0 или 1.")
-
-
-_AFTER_DRYRUN_CHOICES = {
-    "0": "main_menu",
-    "": "main_menu",
-    "1": "build",
-}
-
-
-def _prompt_after_dryrun(input_fn=input, log=print) -> str:
-    """2026-07-12: заменяет старый да/нет-вопрос после [2] (пробный прогон) -- см.
-    _prompt_after_view() про упрощение до одного универсального [0] Главное меню."""
-    log("")
-    log("  Что дальше?")
-    log("")
-    log("    [1] Собрать архив по-настоящему")
-    log("    [0] Главное меню")
-    log("")
-    while True:
-        answer = input_fn("  Ваш выбор [по умолчанию 0]: ").strip()
-        if answer in _AFTER_DRYRUN_CHOICES:
-            return _AFTER_DRYRUN_CHOICES[answer]
-        log("  Не понял ввод — введите 0 или 1.")
+    return report_path
 
 
 def run_bare_launch(input_fn=input, log=print):
@@ -6377,7 +6453,25 @@ def run_bare_launch(input_fn=input, log=print):
     photoarchive_config.yaml -- баннер специально задуман (см. print_welcome_banner()) как
     первое тёплое впечатление вместо строки-ошибки; печать служебного сообщения о
     только что созданном конфиге раньше баннера сводила этот эффект на нет. Пустая строка
-    между закрывающей рамкой баннера и сообщением -- чтобы оно не липло к рамке."""
+    между закрывающей рамкой баннера и сообщением -- чтобы оно не липло к рамке.
+
+    2026-07-21, по прямой просьбе пользователя: раньше после [1]/[2] показывался
+    промежуточный вопрос "Что дальше?" (перейти к следующему шагу лестницы / главное меню),
+    а [3] был единственным пунктом, вообще не возвращавшимся сюда -- завершал программу целиком
+    после паузы "Нажмите Enter для выхода". Пользователь указал на обе несостыковки отдельно
+    (после того, как отчёт после [1] оказался устроен как отчёт по архиву, который ещё не
+    собран -- см. report.py) и попросил единообразия: каждый пункт меню -- самостоятельное,
+    самодостаточное действие (отработал, показал отчёт, вернулся в главное меню), без
+    предложений продолжить и без асимметрии между read-only-режимами и сборкой. Функция теперь
+    вообще не имеет обычного return -- как и раньше, единственный выход отсюда --
+    KeyboardInterrupt/EOFError, всплывающие в main().
+
+    2026-07-21, тем же заходом, сразу следом: первая реализация открывала браузер сразу по
+    завершении каждого пункта, без паузы вообще -- пользователь тут же уточнил, что хочет
+    паузу, просто НЕ формулировку "для выхода" (раз выхода из программы здесь больше нет).
+    Единая `_pause_for_report()` ("Работа окончена. Нажмите Enter, чтобы открыть отчёт и
+    вернуться в главное меню") вызывается после [1]/[2]/[3] одинаково -- разница с
+    `_pause_before_exit()` только в том, что после неё программа не закрывается."""
     print_welcome_banner(log=log)
     log("")
     _ensure_config_yaml_exists(CONFIG_YAML_PATH, log=log)
@@ -6399,10 +6493,9 @@ def run_bare_launch(input_fn=input, log=print):
             tools_checked = True
 
         if mode == "view":
-            _bare_launch_run_view(sources, log=log)
-            if _prompt_after_view(input_fn=input_fn, log=log) == "main_menu":
-                continue
-            mode = "dry_run"
+            report_path = _bare_launch_run_view(sources, log=log)
+            _pause_for_report(report_path, input_fn=input_fn, log=log)
+            continue
 
         target = prompt_target_submenu(sources, input_fn=input_fn, log=log, allow_back=True)
         if target is _MENU_BACK:
@@ -6410,17 +6503,16 @@ def run_bare_launch(input_fn=input, log=print):
         target = _normalize_bare_drive_letter(target)
 
         if mode == "dry_run":
-            target = _bare_launch_run_dryrun(sources, target, input_fn=input_fn, log=log)
-            if _prompt_after_dryrun(input_fn=input_fn, log=log) == "main_menu":
-                continue
-            mode = "build"
-
-        result = _bare_launch_run_build(sources, target, input_fn=input_fn, log=log)
-        if result is None:
-            log("  Возвращаемся в главное меню.")
+            report_path = _bare_launch_run_dryrun(sources, target, input_fn=input_fn, log=log)
+            _pause_for_report(report_path, input_fn=input_fn, log=log)
             continue
-        _, report_path = result
-        return report_path
+
+        report_path = _bare_launch_run_build(sources, target, input_fn=input_fn, log=log)
+        if report_path is None:
+            log("  Возвращаемся в главное меню.")
+        else:
+            _pause_for_report(report_path, input_fn=input_fn, log=log)
+        continue
 
 
 def _log_unexpected_crash(log=print) -> None:
@@ -6513,8 +6605,10 @@ def _main():
         # клик по exe). Единственный случай, который заменяется меню (RULES.md, "ЗАПУСК"
         # п.3) -- любой хотя бы один аргумент (флаг, подкоманда, даже неполный набор вроде
         # одного --source без --target) идёт по обычной ветке ниже без изменений.
-        report_path = run_bare_launch(log=console_log)
-        _pause_before_exit(True, report_path=report_path)
+        # 2026-07-21: run_bare_launch() больше не возвращается обычным путём (каждый пункт
+        # меню, включая [3], сам возвращается в главное меню и открывает свой отчёт) --
+        # выйти отсюда можно только через KeyboardInterrupt/EOFError, которые ловит main().
+        run_bare_launch(log=console_log)
         return 0
     if argv and argv[0] in ("--version", "-V", "--help", "-h", "--formats"):
         # Глобальные флаги идут напрямую в верхний парсер -- НЕ подставлять "archive" перед
