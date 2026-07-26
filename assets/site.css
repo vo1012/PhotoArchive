@@ -221,7 +221,7 @@ h2+.section-lede{margin-top:.25rem}
   border:1px solid var(--color-border);border-radius:18px;padding-block:clamp(2.5rem,5vw,3.5rem)}
 .download-hint{font-size:.9rem;max-width:60ch;margin-inline:auto}
 .download-hint.simple{margin-top:1rem;color:var(--color-muted)}
-.download-hint-wide{max-width:none}
+.download-hint-wide{max-width:80ch}
 .req{margin:1.8rem auto 0;max-width:44ch;text-align:left;display:inline-block}
 .center-list{text-align:left}
 .req li{font-size:1rem}
