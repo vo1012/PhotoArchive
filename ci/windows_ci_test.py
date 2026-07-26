@@ -755,6 +755,171 @@ def test_analyze_modes():
         os.remove(report_path)
 
 
+def test_analyze_closing_cta_mentions_archives_found():
+    print("\n=== REVIEW-HANDOFF.md, Раунд 33: analyze closing CTA -- рамка уязвимо/защищено "
+          "с числом архивов, найденных внутри ЭТОГО источника (n_archives_found), через "
+          "реальный analyze-пайплайн, не вручную подставленный model ===")
+    src = os.path.join(WORK, "src_analyze_cta_archives")
+    os.makedirs(src, exist_ok=True)
+    tmp_jpg = os.path.join(WORK, "_tmp_for_analyze_cta_zip.jpg")
+    image(tmp_jpg, 1600, 1200, exif=True, dt="2020:07:01 09:00:00")
+    zpath = os.path.join(src, "20200701.zip")
+    with zipfile.ZipFile(zpath, "w") as zf:
+        zf.write(tmp_jpg, arcname="photo_from_zip.jpg")
+
+    tgt = os.path.join(WORK, "target_analyze_cta_archives")
+    r = run_photosort_mode("analyze", src, tgt)
+    check(r.returncode == 0, "analyze-cta-archives: analyze exits 0")
+
+    report_path = os.path.join(ROOT, "report.html")
+    check(os.path.isfile(report_path), "analyze-cta-archives: report.html generated")
+    if os.path.isfile(report_path):
+        with open(report_path, encoding="utf-8") as f:
+            html_out = f.read()
+        check("1 отдельном архиве" in html_out,
+              "analyze-cta-archives: closing CTA mentions the one archive found in this "
+              "source (live fix, verified end-to-end)")
+        check("испортиться независимо" in html_out,
+              "analyze-cta-archives: uses the vulnerable/protected framing, not the old "
+              "neutral 'Нравится результат?'")
+        os.remove(report_path)
+
+
+def test_oldest_file_line_shows_folder_and_name():
+    print("\n=== REVIEW-HANDOFF.md, Раунд 40: «Самый старый файл» в report.html показывает "
+          "папку+имя (путь в АРХИВЕ, не origin_display источника) -- через реальный "
+          "archive-пайплайн, не build_model_from_rows() напрямую с вручную собранным data ===")
+    src = os.path.join(WORK, "src_oldest_file_path")
+    image(os.path.join(src, "Отпуск 2015", "oldest_photo.jpg"), 1600, 1200, exif=True,
+          dt="2015:07:01 09:00:00")
+    image(os.path.join(src, "Отпуск 2015", "newer_photo.jpg"), 1600, 1200, exif=True,
+          dt="2020:01:01 09:00:00")
+
+    tgt = os.path.join(WORK, "target_oldest_file_path")
+    r = run_photosort(src, tgt)
+    check(r.returncode == 0, "oldest-file-path: archive run exits 0")
+
+    report_path = os.path.join(tgt, "__служебные_файлы", "report.html")
+    check(os.path.isfile(report_path), "oldest-file-path: report.html generated")
+    if os.path.isfile(report_path):
+        with open(report_path, encoding="utf-8") as f:
+            html_out = f.read()
+        check("oldest_photo.jpg" in html_out,
+              "oldest-file-path: the oldest file's own name is shown (live fix, verified "
+              "end-to-end)")
+        check(r"Albums\Отпуск 2015" in html_out,
+              "oldest-file-path: the archive folder (Albums\\...) is shown alongside the name")
+        check("newer_photo.jpg" not in html_out,
+              "oldest-file-path: only the actually-oldest file is named, not the newer one")
+
+
+def test_analyze_report_recommendations_section():
+    print("\n=== REVIEW-HANDOFF.md, Раунд 36: секция «Рекомендации» в analyze-отчёте -- через "
+          "реальный analyze-пайплайн (analyze-quick), не через build_model_from_analyze_stats() "
+          "с вручную подставленным stats ===")
+    src = os.path.join(WORK, "src_analyze_recommendations")
+    os.makedirs(src, exist_ok=True)
+    image(os.path.join(src, "photo.jpg"), 1600, 1200, exif=True, dt="2021:03:01 10:00:00")
+
+    tgt = os.path.join(WORK, "target_analyze_recommendations")
+    r = run_photosort_mode("analyze-quick", src, tgt)
+    check(r.returncode == 0, "analyze-recommendations: analyze-quick exits 0")
+
+    report_path = os.path.join(ROOT, "report.html")
+    check(os.path.isfile(report_path), "analyze-recommendations: report.html generated")
+    if os.path.isfile(report_path):
+        with open(report_path, encoding="utf-8") as f:
+            html_out = f.read()
+        check("Рекомендации" in html_out,
+              "analyze-recommendations: section heading is rendered")
+        check("Архиву потребуется примерно" in html_out and "свободного места" in html_out,
+              "analyze-recommendations: disk-space item works even in analyze-quick "
+              "(total_bytes is always counted)")
+        # analyze-quick не делает полного прохода хеширования -- near-dup серии физически
+        # не могут быть посчитаны, пункт должен молча отсутствовать, не падать ошибкой.
+        check("похожих кадров" not in html_out,
+              "analyze-recommendations: near-dup item is absent in analyze-quick (no data)")
+        os.remove(report_path)
+
+
+def test_workdir_dryrun_shows_full_target_history_when_target_exists():
+    print("\n=== REVIEW-HANDOFF.md, Раунд 38: интерактивный [2] «Пробный прогон» на уже "
+          "существующем Target читает полную историю Target (не только гипотетические "
+          "строки этого прогона) и показывает полноценные «Ваш архив»/диаграммы вместо "
+          "урезанного чек-листа -- через реальный _bare_launch_run_dryrun(), не "
+          "report.generate_report() напрямую с вручную собранным data ===")
+    src = os.path.join(WORK, "src_workdir_full_history")
+    tgt = os.path.join(WORK, "target_workdir_full_history")
+    image(os.path.join(src, "first.jpg"), 1600, 1200, exif=True, dt="2019:05:01 10:00:00")
+    r = run_photosort(src, tgt)
+    check(r.returncode == 0, "workdir-full-history: initial real archive build exits 0")
+
+    # Второй файл в источнике -- второй ([2]) прогон видит уже непустой Target.
+    image(os.path.join(src, "second.jpg"), 1600, 1200, exif=True, dt="2021:06:01 10:00:00")
+
+    report_path = os.path.join(ROOT, "report.html")
+    if os.path.isfile(report_path):
+        os.remove(report_path)
+
+    code = (
+        "import sys, os; sys.path.insert(0, %r)\n"
+        "for s in (sys.stdout, sys.stderr):\n"
+        "    s.reconfigure(encoding='utf-8', errors='replace')\n"
+        "import photosort_win as m\n"
+        "m._bare_launch_run_dryrun([%r], %r, input_fn=lambda p: '', log=print)\n"
+    ) % (ROOT, src, tgt)
+    r2 = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         encoding="utf-8", errors="replace")
+    check(r2.returncode == 0,
+          f"workdir-full-history: [2] dry-run exits 0 (stderr={r2.stderr[-800:]})")
+
+    check(os.path.isfile(report_path), "workdir-full-history: report.html generated")
+    if os.path.isfile(report_path):
+        with open(report_path, encoding="utf-8") as f:
+            html_out = f.read()
+        check("Ваш архив" in html_out,
+              "workdir-full-history: full 'Ваш архив' section rendered (live fix), not the "
+              "old narrow 'Что стоит проверить'-only render")
+        check("2019" in html_out,
+              "workdir-full-history: real archive history (2019 photo, already on TARGET "
+              "from the first real run) is part of the model, not just this dry run's own "
+              "hypothetical addition")
+        os.remove(report_path)
+
+    dryrun_csv = os.path.join(ROOT, "dryrun_report.csv")
+    if os.path.isfile(dryrun_csv):
+        os.remove(dryrun_csv)
+
+
+def test_empty_source_report_suggests_other_location():
+    print("\n=== REVIEW-HANDOFF.md, Раунд 34: пустой source -- активная подсказка вместо "
+          "сухой заглушки, через реальный пайплайн (archive-режим, действительно пустая "
+          "папка), не вызов generate_placeholder_report() напрямую ===")
+    src = os.path.join(WORK, "src_empty_source")
+    os.makedirs(src, exist_ok=True)  # реально пустая папка, ни одного файла
+    tgt = os.path.join(WORK, "target_empty_source")
+
+    r = run_photosort(src, tgt)
+    check(r.returncode == 0, "empty-source: run exits 0 (empty source is not an error)")
+
+    # level=="target" placeholder всегда пишется рядом со скриптом (WORKDIR), TARGET ещё не
+    # создан для пустого источника -- см. _bare_launch_run_build()/_main() out_path выбор.
+    candidates = [os.path.join(ROOT, "report.html"),
+                  os.path.join(tgt, "__служебные_файлы", "report.html")]
+    report_path = next((p for p in candidates if os.path.isfile(p)), None)
+    check(report_path is not None, "empty-source: a report.html was generated somewhere")
+    if report_path:
+        with open(report_path, encoding="utf-8") as f:
+            html_out = f.read()
+        check("стоит проверить" in html_out and "на другом месте" in html_out,
+              "empty-source: report.html renders the active suggestion "
+              "(live fix, verified end-to-end)")
+        check("Подробности — в консоли программы" not in html_out,
+              "empty-source: old dry placeholder text is gone")
+        if report_path == os.path.join(ROOT, "report.html"):
+            os.remove(report_path)
+
+
 def test_raw_without_jpeg_in_album_gets_date_column():
     print("\n=== REVIEW-HANDOFF.md, Раунд 30 [ЗАМЕЧАНИЕ]: regression на Раунд 29 [БЛОКЕР], "
           "но через реальный пайплайн (_process_record/raw_mirrored), не через "
@@ -788,6 +953,266 @@ def test_raw_without_jpeg_in_album_gets_date_column():
         check(bool(rows[0].get("date")),
               "raw-without-jpeg-album: appended.csv's date column is non-empty for the "
               "raw_mirrored row (Раунд 29 [БЛОКЕР] fix, verified end-to-end)")
+
+
+def test_geo_lookup_works_for_albums_files():
+    print("\n=== Живая находка 2026-07-25 (боевой прогон F:\\, весь архив ушёл в Albums\\..., "
+          "ни одного города в отчёте): place_for_gps() раньше вызывался только в ByDate-ветке, "
+          "Albums-файлы никогда не получали geo-lookup вообще -- через реальный пайплайн, не "
+          "report.build_model_from_rows() напрямую ===")
+    src = os.path.join(WORK, "src_geo_albums")
+    jpg = os.path.join(src, "Отпуск", "a.jpg")
+    image(jpg, 1200, 900, exif=True, dt="2019:07:15 12:00:00")
+    # place_lookup=offline читает GPSLatitude/GPSLongitude через тот же -n exiftool_batch(),
+    # что и остальные EXIF-теги -- пишем оба координатных тега напрямую тем же -@ argfile
+    # приёмом, что и image() выше (Cyrillic-путь в этой же папке).
+    import tempfile as _tempfile
+    with _tempfile.NamedTemporaryFile(mode="w", suffix=".args", delete=False, encoding="utf-8") as af:
+        af.write(jpg + "\n")
+        argfile_path = af.name
+    try:
+        r = subprocess.run(
+            ["exiftool", "-charset", "filename=utf8", "-overwrite_original",
+             "-GPSLatitude=55.7558", "-GPSLatitudeRef=N",
+             "-GPSLongitude=37.6176", "-GPSLongitudeRef=E",
+             "-@", argfile_path],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+    finally:
+        os.unlink(argfile_path)
+    check(r.returncode == 0, "geo-albums: exiftool GPS tag injection exits 0")
+
+    tgt = os.path.join(WORK, "target_geo_albums")
+    r = run_photosort(src, tgt)
+    check(r.returncode == 0, "geo-albums: run exits 0")
+    check(os.path.isfile(os.path.join(tgt, "Albums", "Отпуск", "a.jpg")),
+          "geo-albums: file placed under Albums/Отпуск/ (named folder, not ByDate)")
+
+    appended = read_csv(os.path.join(tgt, "__служебные_файлы", "logs", "appended.csv"))
+    rows = [row for row in appended if row.get("reason") == "appended_new"]
+    check(len(rows) == 1, "geo-albums: exactly one appended_new row in appended.csv")
+    if rows:
+        check(bool(rows[0].get("place")),
+              "geo-albums: appended.csv's place column is non-empty for an Albums-routed file "
+              "with a GPS tag (live fix, verified end-to-end)")
+
+    report_path = os.path.join(tgt, "__служебные_файлы", "report.html")
+    if os.path.isfile(report_path):
+        with open(report_path, encoding="utf-8") as f:
+            html_out = f.read()
+        check("География" in html_out,
+              "geo-albums: report.html renders a География section for an Albums-only archive")
+
+
+def test_exact_dup_examples_in_report():
+    print("\n=== REVIEW-HANDOFF.md, Раунд 31: report.html показывает примеры точных повторов "
+          "(папка + имя уже заархивированного файла), не только итоговое число -- через "
+          "реальный пайплайн (skipped.csv/decide()), не report.build_model_from_rows() "
+          "напрямую с вручную подставленными строками ===")
+    src = os.path.join(WORK, "src_exact_dup_examples")
+    album_dir = os.path.join(src, "Album")
+    jpg = os.path.join(album_dir, "a.jpg")
+    image(jpg, 800, 600, exif=True, dt="2019:07:15 12:00:00")
+    # Байт-в-байт копии (не image() повторно -- та сидирует пиксели путём, разные пути дали бы
+    # разное содержимое и не задедуплились бы) -- две "лишних" копии одного и того же кадра в
+    # исходнике, ровно тот сценарий, что находка ревизора просит проиллюстрировать.
+    dup1 = os.path.join(album_dir, "a_copy1.jpg")
+    dup2 = os.path.join(album_dir, "a_copy2.jpg")
+    shutil.copy2(jpg, dup1)
+    shutil.copy2(jpg, dup2)
+
+    tgt = os.path.join(WORK, "target_exact_dup_examples")
+    r = run_photosort(src, tgt)
+    check(r.returncode == 0, "exact-dup-examples: run exits 0")
+
+    skipped = read_csv(os.path.join(tgt, "__служебные_файлы", "logs", "skipped.csv"))
+    already_present_rows = [row for row in skipped if row.get("reason") == "already_present"]
+    check(len(already_present_rows) == 2,
+          "exact-dup-examples: both duplicate copies skipped as already_present "
+          f"(got {len(already_present_rows)})")
+
+    report_path = os.path.join(tgt, "__служебные_файлы", "report.html")
+    check(os.path.isfile(report_path), "exact-dup-examples: report.html generated")
+    if os.path.isfile(report_path):
+        with open(report_path, encoding="utf-8") as f:
+            html_out = f.read()
+        check("Точные повторы" in html_out and "примеры" in html_out,
+              "exact-dup-examples: report.html renders the new examples card heading")
+        check("Ничего делать не нужно" in html_out,
+              "exact-dup-examples: framed as no-action-needed, not as a checklist item")
+        check("a.jpg (×2)" in html_out,
+              "exact-dup-examples: matched file shown with its duplicate count "
+              "(live fix, verified end-to-end)")
+
+
+def test_dedup_verification_page():
+    print("\n=== 2026-07-26, обсуждение с пользователем: отдельная страница "
+          "dedup_verification.html -- полная построчная сверка точных повторов (файл в "
+          "архиве, откуда скопирован, какие файлы источника были его дублями), "
+          "сгруппированная по папкам, со ссылкой из report.html -- через реальный "
+          "пайплайн, не report._render_dedup_verification_page() напрямую ===")
+    src = os.path.join(WORK, "src_dedup_verification")
+    album_dir = os.path.join(src, "Album")
+    jpg = os.path.join(album_dir, "a.jpg")
+    image(jpg, 800, 600, exif=True, dt="2019:07:15 12:00:00")
+    dup1 = os.path.join(album_dir, "a_copy1.jpg")
+    shutil.copy2(jpg, dup1)
+
+    tgt = os.path.join(WORK, "target_dedup_verification")
+    r = run_photosort(src, tgt)
+    check(r.returncode == 0, "dedup-verification: run exits 0")
+
+    verify_path = os.path.join(tgt, "__служебные_файлы", "dedup_verification.html")
+    check(os.path.isfile(verify_path), "dedup-verification: dedup_verification.html generated")
+    if os.path.isfile(verify_path):
+        with open(verify_path, encoding="utf-8") as f:
+            html_out = f.read()
+        check("Album" in html_out,
+              "dedup-verification: grouped under the archive folder (album name visible)")
+        check("скопировано из" in html_out and "a.jpg" in html_out,
+              "dedup-verification: shows where the kept file was copied from")
+        check("a_copy1.jpg" in html_out and "отклонён" in html_out,
+              "dedup-verification: shows the rejected duplicate's own source path")
+
+    report_path = os.path.join(tgt, "__служебные_файлы", "report.html")
+    with open(report_path, encoding="utf-8") as f:
+        report_html = f.read()
+    check("dedup_verification.html" in report_html and "полная сверка построчно" in report_html,
+          "dedup-verification: report.html links to the standalone verification page")
+    # 2026-07-26, живая находка пользователя: ссылка должна быть сразу под карточкой "Точные
+    # повторы — примеры", не оторвана от неё в хвосте страницы -- иначе непонятно, к чему она.
+    card_pos = report_html.index("Точные повторы")
+    link_pos = report_html.index("полная сверка построчно")
+    check(card_pos < link_pos < card_pos + 2000,
+          "dedup-verification: link sits right under the exact-dup-examples card, not detached "
+          "at the end of the page")
+
+
+def test_this_run_stats_broken_down_by_media_type():
+    print("\n=== 2026-07-26, по прямой просьбе пользователя: секция 'Пополнение архива' "
+          "делит статистику на итого + в т.ч. фото/RAW/видео -- через реальный пайплайн "
+          "(photosort_win.py:_stats_inc_typed()/unreadable_count_by_type), не report.py "
+          "напрямую с вручную подставленным run_stats ===")
+    src = os.path.join(WORK, "src_this_run_by_type")
+    jpg = os.path.join(src, "a.jpg")
+    image(jpg, 800, 600, exif=True, dt="2019:07:15 12:00:00")
+    with open(os.path.join(src, "b.cr2"), "wb") as f:
+        f.write(b"FAKE-CR2-LONE" + os.urandom(256))
+    # Байт-в-байт копии -- точные дубли обоих типов в ЭТОМ ЖЕ прогоне (skipped_present
+    # инкрементируется дважды за один вызов _process_record()/decide(), см. photosort_win.py).
+    shutil.copy2(jpg, os.path.join(src, "a_copy.jpg"))
+    shutil.copy2(os.path.join(src, "b.cr2"), os.path.join(src, "b_copy.cr2"))
+
+    tgt = os.path.join(WORK, "target_this_run_by_type")
+    r = run_photosort(src, tgt)
+    check(r.returncode == 0, "this-run-by-type: run exits 0")
+
+    report_path = os.path.join(tgt, "__служебные_файлы", "report.html")
+    with open(report_path, encoding="utf-8") as f:
+        html_out = f.read()
+    check('<div class="value">2</div>' in html_out,
+          "this-run-by-type: 'новых файлов добавлено' includes RAW in the total (1 image + 1 raw = 2)")
+    check("в т.ч.: фото — 1 файл, RAW — 1 файл" in html_out,
+          "this-run-by-type: new-files tile shows the фото/RAW breakdown "
+          "(live fix, verified end-to-end)")
+    check("Точные повторы, в т.ч.: фото — 1 файл, RAW — 1 файл" in html_out,
+          "this-run-by-type: exact-duplicate pie caption shows the type breakdown too "
+          "(live fix, verified end-to-end)")
+
+
+def test_undated_file_shows_folder_and_name_in_report():
+    print("\n=== 2026-07-26, обсуждение с пользователем: 'N файлов вообще без даты' в "
+          "report.html теперь показывает папку+имя каждого файла в архиве, не только "
+          "число -- через реальный пайплайн (тот же приём форсирования Tier D, что и "
+          "test_undated_promotion) ===")
+    src = os.path.join(WORK, "src_undated_report_path")
+    for i in range(3):
+        image(os.path.join(src, "dcim", f"plain{i}.jpg"), 1000, 800)
+    forced_mtime = time.time() - 3600
+    for i in range(3):
+        p = os.path.join(src, "dcim", f"plain{i}.jpg")
+        os.utime(p, (forced_mtime, forced_mtime))
+
+    tgt = os.path.join(WORK, "target_undated_report_path")
+    r = run_photosort(src, tgt)
+    check(r.returncode == 0, "undated-report-path: run exits 0")
+    # см. test_undated_promotion: детерминированно последний из трёх (plain2.jpg) уходит в Tier D.
+    undated_dest = os.path.join(tgt, "ByDate", "0000-undated", "dcim", "plain2.jpg")
+    check(os.path.isfile(undated_dest),
+          "undated-report-path: precondition -- file with no date signal lands in 0000-undated")
+
+    report_path = os.path.join(tgt, "__служебные_файлы", "report.html")
+    with open(report_path, encoding="utf-8") as f:
+        html_out = f.read()
+    check("вообще без даты" in html_out,
+          "undated-report-path: report.html renders the Tier D checklist item")
+    check("0000-undated" in html_out and "plain2.jpg" in html_out,
+          "undated-report-path: item shows the archive folder+filename, not just a bare count "
+          "(live fix, verified end-to-end)")
+
+
+def test_dates_review_shows_folder_and_name_in_report():
+    print("\n=== 2026-07-26, по прямой просьбе пользователя (общий аудит 'путь для "
+          "проверки' по Листу 3): 'N файлов получили дату приблизительно' (Tier B/C) "
+          "теперь показывает папку+имя каждого файла в архиве, не только число -- через "
+          "реальный пайплайн (тот же приём форсирования Tier C, что и "
+          "test_undated_promotion: plain0/plain1 получают mtime-guess дату, plain2 уходит "
+          "в Tier D отдельно) ===")
+    src = os.path.join(WORK, "src_dates_review_report_path")
+    for i in range(3):
+        image(os.path.join(src, "dcim", f"plain{i}.jpg"), 1000, 800)
+    forced_mtime = time.time() - 3600
+    for i in range(3):
+        p = os.path.join(src, "dcim", f"plain{i}.jpg")
+        os.utime(p, (forced_mtime, forced_mtime))
+
+    tgt = os.path.join(WORK, "target_dates_review_report_path")
+    r = run_photosort(src, tgt)
+    check(r.returncode == 0, "dates-review-report-path: run exits 0")
+
+    dates_review = read_csv(os.path.join(tgt, "__служебные_файлы", "logs", "dates_review.csv"))
+    tier_c_rows = [row for row in dates_review if row.get("tier") == "C"]
+    check(len(tier_c_rows) >= 1,
+          f"dates-review-report-path: precondition -- at least one Tier C row (got {len(tier_c_rows)})")
+
+    report_path = os.path.join(tgt, "__служебные_файлы", "report.html")
+    with open(report_path, encoding="utf-8") as f:
+        html_out = f.read()
+    check("получили дату приблизительно" in html_out,
+          "dates-review-report-path: report.html renders the Tier B/C checklist item")
+    check("оценочная" in html_out,
+          "dates-review-report-path: item shows the tier confidence label, not just a count")
+    if tier_c_rows:
+        name = os.path.basename(tier_c_rows[0]["dest"])
+        check(name in html_out,
+              f"dates-review-report-path: item shows the actual filename ({name}), not just "
+              "a bare count (live fix, verified end-to-end)")
+
+
+def test_processed_count_in_report():
+    print("\n=== REVIEW-HANDOFF.md, Раунд 32, задача 4: report.html показывает 'найдено на "
+          "источнике' -- база для сверки, что программа ничего не пропустила молча -- через "
+          "реальный пайплайн, не вручную подставленный run_stats ===")
+    src = os.path.join(WORK, "src_processed_count")
+    image(os.path.join(src, "a.jpg"), 800, 600, exif=True, dt="2019:07:15 12:00:00")
+    image(os.path.join(src, "b.jpg"), 800, 600, exif=True, dt="2019:07:16 12:00:00")
+
+    tgt = os.path.join(WORK, "target_processed_count")
+    r = run_photosort(src, tgt)
+    check(r.returncode == 0, "processed-count: run exits 0")
+
+    report_path = os.path.join(tgt, "__служебные_файлы", "report.html")
+    check(os.path.isfile(report_path), "processed-count: report.html generated")
+    if os.path.isfile(report_path):
+        with open(report_path, encoding="utf-8") as f:
+            html_out = f.read()
+        check("найдено на источнике" in html_out,
+              "processed-count: report.html renders the comparison-base stat")
+        check(">2<" in html_out,
+              "processed-count: value matches the 2 real files processed this run "
+              "(live fix, verified end-to-end)")
+        check("не удалось прочитать при обходе" not in html_out,
+              "processed-count: no listdir-failure warning on a clean run")
 
 
 def test_raw_layout_sibling():
@@ -1822,7 +2247,7 @@ def test_log_rotation():
           "5.3в: current appended.csv is a fresh (small) file after rotation")
     with open(appended_path, encoding="utf-8") as f:
         first_line = f.readline().strip()
-    check(first_line == "timestamp,source,dest,reason,flags,date,duration",
+    check(first_line == "timestamp,source,dest,reason,flags,date,duration,place",
           "5.3в: rotated-then-reopened appended.csv has its CSV header restored")
 
 
@@ -3259,7 +3684,19 @@ ALL_TESTS = [
     test_tar_source_never_uses_unverified_rename,
     test_place_file_archive_no_crc_forces_hash_verify,
     test_analyze_modes,
+    test_analyze_closing_cta_mentions_archives_found,
+    test_oldest_file_line_shows_folder_and_name,
+    test_analyze_report_recommendations_section,
+    test_workdir_dryrun_shows_full_target_history_when_target_exists,
+    test_empty_source_report_suggests_other_location,
     test_raw_without_jpeg_in_album_gets_date_column,
+    test_geo_lookup_works_for_albums_files,
+    test_exact_dup_examples_in_report,
+    test_dedup_verification_page,
+    test_this_run_stats_broken_down_by_media_type,
+    test_undated_file_shows_folder_and_name_in_report,
+    test_dates_review_shows_folder_and_name_in_report,
+    test_processed_count_in_report,
     test_raw_layout_sibling,
     test_photosort_marker_excludes_subtree,
     test_unsorted_is_not_marker_protected,

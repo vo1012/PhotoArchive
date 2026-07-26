@@ -28,6 +28,7 @@ import inspect
 import itertools
 import json
 import multiprocessing
+import ntpath
 import os
 import re
 import shutil
@@ -2004,6 +2005,17 @@ class SourceWalker:
         self.archive_logs = []   # list of (archive_display, status, note)
         self.sidecar_logs = []   # list of (display_path,)
         self.skipped_marker_logs = []  # list of (display_path,)
+        # SESSION-HANDOFF.txt, Сценарий 3 (SOURCE отключается физически посреди обхода):
+        # os.stat() ниже в _walk_dir() уже был обёрнут в try/except OSError, но раньше просто
+        # молча `continue`-ил -- реальный боевой тест такого отключения поймал файлы,
+        # исчезающие без единого следа ни в одном логе. Теперь каждый такой файл собирается
+        # сюда и переносится в unreadable.csv тем же способом, что archive_logs/sidecar_logs
+        # ниже по файлу (run_for_source()) -- пользователь должен видеть, что файл вообще был.
+        self.stat_failed_logs = []  # list of (display_path, error_str)
+        # REVIEW-HANDOFF.md, Раунд 32, задача 4: os.listdir() на директорию тоже может
+        # провалиться (права доступа/длинный путь/повреждённая ФС) -- вся папка теряется молча
+        # без этого счётчика, отчёт не мог дать пользователю сигнал "не всё было прочитано".
+        self.listdir_failed = []  # list of dirpath
         # 2026-07-11 (session on managing the exclude-dir list): pропуски по имени папки
         # (hard/default/extra) считаются, а не печатаются построчно -- на полном скане диска
         # node_modules/.git может встретиться сотни раз, построчный print был бы спамом.
@@ -2120,6 +2132,10 @@ class SourceWalker:
                 entries = sorted(os.listdir(winlong(cur_dirpath)))
             except OSError as e:
                 self.log(f"  не удалось прочитать директорию {cur_dirpath}: {e}")
+                # REVIEW-HANDOFF.md, Раунд 32, задача 4: раньше только текст в лог -- ничего
+                # не считалось, отчёт не давал пользователю базы для сверки "не пропало ли
+                # что-то молча" (права доступа/длинный путь/повреждённая ФС на старой флешке).
+                self.listdir_failed.append(cur_dirpath)
                 continue
 
             # REVIEW-HANDOFF.md, Раунд 24 (2026-07-21): найденные архивы (found_archive_roots)
@@ -2206,7 +2222,9 @@ class SourceWalker:
 
                 try:
                     st = os.stat(winlong(full))
-                except OSError:
+                except OSError as e:
+                    self.stat_failed_logs.append((disp, str(e)))
+                    self.log(f"  не удалось прочитать {disp}: {e}")
                     continue
 
                 sibling_path = None
@@ -2430,6 +2448,29 @@ def is_hidden_path(read_path: str) -> bool:
     return name.startswith(".")
 
 
+def _volume_likely_gone(path: str) -> bool:
+    """Cheap probe: is the drive containing `path` still reachable? Used inside the
+    read-retry loop below to fail fast once the whole volume is gone (surprise physical
+    disconnection) instead of blindly burning retries*delay seconds on every remaining
+    file in the same already-listed directory -- a single missing/locked file is worth
+    retrying, thousands of files failing because the drive itself vanished are not.
+
+    REVIEW-HANDOFF.md, Раунд 41 [БЛОКЕР] 2: explicit ntpath, not the platform `os.path` --
+    this parses a Windows drive letter (this program only ever runs on Windows in
+    production, see README), so it must recognize "Z:\\..." regardless of which OS Python
+    itself is running under. `os.path.splitdrive` silently aliases to posixpath's version
+    on Linux, which never recognizes a drive letter at all -- unit tests run on
+    ubuntu-latest in CI (see .github/workflows/ci.yml) would see this function permanently
+    return False, unable to exercise the real logic at all."""
+    drive = ntpath.splitdrive(ntpath.abspath(path))[0]
+    if not drive:
+        return False
+    try:
+        return not os.path.isdir(winlong(drive + "\\"))
+    except OSError:
+        return True
+
+
 def sha256_file_with_retry(path: str, retries: int, delay: float) -> str:
     last_err = None
     for attempt in range(retries):
@@ -2438,6 +2479,8 @@ def sha256_file_with_retry(path: str, retries: int, delay: float) -> str:
         except OSError as e:
             last_err = e
             if attempt < retries - 1:
+                if _volume_likely_gone(path):
+                    break
                 time.sleep(delay)
     raise ReadError(str(last_err))
 
@@ -3112,9 +3155,31 @@ def _note_album_source(cfg, st, stats, album, album_prefix, album_dir):
     st.album_marker_separator_done.add(album)
 
 
+_place_cache: dict = {}  # (rounded_lat, rounded_lon, home_country) -> place string or None
+
+
 def place_for_gps(lat, lon, home_country="RU"):
+    """REVIEW-HANDOFF.md, Раунд 41 [БЛОКЕР] 1: `rg.search()` costs ~130 мс/вызов necessarily
+    UNBATCHED -- measured ~5000x cheaper as one batched call across many points, but this
+    pipeline hashes/copies SOURCE items strictly one at a time by design (see the "no
+    read-ahead batching" comment on the walk loop in run_for_source()): files extracted from
+    nested zip/rar archives are deleted from tmp_extract as soon as that archive's generator
+    scope closes, so pulling several items ahead into a batch risks operating on a file that
+    is already gone. True cross-file batching would have to fight that safety guarantee.
+
+    Instead: cache by (lat, lon) rounded to 2 decimal places (~1.1 km at the equator, coarser
+    near the poles) -- photos from the same event/venue, the common case for a family photo
+    archive, collapse onto one real `rg.search()` call instead of paying the per-file cost
+    each time. This is a deliberate precision trade-off, not a technical minimum: a point
+    right at the boundary between two cities could theoretically reuse a neighbouring point's
+    answer. Chosen over exact-coordinate caching (safer, but real phone GPS jitters enough
+    between shots at the same physical spot that it rarely hits) after discussion with the
+    user -- see SESSION-HANDOFF.txt."""
     if lat is None or lon is None:
         return None
+    cache_key = (round(lat, 2), round(lon, 2), home_country)
+    if cache_key in _place_cache:
+        return _place_cache[cache_key]
     try:
         import reverse_geocoder as rg
         # 2026-07-11 live-run finding: verbose=True (its default) prints "Loading formatted
@@ -3125,16 +3190,20 @@ def place_for_gps(lat, lon, home_country="RU"):
         # supported library parameter, not a workaround.
         result = rg.search([(lat, lon)], verbose=False)
         if not result:
+            _place_cache[cache_key] = None
             return None
         r = result[0]
         city = r.get("name")
         cc = r.get("cc")
         if not city:
+            _place_cache[cache_key] = None
             return None
-        if cc == home_country:
-            return city
-        return f"{city}, {cc}"
+        place = city if cc == home_country else f"{city}, {cc}"
+        _place_cache[cache_key] = place
+        return place
     except Exception:
+        # Not cached -- a transient failure (e.g. the lazy geocoded-file load hiccups) should
+        # not permanently poison this bucket for every later file that lands in it.
         return None
 
 
@@ -3605,7 +3674,7 @@ class RunLogs:
         self._files = {}
         self._writers = {}
         self._init_csv("appended",
-                        ["timestamp", "source", "dest", "reason", "flags", "date", "duration"])
+                        ["timestamp", "source", "dest", "reason", "flags", "date", "duration", "place"])
         self._init_csv("skipped", ["timestamp", "source", "matched_with", "reason"])
         self._init_csv("disputes", ["timestamp", "source", "reason", "dest", "was_hidden"])
         self._init_csv("dates_review", ["timestamp", "dest", "date", "tier", "confidence", "evidence", "source"])
@@ -3651,7 +3720,7 @@ class RunLogs:
         except OSError:
             pass
 
-    def appended(self, source, dest, reason, flags="", date="", duration=""):
+    def appended(self, source, dest, reason, flags="", date="", duration="", place=""):
         """date (SESSION-HANDOFF.txt, баг 9): реальная дата файла (`YYYY-MM-DD` -- полная,
         либо `YYYY` -- только год, precision=="year", см. resolve_date()), а не то, что можно
         восстановить разбором `dest` -- у файлов в Albums\\... нет сегмента ByDate в пути
@@ -3663,8 +3732,16 @@ class RunLogs:
         персистентная колонка -- по аналогии с `date` выше, чтобы кумулятивная сумма по всему
         архиву считалась дешёвым чтением CSV, а не повторным чтением контейнера каждого видео
         при каждом рендере отчёта (см. обсуждение "ось стоимости" в самом разделе 4.6). "" --
-        не видео либо длительность не удалось определить."""
-        self._write_row("appended", [self._ts(), source, dest, reason, flags, date, duration])
+        не видео либо длительность не удалось определить.
+
+        place (живая находка 2026-07-25, боевой прогон F:\\, весь архив ушёл в Albums\\..., ни
+        одного города в отчёте): та же проблема, что была у `date` до бага 9 -- город из
+        `place_for_gps()` раньше попадал в имя папки ТОЛЬКО для ByDate-маршрута, для Albums-
+        файлов не считался вообще, report.py не мог взять место из dest никак. Теперь
+        `_process_record()` считает его один раз независимо от маршрутизации и пишет сюда
+        всегда, когда есть GPS и `place_lookup: offline`. "" -- нет GPS-тега, geocoding выключен
+        (`place_lookup: off`) либо reverse_geocoder не смог определить город по координатам."""
+        self._write_row("appended", [self._ts(), source, dest, reason, flags, date, duration, place])
 
     def skipped(self, source, matched_with, reason):
         self._write_row("skipped", [self._ts(), source, matched_with, reason])
@@ -3795,10 +3872,10 @@ class CollectingRunLogs:
     def _ts(self):
         return time.strftime("%Y-%m-%d %H:%M:%S")
 
-    def appended(self, source, dest, reason, flags="", date="", duration=""):
+    def appended(self, source, dest, reason, flags="", date="", duration="", place=""):
         self.rows["appended"].append({"timestamp": self._ts(), "source": source, "dest": dest,
                                        "reason": reason, "flags": flags, "date": date,
-                                       "duration": duration})
+                                       "duration": duration, "place": place})
 
     def skipped(self, source, matched_with, reason):
         self.rows["skipped"].append({"timestamp": self._ts(), "source": source,
@@ -3904,7 +3981,7 @@ def index_archive(cfg: Config, conn, log=print):
         for path, ftype in _walk_media_files(root, exclude_dirs=excludes_by_root.get(root))
     ]
 
-    with ProgressReporter(total=len(entries) or None, desc="Фаза 1 — индексация архива", unit="файл") as bar:
+    with ProgressReporter(total=len(entries) or None, desc="Просматриваю уже собранный архив", unit="файл") as bar:
         for root, path, ftype in entries:
             try:
                 st = os.stat(winlong(path))
@@ -4524,6 +4601,11 @@ class _RunState:
         self.dest_path_by_read_path = {}
         self.merged_albums_seen = set()
         self.stopped_for_space = False
+        self.interrupted = False  # Ctrl+C-пакет: см. _run_impl() -- KeyboardInterrupt во время
+                                   # основного цикла обхода источника ловится там же, где
+                                   # стоит уже готовая for-петля, тем же приёмом, что и
+                                   # stopped_for_space выше (break + finalize CSV/summary
+                                   # нормально, не raw traceback).
         # 2026-07-11, по запросу пользователя: album -> set известных "путей-источников"
         # (album_prefix из find_album()), уже отмеченных в __ВНИМАНИЕ_объединённая_папка.txt
         # этого альбома -- либо считанных из уже существующего файла (первое касание альбома
@@ -4532,6 +4614,24 @@ class _RunState:
         # album -> True, если в этом прогоне уже вставлен пустой разделитель перед новыми
         # строками (чтобы вставить его РОВНО один раз за прогон, а не перед каждой строкой).
         self.album_marker_separator_done = set()
+
+
+def _ftype_bucket(ftype: str) -> str:
+    """image/raw/video -- как есть, всё остальное (SourceItem.ftype=="other", не медиафайл по
+    расширению) сворачивается в "other" -- 2026-07-26, по просьбе пользователя разбить
+    статистику "Пополнения архива" на "итого + в т.ч. фото/RAW/видео" (report.py:
+    _render_this_run()). "other" не показывается в отчёте отдельно (просьба была именно про
+    фото/RAW/видео), но считается, чтобы бакеты в сумме всегда совпадали с "итого"."""
+    return ftype if ftype in ("image", "raw", "video") else "other"
+
+
+def _stats_inc_typed(stats: dict, key: str, ftype: str) -> None:
+    """stats[key] -- общий счётчик (как раньше, ни один вызывающий код не должен был
+    измениться), stats[f"{key}_{bucket}"] -- та же величина, разбитая по типу файла (см.
+    _ftype_bucket()). Один инкремент вместо двух в каждом call site."""
+    stats[key] = stats.get(key, 0) + 1
+    typed_key = f"{key}_{_ftype_bucket(ftype)}"
+    stats[typed_key] = stats.get(typed_key, 0) + 1
 
 
 def _log_write_failure(item, dest_hint, e, cfg, run_logs, stats, log):
@@ -4603,7 +4703,7 @@ def _process_record(rec, st: _RunState, log=print):
             run_logs.disputed(item.origin_display, rec.media_note or "not_media", dest_path,
                                was_hidden=rec.is_hidden)
             run_logs.action(f"disputed: {item.origin_display} -> {dest_path}")
-        stats["disputed"] += 1
+        _stats_inc_typed(stats, "disputed", item.ftype)
         return False
 
     decision = decide(pool, rec, cfg.mirror_raw)
@@ -4614,7 +4714,7 @@ def _process_record(rec, st: _RunState, log=print):
 
     if decision.decision == "skipped_present":
         run_logs.skipped(item.origin_display, decision.matched_dest, decision.note)
-        stats[decision.decision] += 1
+        _stats_inc_typed(stats, decision.decision, item.ftype)
         # А.4: оценка "сэкономлено места дедупом" -- сколько байт НЕ скопировано (не "освобождено":
         # программа ничего не удаляет) благодаря тому, что содержимое уже есть в архиве/пуле
         # этого прогона. Near-dup (p.5.7) больше не сюда -- такие файлы теперь дописываются,
@@ -4669,6 +4769,10 @@ def _process_record(rec, st: _RunState, log=print):
             date_col = str(date_value.year)
         else:
             date_col = date_value.strftime("%Y-%m-%d")
+        # Тот же живой фикс, что и в image/video-ветке ниже (2026-07-25) -- одинокий RAW
+        # (raw_without_jpeg) может нести собственный GPS-тег не хуже JPEG, city-репортинг не
+        # должен зависеть от того, есть ли у него парный JPEG.
+        raw_place = place_for_gps(rec.gps_lat, rec.gps_lon, cfg.home_country) if cfg.place_lookup == "offline" else None
 
         try:
             dest_path, is_dup = resolve_dest_path(
@@ -4689,7 +4793,7 @@ def _process_record(rec, st: _RunState, log=print):
         if not is_dup:
             pool.add(PoolEntry(sha256=rec.sha256, ftype="raw", dest_path=dest_path, size=item.size))
             st.dest_path_by_read_path[item.read_path] = dest_path
-            run_logs.appended(item.origin_display, dest_path, decision.note, date=date_col)
+            run_logs.appended(item.origin_display, dest_path, decision.note, date=date_col, place=raw_place or "")
             run_logs.action(f"appended(raw): {item.origin_display} -> {dest_path}")
             stats["raw_mirrored"] += 1
             stats["bytes_appended"] += item.size
@@ -4711,6 +4815,14 @@ def _process_record(rec, st: _RunState, log=print):
     album, subpath, album_prefix = find_album(item.rel_path, item.archive_boundary_idx,
                                                dump_names=cfg.dump_segment_names_lower,
                                                dump_prefixes=cfg.dump_segment_prefixes_tuple)
+    # Живая находка (2026-07-25, боевой прогон F:\): раньше place_for_gps() вызывался ТОЛЬКО
+    # в ветке "нет альбома" ниже (нужен для имени папки ByDate\...) -- файлы, попавшие в
+    # Albums\... (у альбома уже есть человеческое имя, не нужен для ПУТИ), никогда не получали
+    # geo-lookup вообще, из-за чего report.py не мог заполнить "География" ни диаграммой, ни
+    # списком городов для архивов, целиком состоящих из альбомов. Считаем place один раз здесь,
+    # независимо от маршрутизации -- используется в folder-naming только для ByDate (см. ниже),
+    # но теперь всегда передаётся в run_logs.appended() для отчёта (см. колонку "place").
+    place = place_for_gps(rec.gps_lat, rec.gps_lon, cfg.home_country) if cfg.place_lookup == "offline" else None
     if cfg.debug:
         segments = item.rel_path.split("/")[:-1]
         if segments:
@@ -4743,7 +4855,6 @@ def _process_record(rec, st: _RunState, log=print):
         dest_dir = safe_mirror_dir(cfg.undated_root, os.path.dirname(item.rel_path))
         final_decision = "undated"
     else:
-        place = place_for_gps(rec.gps_lat, rec.gps_lon, cfg.home_country) if cfg.place_lookup == "offline" else None
         dest_dir = build_bydate_dest_dir(cfg.bydate_root, date_value, precision, place,
                                           cfg.bydate_granularity)
 
@@ -4765,7 +4876,7 @@ def _process_record(rec, st: _RunState, log=print):
 
     if is_dup:
         run_logs.skipped(item.origin_display, dest_path, "identical_at_destination")
-        stats["skipped_present"] += 1
+        _stats_inc_typed(stats, "skipped_present", item.ftype)
         stats["bytes_saved_by_dedup"] += item.size  # А.4
         return False
 
@@ -4792,7 +4903,7 @@ def _process_record(rec, st: _RunState, log=print):
     # тогда None).
     duration_col = str(rec.duration) if pool_ftype == "video" and rec.duration is not None else ""
     run_logs.appended(item.origin_display, dest_path, decision.note or decision.decision,
-                       flags=flags, date=date_col, duration=duration_col)
+                       flags=flags, date=date_col, duration=duration_col, place=place or "")
     run_logs.action(f"appended: {item.origin_display} -> {dest_path}")
     if decision.matched_dest is not None and decision.decision in (
             "appended_near_dup", "appended_better", "appended_crop"):
@@ -4811,6 +4922,14 @@ def _process_record(rec, st: _RunState, log=print):
         # вообще" от "точная EXIF-дата" (обе категории одинаково отсутствуют в dates_review.csv).
         run_logs.undated_media(item.origin_display, dest_path)
     stats[final_decision] = stats.get(final_decision, 0) + 1
+    # 2026-07-26, по просьбе пользователя: "похожие кадры" в _render_this_run() -- отдельный
+    # агрегат сверх трёх decision-ключей выше (appended_near_dup/appended_better/appended_crop
+    # уже существуют по отдельности, report.py сам суммирует их в n_near_dup) -- raw сюда
+    # никогда не попадает, decide() не возвращает near-dup-семейство для raw (см. комментарий
+    # у near_dup_edge() чуть выше), поэтому бакет только image/video, без "other"/raw.
+    if final_decision in ("appended_near_dup", "appended_better", "appended_crop"):
+        near_dup_key = f"near_dup_{pool_ftype}"
+        stats[near_dup_key] = stats.get(near_dup_key, 0) + 1
     stats["bytes_appended"] += item.size
     # А.4: разбивка "уникальных" по типу для итоговой сводки (фото vs видео)
     stats["appended_images" if pool_ftype == "image" else "appended_videos"] += 1
@@ -4990,57 +5109,86 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
 
     processed_count = 0
     unreadable_count = 0
+    # 2026-07-26, по просьбе пользователя: разбивка unreadable_count по типу файла (фото/RAW/
+    # видео/прочее) для _render_this_run() -- отдельные счётчики, не Counter(), чтобы не менять
+    # существующую переменную unreadable_count (используется ниже и в summary_lines как есть).
+    unreadable_count_by_type = Counter()
     pending_retry = []  # SourceItem list: read failed 3x but the file persists (not archive-tmp)
                          # -> gets one more attempt at the end of the run.
 
     # Задача 4: total неизвестен заранее (walker -- генератор, находит файлы и вложенные
     # архивы по ходу обхода) -- бар без total (только счётчик/скорость, без %/ETA, как и
     # предписано: ETA только там, где total известен).
-    with ProgressReporter(total=None, desc="Фаза 2-5 — обработка источника", unit="файл",
-                           disk_usage_path=cfg.target) as bar:
+    # Пакет "человеческие названия фаз" (SESSION-HANDOFF.txt): один и тот же цикл ниже и
+    # сканирует источник, и (если не dry_run) копирует в TARGET -- название бара должно
+    # честно отражать оба случая, не обещать копирование там, где ничего не пишется.
+    # Длина сопоставима со старым "Фаза 2-5 — обработка источника" (~33 симв.) -- не трогать
+    # без пересчёта _progress_note_budget() ниже по файлу, её reserve откалиброван под этот
+    # порядок длины префикса.
+    _source_phase_desc = "Проверяю источник (пробный прогон)" if cfg.dry_run \
+        else "Разбираю и копирую файлы"
+    # SESSION-HANDOFF.txt п.12: живой постфикс "своб.XГБ" вводил в заблуждение в dry-run --
+    # tmp_extract\ внутри TARGET реально получает байты при распаковке архивов даже в
+    # пробном прогоне, из-за чего число "уменьшается" в ощутимо read-only режиме. Показывать
+    # только там, где TARGET действительно меняется -- в режиме копирования.
+    _disk_usage_path = None if cfg.dry_run else cfg.target
+    with ProgressReporter(total=None, desc=_source_phase_desc, unit="файл",
+                           disk_usage_path=_disk_usage_path) as bar:
         walker = SourceWalker(cfg, log=log, progress_cb=bar.set_context)
         # NB: items are analyzed and placed one at a time (no read-ahead batching).
         # Files extracted from an archive live in TMP_EXTRACT only until that archive's
         # generator scope closes (walker.py cleans up in a `finally` right after its last
         # item is yielded) -- pulling several items ahead into a batch before processing
         # them risks the physical file already being deleted by the time we hash/copy it.
-        for item in walker.walk():
-            if cfg.sample_limit and processed_count >= cfg.sample_limit:
-                break
-
-            note = "хеширование большого видео" if (
-                item.ftype == "video" and item.size > 200 * 1024**2) else None
-            # Раунд 6 ревью (REVIEW-HANDOFF.md, живой баг-репорт "программа зависла"): note
-            # должен появиться на экране ДО блокирующего analyze_batch(), не после -- иначе
-            # бар всю паузу молча показывает состояние предыдущего файла, что визуально
-            # неотличимо от зависания. n=0 -- только обновление текста, счётчик не трогаем
-            # (тот же приём, что и self.update(0) в ProgressReporter.__init__).
-            bar.update(0, note=note)
-            records = analyze_batch([item], retries=cfg.read_retry_count, retry_delay=cfg.read_retry_delay,
-                                     small_image_px=cfg.small_image_px, log=log, pool=pool)
-
-            for rec in records:
-                processed_count += 1
-
-                if rec.read_error:
-                    if item.read_path.startswith(cfg.tmp_extract + os.sep):
-                        # physical file will vanish once this archive's TMP_EXTRACT is cleaned up
-                        # -- no later retry is possible, log it now.
-                        run_logs.unreadable(item.origin_display, rec.read_error_msg)
-                        unreadable_count += 1
-                    else:
-                        pending_retry.append(item)
-                    bar.update(1, note=note)
-                    continue
-
-                if _process_record(rec, st, log=log):
-                    st.stopped_for_space = True
-                    bar.update(1, note=note)
+        try:
+            for item in walker.walk():
+                if cfg.sample_limit and processed_count >= cfg.sample_limit:
                     break
-                bar.update(1, note=note)
 
-            if st.stopped_for_space:
-                break
+                note = "хеширование большого видео" if (
+                    item.ftype == "video" and item.size > 200 * 1024**2) else None
+                # Раунд 6 ревью (REVIEW-HANDOFF.md, живой баг-репорт "программа зависла"): note
+                # должен появиться на экране ДО блокирующего analyze_batch(), не после -- иначе
+                # бар всю паузу молча показывает состояние предыдущего файла, что визуально
+                # неотличимо от зависания. n=0 -- только обновление текста, счётчик не трогаем
+                # (тот же приём, что и self.update(0) в ProgressReporter.__init__).
+                bar.update(0, note=note)
+                records = analyze_batch([item], retries=cfg.read_retry_count, retry_delay=cfg.read_retry_delay,
+                                         small_image_px=cfg.small_image_px, log=log, pool=pool)
+
+                for rec in records:
+                    processed_count += 1
+
+                    if rec.read_error:
+                        if item.read_path.startswith(cfg.tmp_extract + os.sep):
+                            # physical file will vanish once this archive's TMP_EXTRACT is cleaned up
+                            # -- no later retry is possible, log it now.
+                            run_logs.unreadable(item.origin_display, rec.read_error_msg)
+                            unreadable_count += 1
+                            unreadable_count_by_type[_ftype_bucket(item.ftype)] += 1
+                        else:
+                            pending_retry.append(item)
+                        bar.update(1, note=note)
+                        continue
+
+                    if _process_record(rec, st, log=log):
+                        st.stopped_for_space = True
+                        bar.update(1, note=note)
+                        break
+                    bar.update(1, note=note)
+
+                if st.stopped_for_space:
+                    break
+        except KeyboardInterrupt:
+            # Ctrl+C-пакет (по прямой просьбе пользователя, ТОЛЬКО [3]/CLI archive): ловится
+            # здесь, не в main(), чтобы CSV-логи/summary ниже по функции успели дописаться
+            # нормально (RunLogs пишет построчно по ходу работы -- то, что уже успело
+            # обработаться, уже на диске) -- тот же приём, что и st.stopped_for_space выше.
+            # НЕ проглатывается совсем: st.interrupted пробрасывается через RunResult до
+            # вызывающего кода (_bare_launch_run_build()/_main()), который генерирует отчёт с
+            # баннером прерывания и заново возбуждает KeyboardInterrupt -- поведение "Ctrl+C
+            # останавливает программу" не меняется, только теперь есть отчёт перед выходом.
+            st.interrupted = True
 
         # Архивные события (extracted/no_media/password_protected/bomb_suspected/...) копятся
         # в walker.archive_logs по ходу walk() -- по завершении обхода переносим их в
@@ -5066,22 +5214,32 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
             run_logs.action(f"[skip_marker] {disp}")
         for disp in walker.sidecar_logs:
             run_logs.action(f"[sidecar] {disp}")
+        for disp, err in walker.stat_failed_logs:
+            run_logs.unreadable(disp, err)
+            unreadable_count += 1
+            # os.stat() провалился раньше, чем SourceItem с ftype вообще собран -- только путь
+            # (disp), тип определяем по расширению тем же способом, что и сам SourceItem.
+            unreadable_count_by_type[_ftype_bucket(file_type(disp))] += 1
 
-        if pending_retry and not st.stopped_for_space:
-            log(f"Повторное чтение {len(pending_retry)} отложенных файлов в конце прогона...")
-            for item in pending_retry:
-                records = analyze_batch([item], retries=1, retry_delay=cfg.read_retry_delay,
-                                         small_image_px=cfg.small_image_px, log=log, pool=pool)
-                rec = records[0]
-                if rec.read_error:
-                    run_logs.unreadable(item.origin_display, rec.read_error_msg)
-                    unreadable_count += 1
-                    continue
-                if _process_record(rec, st, log=log):
-                    st.stopped_for_space = True
+        if pending_retry and not st.stopped_for_space and not st.interrupted:
+            try:
+                log(f"Повторное чтение {len(pending_retry)} отложенных файлов в конце прогона...")
+                for item in pending_retry:
+                    records = analyze_batch([item], retries=1, retry_delay=cfg.read_retry_delay,
+                                             small_image_px=cfg.small_image_px, log=log, pool=pool)
+                    rec = records[0]
+                    if rec.read_error:
+                        run_logs.unreadable(item.origin_display, rec.read_error_msg)
+                        unreadable_count += 1
+                        unreadable_count_by_type[_ftype_bucket(item.ftype)] += 1
+                        continue
+                    if _process_record(rec, st, log=log):
+                        st.stopped_for_space = True
+                        bar.update(1, note="повтор чтения (диск может быть медленным)")
+                        break
                     bar.update(1, note="повтор чтения (диск может быть медленным)")
-                    break
-                bar.update(1, note="повтор чтения (диск может быть медленным)")
+            except KeyboardInterrupt:
+                st.interrupted = True  # см. комментарий у основного цикла выше
 
     if st.cache_conn is not None:
         st.cache_conn.commit()
@@ -5127,7 +5285,16 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
     # сохранения "нечитаемых"/"распакованных архивов" нечем было бы показать в отчёте отдельно
     # от кумулятивной истории архива.
     stats["unreadable_count"] = unreadable_count
+    for bucket, n in unreadable_count_by_type.items():
+        stats[f"unreadable_count_{bucket}"] = n
     stats["archives_extracted"] = sum(1 for _, status, _ in walker.archive_logs if status == "archive_extracted")
+    # REVIEW-HANDOFF.md, Раунд 32, задача 4: "всего найдено на источнике" -- база для сверки,
+    # что отчёт ничего не потерял молча (сумма категорий ниже должна совпадать с этим числом).
+    # listdir_failed_count -- отдельный прямой сигнал (не просто база для ручного сложения):
+    # если > 0, хотя бы одна папка не была прочитана вообще (права доступа/длинный путь/
+    # повреждённая ФС) -- report.py показывает явное предупреждение, не только цифру.
+    stats["processed_count"] = processed_count
+    stats["listdir_failed_count"] = len(walker.listdir_failed)
     try:
         # TARGET can vanish mid-run (disk unplugged) -- confirmed via real-hardware test
         # 2026-07-18: this used to crash the whole run right at the finish line, after every
@@ -5139,6 +5306,8 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
         summary_lines.append("Свободно на TARGET по завершении: не удалось определить (диск недоступен)\n")
     if st.stopped_for_space:
         summary_lines.append("ОСТАНОВЛЕНО: недостаточно места на TARGET. Освободите место и запустите снова.\n")
+    if st.interrupted:
+        summary_lines.append("ПРЕРВАНО: работа остановлена пользователем (Ctrl+C).\n")
     summary_lines.append(build_final_summary(stats, walker, unreadable_count, pool, processed_count))
     summary_text = "".join(summary_lines)
     run_logs.write_summary(summary_text)
@@ -5156,7 +5325,7 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
     # имеет .rows -- RunLogs/NullRunLogs не имеют этого атрибута, getattr(..., None) вместо
     # isinstance() держит эту функцию не завязанной на конкретный класс.
     collected_rows = getattr(run_logs, "rows", None)
-    return stats, processed_count, st.stopped_for_space, collected_rows, pool
+    return stats, processed_count, st.stopped_for_space, collected_rows, pool, st.interrupted
 
 # ============================================================================
 # STARTUP: конфиг, проверка бандленных бинарников, интерактивный ввод, CLI
@@ -5657,6 +5826,13 @@ class RunResult:
                                   # (CollectingRunLogs.rows), иначе None -- см. _run_impl
     pool: "Pool" = None  # раунд 5 ревью, вариант A: для передачи вызывающему batch-циклу как
                          # shared_pool следующего SOURCE -- None при failed=True (см. run_for_source)
+    interrupted: bool = False  # Ctrl+C-пакет: KeyboardInterrupt поймана внутри _run_impl(),
+                                # failed остаётся False (та же логика, что и stopped_for_space
+                                # -- что-то реально могло успеть обработаться до прерывания).
+                                # Вызывающий код (_bare_launch_run_build()/_main()) обязан
+                                # остановить цикл по остальным SOURCE и заново возбудить
+                                # KeyboardInterrupt после генерации отчёта -- не проглатывать
+                                # тихо (см. их же комментарии).
 
 
 def run_for_source(source, target, dry_run, sample_limit, log=print, suppress_logs=False,
@@ -5673,14 +5849,15 @@ def run_for_source(source, target, dry_run, sample_limit, log=print, suppress_lo
         log(f"ОШИБКА КОНФИГУРАЦИИ: {e}")
         return RunResult(failed=True, exit_code=EXIT_CONFIG_ERROR)
     try:
-        stats, processed_count, stopped_for_space, collected_rows, pool = run(
+        stats, processed_count, stopped_for_space, collected_rows, pool, interrupted = run(
             cfg, log=log, shared_pool=shared_pool, print_summary=print_summary)
     except TargetLocked as e:
         log(f"ОШИБКА: {e}")
         return RunResult(failed=True, exit_code=EXIT_TARGET_LOCKED)
     exit_code = EXIT_INSUFFICIENT_SPACE if stopped_for_space else 0
     return RunResult(failed=False, exit_code=exit_code, stats=stats, collected_rows=collected_rows,
-                      processed_count=processed_count, stopped_for_space=stopped_for_space, pool=pool)
+                      processed_count=processed_count, stopped_for_space=stopped_for_space, pool=pool,
+                      interrupted=interrupted)
 
 
 def run_analyze_for_source(source, target, sample_limit, mode, log=print):
@@ -5741,7 +5918,7 @@ def _reclaim_console_focus() -> None:
 
 def _finalize_target_report(target: str, level: str, any_succeeded: bool, total_processed: int,
                              open_browser: bool, log=print, run_stats: dict = None,
-                             run_start: str = None) -> str:
+                             run_start: str = None, interrupted: bool = False) -> str:
     """PROMPT_archive_report.md, разделы 1.1/1.1а/1.2: report.html после archive-прогона
     (level="target", файл персистентно в TARGET\\__служебные_файлы\\) или CLI --dry-run
     (level="workdir", файл эфемерно в WORKDIR) -- ОБА читают одни и те же CSV-логи TARGET
@@ -5772,19 +5949,29 @@ def _finalize_target_report(target: str, level: str, any_succeeded: bool, total_
     передаёт его в _pause_before_exit(), которая открывает браузер ПОСЛЕ явного Enter, тем же
     действием что и обычный выход. level=="workdir" (--dry-run) оставлен как был (открывается
     сразу) -- Enter-гейтинг для WORKDIR-уровня по-прежнему не спроектирован (см. ROADMAP.md),
-    не трогать сейчас заодно с этим -- изменилось только СОДЕРЖАНИЕ отчёта, не момент показа."""
-    if not any_succeeded:
+    не трогать сейчас заодно с этим -- изменилось только СОДЕРЖАНИЕ отчёта, не момент показа.
+
+    interrupted (Ctrl+C-пакет): работа остановлена KeyboardInterrupt во время [3]/CLI archive
+    (см. _RunState.interrupted). Снимает гейт any_succeeded=False ниже -- источник мог быть
+    прерван до того, как хоть один RunResult успел вернуться "успешным" по обычной логике
+    (result.failed==False), хотя частичные данные уже могли записаться в CSV TARGET (RunLogs
+    пишет построчно по ходу работы). Без этого снятия гейта отчёт о прерывании молча не
+    формировался бы ровно в том случае, который эта функция и должна покрыть."""
+    if not any_succeeded and not interrupted:
         return None
     photosort_dir = os.path.join(target, "__служебные_файлы")  # см. Config.photosort_dir
     out_path = (os.path.join(photosort_dir, "report.html") if level == "target"
                 else os.path.join(WORKDIR, "report.html"))
     if total_processed == 0:
-        report.generate_placeholder_report(
-            "Источник оказался недоступен или пуст — ни один файл не обработан.", out_path)
+        reason = ("Работа прервана пользователем до того, как что-либо успело обработаться."
+                   if interrupted else
+                   "Источник оказался недоступен или пуст — ни один файл не обработан.")
+        report.generate_placeholder_report(reason, out_path, interrupted=interrupted,
+                                            suggest_other_location=not interrupted)
     else:
         data = report.parse_target_logs(os.path.join(photosort_dir, "logs"))
         report.generate_report(data, out_path, level=level, run_stats=run_stats,
-                                run_start=run_start, target_path=target)
+                                run_start=run_start, target_path=target, interrupted=interrupted)
     log(f"Отчёт: {out_path}")
     if level == "workdir":
         if open_browser:
@@ -5810,7 +5997,8 @@ def _finalize_analyze_report(stats, open_browser: bool, log=print) -> str:
     out_path = os.path.join(WORKDIR, "report.html")
     if stats.total_files == 0:
         report.generate_placeholder_report(
-            "Источник оказался недоступен или пуст — ни один файл не обработан.", out_path)
+            "Источник оказался недоступен или пуст — ни один файл не обработан.", out_path,
+            suggest_other_location=True)
     else:
         found_archives = (stats.found_archive_top_level, stats.found_archive_nested)
         report.generate_report_from_analyze_stats(stats, out_path, level="analyze",
@@ -6306,6 +6494,11 @@ def _bare_launch_run_dryrun(sources: list, target: str, input_fn=input, log=prin
     __служебные_файлы\\ и БЕЗ CSV/summary.txt в TARGET -- результат только на экране.
     Возвращает путь к отчёту, или None, если ни один SOURCE не обработался вовсе (отчёт не
     формировался) -- см. _bare_launch_run_view() про общую паузу перед открытием браузера."""
+    # REVIEW-HANDOFF.md, Раунд 38: захвачен ДО цикла по source -- строки merged_rows ниже
+    # (CollectingRunLogs._ts(), формат "%Y-%m-%d %H:%M:%S") получат метку времени строго >=
+    # этого момента, что и нужно _split_rows_by_time() ниже, чтобы отличить их от настоящей
+    # истории Target (все реальные записи архива по определению старше).
+    run_start = time.strftime("%Y-%m-%d %H:%M:%S")
     target = resolve_drive_root_conflict(sources, target, interactive=True, input_fn=input_fn, log=log)
     expanded = expand_sources(sources, target)
     results = []
@@ -6346,12 +6539,27 @@ def _bare_launch_run_dryrun(sources: list, target: str, input_fn=input, log=prin
     out_path = os.path.join(WORKDIR, "report.html")
     if total_processed == 0:
         report.generate_placeholder_report(
-            "Источник оказался недоступен или пуст — ни один файл не обработан.", out_path)
+            "Источник оказался недоступен или пуст — ни один файл не обработан.", out_path,
+            suggest_other_location=True)
     else:
-        # run_start не передаётся -- merged_rows и так только про этот прогон
-        # (CollectingRunLogs, suppress_logs=True, никакой истории TARGET не подмешано),
-        # делить по времени нечего (2026-07-20, третий заход).
-        report.generate_report(merged_rows, out_path, level="workdir", run_stats=merged)
+        # REVIEW-HANDOFF.md, Раунд 38: Target уже существует (не первый архив с нуля) --
+        # читаем его настоящую историю (RunLogs, не CollectingRunLogs -- Фаза 1 пробного
+        # прогона и так уже читает то же самое содержимое, чтобы сравнивать новые файлы на
+        # дубликаты) и мёржим с гипотетическими строками ЭТОГО прогона -- ничего не
+        # записывается на диск, только чтение уже существующего. Target пуст -- скудность
+        # отчёта честна, не трогаем (см. merged_rows-only ветка ниже, поведение не изменилось).
+        target_logs_dir = os.path.join(target, "__служебные_файлы", "logs")
+        combined_rows, full_workdir = merged_rows, False
+        if os.path.isdir(target_logs_dir):
+            target_data = report.parse_target_logs(target_logs_dir)
+            if any(target_data.get(name) for name in report.CSV_NAMES):
+                combined_rows = {name: list(target_data.get(name, [])) for name in report.CSV_NAMES}
+                for name, rows in merged_rows.items():
+                    combined_rows.setdefault(name, []).extend(rows)
+                full_workdir = True
+        report.generate_report(combined_rows, out_path, level="workdir", run_stats=merged,
+                                run_start=run_start if full_workdir else None,
+                                full_workdir=full_workdir)
     log(f"Отчёт: {out_path}")
     return out_path
 
@@ -6394,6 +6602,7 @@ def _bare_launch_run_build(sources: list, target: str, input_fn=input, log=print
                                     # (см. run_for_source()), _sum_stats(results) ниже его
                                     # не увидит -- отслеживаем отдельно, тем же приёмом, что
                                     # free_disk_bytes у [2] (_bare_launch_run_dryrun()).
+    any_interrupted = False  # Ctrl+C-пакет: тем же приёмом, что и any_stopped_for_space выше
     results = []  # RunResult.stats по каждому успешному SOURCE -- для секции "Этот прогон"
                   # (report._render_this_run()), тот же принцип суммирования, что и
                   # _bare_launch_run_dryrun() уже делает для консольной сводки [2].
@@ -6411,6 +6620,23 @@ def _bare_launch_run_build(sources: list, target: str, input_fn=input, log=print
                 shared_pool = result.pool
                 results.append(result.stats)
                 any_stopped_for_space = any_stopped_for_space or result.stopped_for_space
+            if result.interrupted:
+                any_interrupted = True
+                break
+    if any_interrupted:
+        # Ctrl+C-пакет: НЕ проглатывается -- отчёт с баннером прерывания формируется здесь
+        # (пока есть target/results в области видимости), затем KeyboardInterrupt возбуждается
+        # заново, чтобы main() отработал как обычно (сообщение "Прервано пользователем.",
+        # sys.exit(130)) -- эта функция не меняет то, что Ctrl+C останавливает программу,
+        # только добавляет отчёт перед остановкой.
+        merged = _sum_stats(results)
+        merged["stopped_for_space"] = any_stopped_for_space
+        report_path = _finalize_target_report(target, "target", any_succeeded, total_processed,
+                                               open_browser=True, log=log, run_stats=merged,
+                                               run_start=run_start, interrupted=True)
+        if report_path:
+            log(f"\n  Отчёт (данные на момент остановки): {_display_path(report_path)}")
+        raise KeyboardInterrupt
     if not any_succeeded:
         log("")
         log("  Сборка не выполнена — см. сообщение об ошибке выше.")
@@ -6686,6 +6912,7 @@ def _main():
     exit_code = 0
     any_succeeded = False
     total_processed = 0
+    any_interrupted = False  # Ctrl+C-пакет: тем же приёмом, что и _bare_launch_run_build()
     run_start = time.strftime("%Y-%m-%d %H:%M:%S")  # см. _bare_launch_run_build() -- та же
                                                       # граница для report._split_rows_by_time()
     results = []  # RunResult.stats по успешным SOURCE (archive-режим) -- "Этот прогон" в
@@ -6706,6 +6933,9 @@ def _main():
                     total_processed += result.processed_count
                     shared_pool = result.pool
                     results.append(result.stats)
+                if result.interrupted:
+                    any_interrupted = True
+                    break
             else:
                 stats = run_analyze_for_source(s, target, args.sample_limit, args.mode, log=console_log)
                 source_exit_code = EXIT_CONFIG_ERROR if stats is None else 0
@@ -6717,6 +6947,19 @@ def _main():
                 exit_code = EXIT_INSUFFICIENT_SPACE
             elif source_exit_code and not exit_code:
                 exit_code = source_exit_code
+
+    if any_interrupted:
+        # Ctrl+C-пакет: тот же приём, что и _bare_launch_run_build() -- отчёт формируется
+        # здесь, затем KeyboardInterrupt возбуждается заново для main() (сообщение "Прервано
+        # пользователем.", sys.exit(130), как и раньше).
+        level = "workdir" if args.dry_run else "target"
+        report_path = _finalize_target_report(target, level, any_succeeded, total_processed,
+                                               open_browser=interactive_mode, log=console_log,
+                                               run_stats=_sum_stats(results), run_start=run_start,
+                                               interrupted=True)
+        if report_path:
+            console_log(f"\n  Отчёт (данные на момент остановки): {_display_path(report_path)}")
+        raise KeyboardInterrupt
 
     report_path = None
     if args.mode == "archive":
