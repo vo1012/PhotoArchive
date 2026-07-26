@@ -3,962 +3,486 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PhotoArchive — программа, которая никогда не меняет ваши фотографии</title>
-<meta name="description" content="Бесплатная портативная программа для Windows: собирает разбросанные семейные фото и видео в один аккуратный архив. Ничего не удаляет, не изменяет, работает без интернета.">
-<meta property="og:title" content="PhotoArchive — программа, которая никогда не меняет ваши фотографии">
-<meta property="og:description" content="Бесплатная портативная программа для Windows: собирает разбросанные семейные фото и видео в один аккуратный архив. Ничего не удаляет, не изменяет, работает без интернета.">
-<meta property="og:image" content="https://vo1012.github.io/PhotoArchive/og-image.png">
-<meta property="og:image:width" content="1200">
-<meta property="og:image:height" content="630">
+<title>PhotoArchive — соберите семейный фотоархив, не рискуя снимками</title>
+<meta name="description" content="Бесплатная программа для Windows: собирает фото и видео в один упорядоченный архив по альбомам и датам, убирает точные повторы. Работает локально, не меняет оригиналы.">
+<link rel="canonical" href="https://vo1012.github.io/PhotoArchive/">
+<meta name="theme-color" content="#24544A">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <meta property="og:type" content="website">
+<meta property="og:title" content="PhotoArchive — соберите семейный фотоархив, не рискуя снимками">
+<meta property="og:description" content="Бесплатная программа для Windows: собирает фото и видео в один упорядоченный архив по альбомам и датам, убирает точные повторы. Работает локально, не меняет оригиналы.">
+<meta property="og:image" content="https://vo1012.github.io/PhotoArchive/assets/og-cover.png">
+<meta property="og:url" content="https://vo1012.github.io/PhotoArchive/">
+<meta property="og:locale" content="ru_RU">
 <meta name="twitter:card" content="summary_large_image">
-<style>
-  :root{
-    --paper:      #F0F2EC;
-    --paper-card: #FFFFFF;
-    --ink:        #2B2B26;
-    --muted:      #4E574A;
-    --line:       #B9C2B2;
-    --accent:     #24544A;
-    --accent2:    #A85A2A;
-    --radius:8px;
-    --maxw:1080px;
-    --prose:640px;
-  }
-
-  *,*::before,*::after{ box-sizing:border-box; }
-  html{ font-size:18px; scroll-behavior:smooth; }
-  @media (prefers-reduced-motion: reduce){
-    html{ scroll-behavior:auto; }
-    *,*::before,*::after{ animation-duration:0.01ms !important; transition-duration:0.01ms !important; }
-  }
-  body{
-    margin:0;
-    background:var(--paper);
-    color:var(--ink);
-    font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
-    line-height:1.6;
-    -webkit-text-size-adjust:100%;
-  }
-  img,svg{ max-width:100%; }
-
-  a{ color:var(--accent); text-decoration-thickness:1.5px; text-underline-offset:3px; }
-  a:hover{ color:var(--accent2); }
-
-  :focus-visible{ outline:3px solid var(--accent2); outline-offset:3px; border-radius:4px; }
-
-  .skip-link{
-    position:absolute; left:-999px; top:0;
-    background:var(--accent); color:#fff; padding:12px 18px;
-    z-index:200; border-radius:0 0 8px 0;
-  }
-  .skip-link:focus{ left:0; }
-
-  h1,h2,h3{ font-weight:700; line-height:1.25; color:var(--ink); margin:0 0 0.6em; }
-  h1{ font-size:clamp(32px, 5vw, 44px); }
-  h2{ font-size:clamp(24px, 3vw, 30px); }
-  h3{ font-size:20px; }
-
-  p{ margin:0 0 1em; line-height:1.6; }
-
-  .container{ max-width:var(--maxw); margin:0 auto; padding:0 24px; }
-  .prose{ max-width:var(--prose); }
-  .prose.center{ margin-left:auto; margin-right:auto; text-align:center; }
-
-  section{ padding:96px 0; }
-  section.tight{ padding:64px 0; }
-  .section-border-top{ border-top:1px solid var(--line); }
-
-  .eyebrow{ display:block; color:var(--accent); font-weight:600; letter-spacing:0.02em; margin-bottom:0.5em; }
-  .muted{ color:var(--muted); }
-  small, .small{ font-size:16px; color:var(--muted); }
-
-  /* Icons */
-  .icon{ width:1em; height:1em; stroke:var(--accent); fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; flex-shrink:0; }
-  .icon-lg{ font-size:44px; }
-  .icon-md{ font-size:34px; }
-
-  /* Buttons -- 56px min-height, NO exceptions (incl. header) */
-  .btn{
-    display:inline-flex; align-items:center; justify-content:center; gap:10px;
-    min-height:56px; padding:12px 28px; border-radius:var(--radius);
-    font-size:1.05rem; font-weight:600; text-decoration:none;
-    border:2px solid transparent; cursor:pointer; line-height:1.3;
-  }
-  .btn-primary{ background:var(--accent2); color:#fff; }
-  .btn-primary:hover{ background:#8f4a20; color:#fff; }
-  .btn-secondary{ background:transparent; color:var(--accent); border-color:var(--accent); }
-  .btn-secondary:hover{ background:var(--accent); color:#fff; }
-  .link-cta{ color:var(--accent); font-weight:600; }
-
-  /* Nav */
-  header.topbar{
-    position:sticky; top:0; z-index:100;
-    background:rgba(240,242,236,0.94);
-    backdrop-filter:saturate(140%) blur(6px);
-    border-bottom:1px solid var(--line);
-  }
-  .navwrap{ max-width:var(--maxw); margin:0 auto; padding:0 24px; display:flex; align-items:center; justify-content:space-between; min-height:64px; gap:16px; }
-  .brand{ font-weight:800; font-size:1.2rem; color:var(--ink); text-decoration:none; display:flex; align-items:center; gap:8px; }
-  .brand .icon{ color:var(--accent); stroke:var(--accent); font-size:26px; }
-  .brand:hover{ color:var(--ink); }
-
-  .navlinks{ display:flex; align-items:center; gap:22px; list-style:none; margin:0; padding:0; }
-  .navlinks a{ color:var(--ink); text-decoration:none; font-weight:500; padding:8px 2px; }
-  .navlinks a:hover{ color:var(--accent); }
-  .nav-cta{
-    background:var(--accent2) !important; color:#fff !important;
-    padding:10px 18px !important; border-radius:var(--radius);
-    min-height:56px; display:flex; align-items:center;
-  }
-  .nav-cta:hover{ background:#8f4a20 !important; }
-
-  .nav-toggle{
-    display:none; background:none; border:2px solid var(--line); border-radius:8px;
-    width:56px; height:56px; align-items:center; justify-content:center; cursor:pointer;
-  }
-  .nav-toggle .icon{ font-size:24px; }
-
-  @media (max-width:860px){
-    .navlinks{
-      position:absolute; top:64px; left:0; right:0;
-      background:var(--paper); border-bottom:1px solid var(--line);
-      flex-direction:column; align-items:stretch; gap:0;
-      padding:8px 24px 16px; display:none;
-    }
-    .navlinks.open{ display:flex; }
-    .navlinks li{ width:100%; }
-    .navlinks a{ display:block; padding:14px 4px; border-bottom:1px solid var(--line); }
-    .nav-cta{ margin-top:8px; justify-content:center; }
-    .nav-toggle{ display:flex; }
-  }
-
-  /* Hero */
-  .hero{ padding:72px 0 64px; text-align:center; }
-  .hero .eyebrow{ font-size:1.05rem; }
-  .hero h1{ max-width:820px; margin-left:auto; margin-right:auto; }
-  .hero .prose{ margin-left:auto; margin-right:auto; text-align:left; }
-  .hero-cta{ display:flex; align-items:center; justify-content:center; gap:24px; flex-wrap:wrap; margin:28px 0 8px; }
-  .hero-note{ color:var(--muted); max-width:56ch; margin:20px auto 0; }
-  .hero-photo{ margin-top:48px; }
-  .hero-photo img{ width:100%; height:auto; border:1px solid var(--line); border-radius:var(--radius); display:block; }
-
-  /* Card */
-  .card{ background:var(--paper-card); border:1px solid var(--line); border-radius:var(--radius); padding:32px; }
-  @media (max-width:640px){ .card{ padding:24px; } }
-
-  /* Relatable section */
-  .relatable-icons{ display:flex; flex-wrap:wrap; justify-content:center; gap:28px; margin:40px 0; }
-  .relatable-icon{ display:flex; flex-direction:column; align-items:center; gap:10px; width:112px; text-align:center; }
-  .relatable-icon span{ font-size:16px; color:var(--muted); }
-  .media-box{ margin:40px auto; max-width:var(--prose); text-align:center; }
-  .media-box img{ width:100%; height:auto; border:1px solid var(--line); border-radius:var(--radius); display:block; }
-  .media-box figcaption{ margin-top:14px; font-size:16px; color:var(--muted); font-style:italic; }
-
-  /* Data-flow schema */
-  .schema{ margin:48px auto; max-width:var(--maxw); }
-  .schema-row{ display:flex; align-items:center; justify-content:center; gap:20px; flex-wrap:wrap; }
-  .schema-sources{ display:flex; flex-wrap:wrap; gap:14px; justify-content:center; max-width:320px; }
-  .schema-node{
-    display:flex; flex-direction:column; align-items:center; gap:6px;
-    width:78px; text-align:center; font-size:14px; color:var(--muted);
-  }
-  .schema-arrow{ display:flex; flex-direction:column; align-items:center; gap:4px; color:var(--accent); flex-shrink:0; }
-  .schema-arrow .icon{ font-size:30px; stroke:var(--accent); }
-  .schema-arrow span{ font-size:14px; font-weight:600; color:var(--accent); white-space:nowrap; }
-  .schema-target{ display:flex; flex-direction:column; align-items:center; gap:8px; width:150px; text-align:center; }
-  .schema-target .icon{ font-size:44px; }
-  .schema-target strong{ font-size:16px; }
-  .schema-caption{ text-align:center; margin-top:28px; }
-  .schema-caption .big{ font-weight:700; font-size:1.1rem; color:var(--ink); margin:0 0 6px; }
-  .schema-caption .small{ margin:0; }
-  @media (max-width:640px){
-    .schema-row{ flex-direction:column; }
-    .schema-arrow{ transform:rotate(90deg); }
-    .schema-arrow span{ transform:rotate(-90deg); white-space:normal; }
-  }
-
-  /* Mode cards */
-  .mode-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:24px; margin-top:40px; }
-  .mode-card .step-no{
-    display:inline-flex; align-items:center; justify-content:center;
-    width:28px; height:28px; border-radius:50%; background:var(--accent);
-    color:#fff; font-weight:700; font-size:0.85rem; margin-bottom:14px;
-  }
-  .mode-card h3{ margin-bottom:0.4em; }
-  .mode-card p{ color:var(--muted); margin-bottom:0; font-size:1rem; }
-  .mode-card .icon-md{ margin-bottom:10px; }
-  @media (max-width:860px){ .mode-grid{ grid-template-columns:1fr; } }
-
-  .bullet-list{ list-style:none; margin:36px 0 0; padding:0; display:grid; gap:16px; }
-  .bullet-list li{ display:flex; gap:14px; align-items:flex-start; }
-  .bullet-list .icon{ font-size:26px; margin-top:2px; }
-  .bullet-list p{ margin:0; }
-
-  /* Console / progress blocks */
-  .console-block{ background:#1b2420; border-radius:var(--radius); padding:22px 24px; overflow-x:auto; }
-  .console-block pre{ margin:0; color:#dce6dc; font-family:Consolas,"SFMono-Regular",monospace; font-size:0.85rem; line-height:1.5; white-space:pre; }
-  .console-caption{ margin-top:14px; font-size:16px; color:var(--muted); font-style:italic; max-width:var(--prose); }
-
-  .report-wrap{ margin-top:20px; background:var(--paper-card); border:1px solid var(--line); border-radius:var(--radius); padding:20px; }
-  .report-screenshot{ width:100%; height:auto; display:block; border:1px solid var(--line); border-radius:8px; }
-  .report-caption{ margin:14px 0 0; font-size:16px; color:var(--muted); font-style:italic; }
-
-  .bridge{ margin-top:36px; font-size:1.05rem; }
-
-  /* Before/After explorer */
-  .ba-wrap{ margin-top:20px; }
-  .ba-row{ display:flex; align-items:center; justify-content:center; gap:20px; flex-wrap:wrap; }
-  .ba-col{ display:flex; flex-direction:column; align-items:center; max-width:320px; }
-  .ba-col img{ width:100%; height:auto; border:1px solid var(--line); border-radius:var(--radius); display:block; }
-  .ba-label{ font-weight:700; color:var(--accent); margin-bottom:8px; }
-  .ba-arrow{ font-size:32px; color:var(--accent2); stroke:var(--accent2); flex-shrink:0; }
-  .ba-caption{ margin:18px auto 0; font-size:16px; color:var(--muted); font-style:italic; text-align:center; max-width:var(--prose); }
-  @media (max-width:640px){ .ba-arrow{ transform:rotate(90deg); } }
-
-  /* Quote */
-  .quote-block{ border-left:5px solid var(--accent2); background:var(--paper-card); padding:24px 28px; border-radius:0 var(--radius) var(--radius) 0; margin:0 auto 40px; max-width:var(--prose); }
-  .quote-block p{ margin:0; font-size:1.3rem; font-style:italic; color:var(--ink); }
-
-  .principle-points{ list-style:none; margin:0 auto; padding:0; max-width:var(--prose); display:grid; gap:16px; }
-  .principle-points li{ display:flex; gap:14px; align-items:flex-start; }
-  .principle-points .icon{ font-size:26px; margin-top:2px; }
-  .principle-points p{ margin:0; }
-
-  .not-does{ margin:44px auto 0; max-width:var(--prose); }
-  .not-does h3{ font-size:18px; color:var(--muted); margin-bottom:16px; }
-  .not-list{ list-style:none; margin:0; padding:0; display:grid; gap:14px; }
-  .not-list li{ display:flex; gap:12px; align-items:flex-start; color:var(--muted); }
-  .not-list .icon{ font-size:22px; margin-top:2px; stroke:var(--muted); }
-
-  .code-note{ color:var(--muted); font-size:16px; }
-  .code-note code{ background:var(--paper); padding:0.1em 0.4em; border-radius:4px; font-family:Consolas,"SFMono-Regular",monospace; }
-
-  /* Open source section */
-  .opensource-wrap{ max-width:var(--maxw); margin:0 auto; text-align:center; }
-  .opensource-shot{ margin:36px auto; max-width:760px; }
-  .opensource-shot img{ width:100%; height:auto; border:1px solid var(--line); border-radius:var(--radius); display:block; }
-
-  /* Author */
-  .author-wrap{ max-width:var(--prose); margin:0 auto; }
-  .author-wrap blockquote{ margin:0 0 20px; font-size:1.15rem; color:var(--ink); }
-  .author-sign{ font-weight:700; margin-bottom:0.2em; }
-  .author-role{ color:var(--muted); margin-bottom:1.2em; }
-  .author-photo{ margin-top:44px; text-align:center; }
-  .author-photo img{ width:100%; max-width:520px; height:auto; border:1px solid var(--line); border-radius:var(--radius); display:block; margin:0 auto; }
-  .author-photo figcaption{ margin-top:14px; font-size:16px; color:var(--muted); font-style:italic; }
-
-  /* Docs section */
-  .docs-grid{ display:grid; grid-template-columns:repeat(4,1fr); gap:24px; margin-top:40px; }
-  .docs-card h3{ margin-bottom:0.5em; }
-  .docs-card p{ color:var(--muted); font-size:1rem; }
-  .docs-card p.link-line{ margin-bottom:0; }
-  @media (max-width:860px){ .docs-grid{ grid-template-columns:1fr 1fr; } }
-  @media (max-width:640px){ .docs-grid{ grid-template-columns:1fr; } }
-
-  /* Try / Download */
-  .try-wrap{ max-width:var(--prose); margin:0 auto; text-align:center; }
-  .download-buttons{ display:flex; gap:20px; justify-content:center; flex-wrap:wrap; margin:32px 0 20px; }
-  .download-specs{ margin:0 0 8px; font-size:1rem; color:var(--muted); }
-  .defender-note{ margin:36px auto 0; max-width:var(--prose); text-align:left; background:var(--paper-card); border:1px solid var(--line); border-radius:var(--radius); padding:24px 28px; color:var(--muted); font-size:1rem; }
-  .defender-note strong{ color:var(--ink); }
-
-  /* FAQ */
-  .faq-list{ max-width:var(--prose); margin:0 auto; display:grid; gap:24px; }
-  .faq-item h3{ font-size:1.08rem; margin-bottom:0.3em; }
-  .faq-item p{ color:var(--muted); margin-bottom:0; }
-  .faq-more{ margin-top:32px; text-align:center; }
-
-  /* Footer */
-  footer{ background:var(--paper-card); border-top:1px solid var(--line); padding:48px 0 32px; font-size:16px; color:var(--muted); }
-  .foot-grid{ display:grid; grid-template-columns:repeat(4,1fr); gap:28px; margin-bottom:32px; }
-  .foot-col h4{ color:var(--ink); font-size:0.9rem; text-transform:uppercase; letter-spacing:0.04em; margin:0 0 12px; }
-  .foot-col ul{ list-style:none; margin:0; padding:0; display:grid; gap:8px; }
-  .foot-col a{ color:var(--muted); }
-  .foot-col a:hover{ color:var(--accent2); }
-  .foot-donate-col{ grid-column:span 2; }
-  .foot-donate{ border-top:1px solid var(--line); padding-top:24px; max-width:60ch; }
-  .foot-bottom{ border-top:1px solid var(--line); margin-top:24px; padding-top:20px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px; }
-
-  @media (max-width:860px){ .foot-grid{ grid-template-columns:1fr 1fr; } }
-  @media (max-width:640px){
-    section{ padding:72px 0; }
-    .hero{ padding:56px 0 48px; }
-    .download-buttons{ flex-direction:column; align-items:center; }
-    .foot-grid{ grid-template-columns:1fr; }
-    .foot-donate-col{ grid-column:span 1; }
-    .quote-block p{ font-size:1.15rem; }
-  }
-</style>
+<meta name="twitter:title" content="PhotoArchive — соберите семейный фотоархив, не рискуя снимками">
+<meta name="twitter:description" content="Бесплатная программа для Windows: собирает фото и видео в один упорядоченный архив. Работает локально, не меняет оригиналы.">
+<meta name="twitter:image" content="https://vo1012.github.io/PhotoArchive/assets/og-cover.png">
+<link rel="stylesheet" href="assets/site.css">
 </head>
 <body>
 
-<a class="skip-link" href="#main">Перейти к содержимому</a>
+<a class="skip-link" href="#main">К содержанию</a>
 
-<!-- Icon sprite -->
-<svg style="position:absolute;width:0;height:0;overflow:hidden" aria-hidden="true">
-<defs>
-
-<symbol id="i-logo" viewBox="0 0 24 24"><path d="M4 8l6-4 6 4M4 8v10a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V8" /><circle cx="16.5" cy="7.5" r="2.6" fill="var(--paper,#fff)" stroke-width="1.6"/><path d="M15.4 7.5l.8.8 1.6-1.6" stroke-width="1.6"/></symbol>
-
-<symbol id="i-computer" viewBox="0 0 24 24"><rect x="2.5" y="4.5" width="19" height="12.5" rx="1.4"/><path d="M9 20.5h6M12 17v3.5"/></symbol>
-
-<symbol id="i-laptop" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="10.5" rx="1.2"/><path d="M2 19.5h20l-2-3.5H4z"/></symbol>
-
-<symbol id="i-drive" viewBox="0 0 24 24"><rect x="2.5" y="7" width="19" height="10" rx="2"/><circle cx="7" cy="12" r="1.1" fill="var(--accent)"/><path d="M11 12h9"/></symbol>
-
-<symbol id="i-usb" viewBox="0 0 24 24"><rect x="7.5" y="2.5" width="9" height="6" rx="1"/><path d="M9.5 8.5v9a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-9"/><path d="M10.5 5h3"/></symbol>
-
-<symbol id="i-memcard" viewBox="0 0 24 24"><path d="M6.5 3.5h9l3 3v13a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1z"/><path d="M9 3.5v4M12.5 3.5v4"/></symbol>
-
-<symbol id="i-disc" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.4"/></symbol>
-
-<symbol id="i-archive" viewBox="0 0 24 24"><path d="M3 7l2-3.5h14L21 7"/><rect x="3" y="7" width="18" height="13" rx="1.2"/><path d="M12 7v13M10.3 9.5h3.4M10.3 12.5h3.4M10.3 15.5h3.4"/></symbol>
-
-<symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.2" cy="10.2" r="6.2"/><path d="M14.8 14.8L20 20"/></symbol>
-
-<symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.8-6.5 10-6.5S22 12 22 12s-3.8 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></symbol>
-
-<symbol id="i-folder-arrow" viewBox="0 0 24 24"><path d="M3 6.5a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M9 14l3-2.5 3 2.5M12 11.5V17"/></symbol>
-
-<symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.5-3 7.7-7 9-4-1.3-7-4.5-7-9V6z"/><path d="M8.7 12l2.2 2.2 4.4-4.4"/></symbol>
-
-<symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 3l8 4.5-8 4.5-8-4.5z"/><path d="M4 12l8 4.5 8-4.5M4 16.2l8 4.5 8-4.5"/></symbol>
-
-<symbol id="i-log" viewBox="0 0 24 24"><rect x="4.5" y="2.5" width="15" height="19" rx="1.4"/><path d="M8 7.5h8M8 11.5h8M8 15.5h5"/></symbol>
-
-<symbol id="i-wifi-off" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M5 8.8a15.8 15.8 0 0 1 5-2.9M9.9 5.4A15.9 15.9 0 0 1 19 8.8M7.8 12.5a10.5 10.5 0 0 1 3-1.6M12 12.5a10.5 10.5 0 0 1 4.2 1.7"/><path d="M10.6 16.2a3.6 3.6 0 0 1 2.9.1"/><circle cx="12" cy="19.2" r="1" fill="var(--muted)" stroke="none"/></symbol>
-
-<symbol id="i-lock-open" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9.5" rx="1.4"/><path d="M8 11V7.5A4 4 0 0 1 15.7 6"/><circle cx="12" cy="15.5" r="1.4" fill="var(--muted)" stroke="none"/></symbol>
-
-<symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 6.7A10.4 10.4 0 0 1 12 6.5c6.2 0 10 6 10 6a15.6 15.6 0 0 1-3.4 3.9M6.6 7.7A15.7 15.7 0 0 0 2 12.5s3.8 6 10 6a10.3 10.3 0 0 0 3.2-.5"/><path d="M9.6 10.4a2.6 2.6 0 0 0 3.6 3.7"/></symbol>
-
-<symbol id="i-pencil-off" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M15.5 4.5l4 4L9 19l-4.5 1L5.5 15.5z"/><path d="M13 7l4 4"/></symbol>
-
-<symbol id="i-cloud-off" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M8.5 8.6A5 5 0 0 1 18 10a3.7 3.7 0 0 1-.4 7.4H8M5.3 8.3A4.6 4.6 0 0 0 6.5 17.4h1.8"/></symbol>
-
-<symbol id="i-plain" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="1.4"/><path d="M7 9.2h10M7 13h6.5"/></symbol>
-
-<symbol id="i-menu" viewBox="0 0 24 24"><path d="M3.5 6.5h17M3.5 12h17M3.5 17.5h17"/></symbol>
-
-<symbol id="i-close" viewBox="0 0 24 24"><path d="M5 5l14 14M19 5L5 19"/></symbol>
-
-<symbol id="i-dup" viewBox="0 0 24 24"><rect x="3" y="8" width="12.5" height="12.5" rx="1.4"/><path d="M8.5 8V5.5A1.5 1.5 0 0 1 10 4H19a1.5 1.5 0 0 1 1.5 1.5V15a1.5 1.5 0 0 1-1.5 1.5h-2"/></symbol>
-
-<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 14-5.3M20 12a8 8 0 0 1-14 5.3"/><path d="M18 3v4h-4M6 21v-4h4"/></symbol>
-
-<symbol id="i-code" viewBox="0 0 24 24"><path d="M9 6.5L3 12l6 5.5M15 6.5l6 5.5-6 5.5"/></symbol>
-
-</defs>
-</svg>
-
-<header class="topbar">
-  <nav class="navwrap" aria-label="Основная навигация">
-    <a class="brand" href="#top">
-      <svg class="icon" aria-hidden="true"><use href="#i-logo"/></svg>
-      PhotoArchive
+<header class="site-header" id="top">
+  <div class="container header-inner">
+    <a class="brand" href="#top" aria-label="PhotoArchive — на главную">
+      <svg class="brand-mark" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+        <rect x="14" y="19" width="30" height="24" rx="3" transform="rotate(-9 29 31)" fill="#ffffff" stroke="#24544A" stroke-width="2.6"/>
+        <g transform="rotate(7 34 34)">
+          <rect x="20" y="22" width="30" height="24" rx="3" fill="#ffffff" stroke="#24544A" stroke-width="2.6"/>
+          <circle cx="29.5" cy="30.5" r="3.2" fill="#A85A2A"/>
+          <path d="M23 43 L31 34 L37 40 L41 36 L47 43 Z" fill="#24544A"/>
+        </g>
+      </svg>
+      <span class="brand-name">PhotoArchive</span>
     </a>
-    <button class="nav-toggle" id="navToggle" aria-expanded="false" aria-controls="navLinks" aria-label="Открыть меню">
-      <svg class="icon" id="navToggleIcon" aria-hidden="true"><use href="#i-menu"/></svg>
+
+    <button class="nav-toggle" aria-expanded="false" aria-controls="site-nav" aria-label="Открыть меню">
+      <span class="nav-toggle-bar"></span><span class="nav-toggle-bar"></span><span class="nav-toggle-bar"></span>
     </button>
-    <ul class="navlinks" id="navLinks">
-      <li><a href="#top">Главное</a></li>
-      <li><a href="#how">Как это работает</a></li>
-      <li><a href="#principles">Принципы</a></li>
-      <li><a href="#author">Автор</a></li>
-      <li><a href="#download" class="nav-cta">Скачать</a></li>
-      <li><a href="#faq">Вопросы</a></li>
-    </ul>
-  </nav>
+
+    <nav class="site-nav" id="site-nav" aria-label="Основная навигация">
+      <a href="#how">Как это работает</a>
+      <a href="#result">Что получается</a>
+      <a href="#author">От автора</a>
+      <a href="#docs">Документация</a>
+      <a class="btn btn-primary btn-sm nav-cta" href="#download">Скачать</a>
+    </nav>
+  </div>
 </header>
 
 <main id="main">
 
-  <!-- ГЛАВНЫЙ ЭКРАН -->
-  <section id="top" class="hero">
-    <div class="container">
-      <span class="eyebrow">Вы ничего не теряете.</span>
-      <h1>Наведите порядок в семейном фотоархиве — без риска потерять фотографии</h1>
-      <div class="prose center">
-        <p>PhotoArchive создаёт новый, аккуратный архив рядом с вашими фото — не изменяя ваши
-        исходные файлы. Не импортирует их в собственную библиотеку. Не переносит. Не
-        переименовывает. Не удаляет.</p>
-        <p>Сначала вы смотрите, что программа нашла. Потом — каким будет результат. И только
-        после этого решаете, собирать архив или нет.</p>
-      </div>
-
-      <div class="hero-cta">
-        <a class="btn btn-primary" href="#download">Скачать бесплатно</a>
-        <a class="link-cta" href="./report-example.html">Посмотреть пример отчёта →</a>
-      </div>
-
-      <p class="hero-note">Первый шаг ничего не меняет и не копирует — можно просто посмотреть,
-      что найдётся, и решить дальше уже по факту.</p>
-
-      <div class="hero-photo">
-        <img src="./hero-photo.png" width="1200" height="800" alt="Стол со старыми бумажными фотографиями, картами памяти, флешками, внешним диском и открытым фотоальбомом; на втором плане экран ноутбука с аккуратной структурой нового архива">
-      </div>
-    </div>
-  </section>
-
-  <!-- ЕСЛИ ЭТО ПОХОЖЕ НА ВАШ АРХИВ -->
-  <section id="relatable" class="section-border-top">
-    <div class="container">
-      <div class="prose center">
-        <h2>Если это похоже на ваш архив — вы не одиноки</h2>
-        <h3>Семейный фотоархив не становится меньше. Он становится всё сложнее.</h3>
-        <p>Каждый год появляются новые фотографии. Меняются телефоны. Покупаются новые
-        компьютеры. Заполняются внешние диски. Где-то остаются старые флешки. Где-то лежат
-        карты памяти, которые «надо потом разобрать».</p>
-        <p>Со временем фотографии оказываются повсюду: старый компьютер, новый компьютер,
-        внешний диск, флешки, карты памяти, старые zip-архивы, папки «Фото», «Фото2»,
-        «Разобрать», «Новые», «Копия»...</p>
-        <p>И однажды становится понятно, что навести порядок уже давно пора.</p>
-        <p>Но появляется другая мысль: «Лучше пока ничего не трогать...»</p>
-        <p>Не потому, что лень. Потому что страшно случайно потерять то, что невозможно
-        восстановить.</p>
-        <p>Именно для таких архивов и создавалась PhotoArchive.</p>
-      </div>
-
-      <div class="relatable-icons">
-        <div class="relatable-icon"><svg class="icon icon-lg" aria-hidden="true"><use href="#i-computer"/></svg><span>Компьютер</span></div>
-        <div class="relatable-icon"><svg class="icon icon-lg" aria-hidden="true"><use href="#i-laptop"/></svg><span>Ноутбук</span></div>
-        <div class="relatable-icon"><svg class="icon icon-lg" aria-hidden="true"><use href="#i-drive"/></svg><span>Внешний жёсткий диск</span></div>
-        <div class="relatable-icon"><svg class="icon icon-lg" aria-hidden="true"><use href="#i-usb"/></svg><span>USB-флешка</span></div>
-        <div class="relatable-icon"><svg class="icon icon-lg" aria-hidden="true"><use href="#i-memcard"/></svg><span>Карта памяти</span></div>
-        <div class="relatable-icon"><svg class="icon icon-lg" aria-hidden="true"><use href="#i-disc"/></svg><span>CD/DVD</span></div>
-        <div class="relatable-icon"><svg class="icon icon-lg" aria-hidden="true"><use href="#i-archive"/></svg><span>Архив zip/rar/7z</span></div>
-      </div>
-
-      <figure class="media-box">
-        <img src="./media-box-photo.png" width="900" height="700" alt="Коробка со старыми носителями — CD и DVD, флешки, карты памяти, внешний диск">
-        <figcaption>За годы семейная история накапливается не только в памяти, но и на
-        десятках носителей.</figcaption>
-      </figure>
-
-      <div class="prose center">
-        <p>Дело не только в неудобстве. Каждое отдельное место хранения — само по себе
-        отдельная точка риска: сломается диск, потеряется флешка — и вместе с ней часть
-        истории семьи, которую нельзя переснять заново.</p>
-        <h3>Навести порядок вручную можно. Но чем больше архив, тем сложнее это сделать</h3>
-        <p>Когда фотографий несколько сотен — достаточно аккуратно разложить их по папкам
-        самому. Когда их десятки тысяч, появляются совсем другие вопросы: где уже есть копии?
-        какая фотография — оригинал, а какая случайный дубль? что лежит в старых zip/rar-архивах,
-        которые давно никто не открывал? какие файлы остались без даты? что можно спокойно
-        объединить, а что лучше оставить как есть? Именно здесь ручная работа превращается в
-        долгий и утомительный процесс — и именно эти вопросы решает PhotoArchive.</p>
-      </div>
-    </div>
-  </section>
-
-  <!-- КАК ЭТО РАБОТАЕТ -->
-  <section id="how" class="section-border-top">
-    <div class="container">
-      <div class="prose center">
-        <span class="eyebrow">Как это работает</span>
-        <h2>Не верьте программе. Проверьте её.</h2>
-        <p>Большинство программ для фото сразу предлагают что-то изменить: импортировать снимки
-        в собственную библиотеку, перестроить структуру, переместить файлы, завести свою базу
-        данных.</p>
-        <p>PhotoArchive работает иначе. Она создаёт новый архив, не трогая исходный. Ваши
-        фотографии продолжают лежать там же, где лежали до запуска программы. При этом она
-        умеет забирать их сразу из нескольких мест за один раз.</p>
-      </div>
-
-      <div class="schema">
-        <div class="schema-row">
-          <div class="schema-sources">
-            <div class="schema-node"><svg class="icon icon-md" aria-hidden="true"><use href="#i-computer"/></svg><span>Компьютер</span></div>
-            <div class="schema-node"><svg class="icon icon-md" aria-hidden="true"><use href="#i-drive"/></svg><span>Внешний диск</span></div>
-            <div class="schema-node"><svg class="icon icon-md" aria-hidden="true"><use href="#i-usb"/></svg><span>Флешка</span></div>
-            <div class="schema-node"><svg class="icon icon-md" aria-hidden="true"><use href="#i-memcard"/></svg><span>Карта памяти</span></div>
-            <div class="schema-node"><svg class="icon icon-md" aria-hidden="true"><use href="#i-archive"/></svg><span>ZIP/RAR-архив</span></div>
-          </div>
-          <div class="schema-arrow">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h16M14 6l6 6-6 6"/></svg>
-            <span>только чтение</span>
-          </div>
-          <div class="schema-target">
-            <svg class="icon" style="font-size:44px" aria-hidden="true"><use href="#i-logo"/></svg>
-            <strong>PhotoArchive</strong>
-          </div>
-          <div class="schema-arrow">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h16M14 6l6 6-6 6"/></svg>
-          </div>
-          <div class="schema-target">
-            <svg class="icon" aria-hidden="true"><use href="#i-folder-arrow"/></svg>
-            <strong>Новый архив</strong>
-          </div>
+  <!-- HERO -->
+  <section class="hero">
+    <div class="container hero-inner">
+      <div class="hero-copy">
+        <p class="eyebrow">Бесплатная программа для Windows</p>
+        <h1>Соберите семейный фотоархив — не рискуя ни одним снимком</h1>
+        <p class="lede">
+          PhotoArchive собирает ваши фотографии и видео с дисков, флешек и старых бэкапов
+          в один аккуратный архив: раскладывает по альбомам и датам, убирает точные повторы.
+          Работает только на вашем компьютере и лишь копирует файлы — оригиналы остаются
+          нетронутыми.
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn-primary btn-lg" href="https://github.com/vo1012/PhotoArchive/releases/latest" target="_blank" rel="noopener noreferrer">Скачать для Windows</a>
+          <a class="btn btn-secondary btn-lg" href="#how">Как это работает</a>
         </div>
-        <div class="schema-caption">
-          <p class="big">Исходные файлы остаются нетронутыми. Всегда.</p>
-          <p class="small muted">Один архив вместо множества разрозненных папок и носителей.</p>
-        </div>
-      </div>
-
-      <div class="prose center">
-        <p>Не уверены? Не спешите.</p>
-        <p>PhotoArchive специально построена так, чтобы вы могли убедиться в результате ещё до
-        того, как будет создан новый архив. В программе три режима — не потому, что она сложная,
-        а потому что доверие появляется постепенно, а не по чьим-то красивым словам. Каждый
-        следующий режим имеет смысл только тогда, когда вас полностью устраивает предыдущий.</p>
-        <p>Не знаете, что вообще у вас накопилось на диске или флешке? Начните с первого режима
-        — он ничего не тронет, только посмотрит и расскажет, что нашёл.</p>
-        <p>Уже примерно представляете, что у вас есть, но не знаете, каким получится результат?
-        Второй режим для этого и нужен — ничего никуда не скопируется, но вы увидите, как ляжет
-        будущий архив.</p>
-        <p>Уже точно знаете, чего хотите? Смело переходите к третьему — настоящей сборке.</p>
-      </div>
-
-      <div class="mode-grid">
-        <div class="mode-card card">
-          <span class="step-no">1</span>
-          <svg class="icon icon-md" aria-hidden="true"><use href="#i-search"/></svg>
-          <h3>Посмотреть, что найдётся</h3>
-          <p>Начните именно с этого режима. Программа только исследует выбранную папку: ничего
-          не копирует, ничего не изменяет, ничего не создаёт. После завершения вы получите
-          подробный отчёт о состоянии своего архива — не приняв за это время ни одного решения.</p>
-        </div>
-        <div class="mode-card card">
-          <span class="step-no">2</span>
-          <svg class="icon icon-md" aria-hidden="true"><use href="#i-eye"/></svg>
-          <h3>Пробный запуск</h3>
-          <p>Показывает, каким получится архив: сколько войдёт в альбомы, сколько — по датам,
-          сколько повторов найдётся. Файлы по-прежнему не копируются — можно заранее увидеть
-          результат и при желании изменить настройки, прежде чем что-либо реально произойдёт.</p>
-        </div>
-        <div class="mode-card card">
-          <span class="step-no">3</span>
-          <svg class="icon icon-md" aria-hidden="true"><use href="#i-folder-arrow"/></svg>
-          <h3>Создание архива</h3>
-          <p>Только когда вы уверены в результате. Копирование начинается после того, как вы
-          сами напечатали «да» для подтверждения. Не понравилось, как всё легло? Удалите
-          созданный архив и соберите его заново с другими настройками. Новый архив создаётся для
-          вашего удобства — исходный архив по-прежнему остаётся вашей страховкой.</p>
-        </div>
-      </div>
-
-      <div class="prose center" style="margin-top:36px">
-        <p>По результатам любого из трёх режимов формируется подробный отчёт — простым языком и
-        наглядными диаграммами, что нашлось и что сделано. Подробнее о том, как устроен и
-        читается отчёт — в <a href="https://github.com/vo1012/PhotoArchive/blob/main/README.md">README.md</a>.</p>
-      </div>
-
-      <div class="console-block" style="margin-top:36px">
-<pre>Что сделать?
-
-  [1] Сканирование источника   (read-only)
-  [2] Пробный прогон   (dry-run, без записи)
-  [3] Сборка архива
-
-Ваш выбор [по умолчанию 1]: </pre>
-      </div>
-      <p class="console-caption">Вот и всё — программа выглядит именно так.</p>
-
-      <ul class="bullet-list">
-        <li>
-          <svg class="icon" aria-hidden="true"><use href="#i-layers"/></svg>
-          <p>Раскладывает по альбомам — если у папки уже есть понятное имя, оно сохраняется как
-          есть — или по дате съёмки, если понятного имени нет. Без ручной работы.</p>
-        </li>
-        <li>
-          <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
-          <p>Определяет дату съёмки по метаданным камеры, а место (город) — по
-          GPS-координатам, если они есть в файле; полностью офлайн, без обращения к интернету.</p>
-        </li>
-        <li>
-          <svg class="icon" aria-hidden="true"><use href="#i-dup"/></svg>
-          <p>Находит точные повторы по содержимому файла, а не по имени, — не создаёт лишних
-          копий.</p>
-        </li>
-        <li>
-          <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>
-          <p>При повторном запуске добавляет только новые файлы — старое заново не копируется.</p>
-        </li>
-      </ul>
-
-      <div class="prose center" style="margin-top:56px">
-        <h3>Почему обработка занимает время?</h3>
-        <p>Потому что PhotoArchive не занимается простым копированием файлов. Во время
-        обработки программа читает метаданные, определяет дату съёмки, анализирует содержимое
-        архива, строит будущую структуру, проверяет дубликаты и формирует подробные отчёты.</p>
-        <p>Большой семейный архив невозможно обработать за несколько секунд — файлов у типичного
-        архива за много лет накапливаются десятки тысяч. Обычное копирование такого объёма тоже
-        небыстрое — а здесь, вдобавок, ещё и надёжное.</p>
-        <p>Зато весь процесс прозрачен: вы всегда видите, что происходит сейчас, сколько файлов
-        уже обработано и сколько ещё осталось.</p>
-      </div>
-
-      <div class="console-block">
-<pre>Просматриваю уже собранный архив: 45%|██████████▍                | 8543/19096 [00:38&lt;00:47, 224.6файл/с]
-
-Разбираю и копирую файлы — DSC_04213.MOV: всего обработано файлов: 14 302 [1:52:10, 3.1файл/с, своб.2043.5ГБ]</pre>
-      </div>
-      <p class="console-caption">Дословный вид строки прогресса программы. Оценка оставшегося
-      времени видна не на каждом этапе — на индексации уже собранного архива она есть (первая
-      строка), а на разборе и копировании источника — только текстовый счётчик без процента
-      (вторая строка): работа идёт, не зависла, не «думает» — именно работает.</p>
-
-      <div class="prose center" style="margin-top:56px">
-        <h3>После любого режима — подробный отчёт</h3>
-        <p>Даже если вы выбрали только «Посмотреть, что найдётся».</p>
-        <p>У программы нет отдельного окна с предпросмотром фотографий — но после каждого
-        прогона вы получаете подробный отчёт, который помогает увидеть архив целиком и понять
-        то, что невозможно заметить, просто открывая папки вручную. Он открывается в обычном
-        браузере, не требует специальных программ и остаётся только на этом компьютере — никуда
-        не отправляется.</p>
-        <p>Вы узнаете:</p>
-      </div>
-      <ul class="prose center" style="text-align:left; padding-left:1.4em">
-        <li>сколько найдено фотографий и видео;</li>
-        <li>сколько места они занимают;</li>
-        <li>какие годы представлены лучше всего, а где, возможно, есть пробелы;</li>
-        <li>есть ли файлы без даты;</li>
-        <li>какие моменты стоит проверить вручную (например, очень похожие кадры подряд);</li>
-        <li>что именно сделала программа.</li>
-      </ul>
-      <div class="prose center">
-        <p>Смотреть и искать сами фото при этом можно любым удобным способом — Проводником,
-        приложением «Фото» или любой другой программой, какой вы уже пользуетесь.</p>
-      </div>
-
-      <div class="report-wrap">
-        <img class="report-screenshot" src="./report-screenshot.png" width="900" height="2980" alt="Пример отчёта PhotoArchive на вымышленных данных: сводка архива, диаграммы по годам, типам файлов, надёжности дат и точным повторам">
-        <p class="report-caption">Пример на вымышленных данных. Названия альбомов и цифры не
-        настоящие — реальный отчёт строится по вашему архиву.</p>
-      </div>
-      <p class="bridge"><a href="./report-example.html">Посмотреть пример отчёта →</a> ·
-      <a href="https://github.com/vo1012/PhotoArchive/blob/main/README.md#отчёт-reporthtml">Подробнее об отчётах →</a></p>
-
-      <div class="prose center" style="margin-top:56px">
-        <h3>Было → Стало</h3>
-        <p>Наведение порядка — это не просто копирование файлов. Это создание структуры, в
-        которой фотографии легко найти даже спустя годы.</p>
-      </div>
-      <div class="ba-wrap">
-        <div class="ba-row">
-          <div class="ba-col">
-            <span class="ba-label">До</span>
-            <img src="./explorer-before.png" width="640" height="420" alt="Окно Проводника Windows с папками без понятной структуры: Фото, Фото2, IMG, IMG_old, Новая папка, Backup, Разобрать">
-          </div>
-          <svg class="ba-arrow icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h16M14 6l6 6-6 6"/></svg>
-          <div class="ba-col">
-            <span class="ba-label">После</span>
-            <img src="./explorer-after.png" width="640" height="420" alt="Окно Проводника Windows с архивом PhotoArchive: три папки Albums, ByDate, RAW">
-          </div>
-        </div>
-        <p class="ba-caption">Никаких специальных программ. После сборки вы продолжаете работать
-        с обычными папками Windows.</p>
-      </div>
-    </div>
-  </section>
-
-  <!-- ПРИНЦИПЫ БЕЗОПАСНОСТИ -->
-  <section id="principles" class="section-border-top">
-    <div class="container">
-      <div class="prose center">
-        <h2>Принципы безопасности</h2>
-      </div>
-      <blockquote class="quote-block">
-        <p>«Там, где возможны разные решения, программа выбирает то, что безопаснее для ваших
-        фотографий.»</p>
-      </blockquote>
-
-      <ul class="principle-points">
-        <li>
-          <svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>
-          <p>Никогда не удаляет исходные файлы — только копирует.</p>
-        </li>
-        <li>
-          <svg class="icon" aria-hidden="true"><use href="#i-layers"/></svg>
-          <p>Если сомневается — сохраняет оба варианта, а не выбирает молча.</p>
-        </li>
-        <li>
-          <svg class="icon" aria-hidden="true"><use href="#i-log"/></svg>
-          <p>Ведёт подробный журнал каждого решения — всегда можно проверить, куда делось любое
-          фото.</p>
-        </li>
-      </ul>
-
-      <p class="prose center code-note" style="margin-left:auto;margin-right:auto;margin-top:32px">PhotoArchive
-      — проект с открытым исходным кодом целиком, не одна показательная строчка. Не верьте на
-      слово — вот код, который читает исходную папку:
-      <a href="https://github.com/vo1012/PhotoArchive/blob/main/photosort_win.py#L2034-L2060"><code>SourceWalker.walk()</code></a>,
-      <code>photosort_win.py</code>. Когда речь идёт о семейном архиве, возможность проверить
-      работу программы гораздо важнее красивых обещаний.</p>
-
-      <div class="not-does">
-        <h3>Чего программа намеренно не делает:</h3>
-        <ul class="not-list">
-          <li><svg class="icon" aria-hidden="true"><use href="#i-wifi-off"/></svg><p>Не требует интернета</p></li>
-          <li><svg class="icon" aria-hidden="true"><use href="#i-lock-open"/></svg><p>Не требует установки и учётной записи</p></li>
-          <li><svg class="icon" aria-hidden="true"><use href="#i-eye-off"/></svg><p>Не собирает никакую статистику использования</p></li>
-          <li><svg class="icon" aria-hidden="true"><use href="#i-pencil-off"/></svg><p>Не изменяет метаданные и содержимое исходных файлов</p></li>
-          <li><svg class="icon" aria-hidden="true"><use href="#i-cloud-off"/></svg><p>Не облачный сервис — все файлы остаются на вашем компьютере</p></li>
-          <li><svg class="icon" aria-hidden="true"><use href="#i-plain"/></svg><p>Не отвлекает анимациями и кнопками — либо делает ровно то, что написано на экране, либо останавливается с понятным сообщением</p></li>
+        <ul class="badges" aria-label="Ключевые факты">
+          <li>Windows 8.1 и новее</li>
+          <li>Не требует интернета</li>
+          <li>Не меняет оригиналы</li>
+          <li>Бесплатно, Apache&nbsp;2.0</li>
         </ul>
       </div>
 
-      <div class="prose center" style="margin-top:44px">
-        <p>Ваши воспоминания не должны зависеть от одного диска или одной флешки — собранный
-        архив проще один раз сохранить в двух местах, чем следить за десятком разрозненных
-        копий.</p>
-        <p class="bridge"><a href="#download">Готовы попробовать? → Скачать программу</a></p>
-      </div>
-    </div>
-  </section>
-
-  <!-- ПРОЕКТ С ОТКРЫТЫМ ИСХОДНЫМ КОДОМ -->
-  <section id="opensource" class="section-border-top">
-    <div class="container">
-      <div class="opensource-wrap">
-        <svg class="icon icon-md" style="margin-bottom:12px" aria-hidden="true"><use href="#i-code"/></svg>
-        <h2>Проект с открытым исходным кодом</h2>
-        <div class="prose center">
-          <p>PhotoArchive распространяется с открытым исходным кодом. Можно скачать программу,
-          изучить, как она устроена, посмотреть историю изменений или самостоятельно собрать её
-          из исходных текстов — никаких скрытых частей.</p>
-          <p>Когда речь идёт о семейном архиве, прозрачность — ещё один повод для доверия, а не
-          просто красивые слова о нём.</p>
+      <!-- Signature visual: было → стало -->
+      <div class="hero-visual" aria-hidden="true">
+        <figure class="ba-panel ba-before">
+          <figcaption class="ba-label">Было</figcaption>
+          <ul class="filelist messy">
+            <li>Новая папка (2)</li>
+            <li>IMG_2453 — копия.jpg</li>
+            <li>DCIM</li>
+            <li>Фото с телефона</li>
+            <li>Без названия</li>
+            <li>скачанное_2019</li>
+          </ul>
+        </figure>
+        <div class="ba-arrow" aria-hidden="true">
+          <svg viewBox="0 0 48 24" width="48" height="24"><path d="M2 12 H40 M32 4 L44 12 L32 20" fill="none" stroke="#A85A2A" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </div>
-        <div class="opensource-shot">
-          <img src="./github-project-page.png" width="1280" height="900" alt="Страница проекта PhotoArchive на GitHub: README, лицензия Apache 2.0, история коммитов, список релизов">
-        </div>
-        <p><a href="https://github.com/vo1012/PhotoArchive">Открыть проект на GitHub →</a></p>
-      </div>
-    </div>
-  </section>
-
-  <!-- АВТОР -->
-  <section id="author" class="section-border-top">
-    <div class="container">
-      <div class="author-wrap">
-        <span class="eyebrow">Автор</span>
-        <h2>Программа появилась из личной необходимости</h2>
-        <blockquote>
-          <p>«Компьютер можно заменить, жёсткий диск — купить новый. Но невозможно заново
-          сделать фотографию человека, которого уже нет рядом.</p>
-          <p>Я долго искал программу, которой действительно доверил бы фотографии своей семьи —
-          и в какой-то момент решил написать её сам.»</p>
-        </blockquote>
-        <p class="author-sign">— Владимир Олейников</p>
-        <p class="author-role">разработчик PhotoArchive</p>
-        <p><a href="./letter.html">Читать письмо целиком →</a></p>
-
-        <p>PhotoArchive создавалась не как коммерческий проект и не как демонстрация технологий.
-        Её разработка началась с обычной проблемы, знакомой многим: большой семейный архив,
-        накопленный за годы, и нежелание рисковать фотографиями ради наведения порядка.</p>
-
-        <p>Все основные решения программы — поэтапная обработка, отдельный режим анализа,
-        пробный запуск, подробные отчёты, работа только с новым архивом, а не с исходным, —
-        появились не случайно. Они выросли из практического опыта организации собственного
-        архива автора: разработка и проверка проходили на его личном, реальном архиве в
-        несколько десятков тысяч фотографий, а не только на тестовых примерах. За всё это время
-        ни одна фотография не потерялась.</p>
-
-        <p>Если во время работы с программой вам покажется, что чего-то не хватает — напишите об
-        этом (см. «<a href="#contacts">Контакты</a>» внизу страницы). Реальные предложения
-        пользователей помогают развивать PhotoArchive гораздо лучше, чем догадки о том, «что
-        могло бы пригодиться».</p>
-
-        <p>Программой уже несколько лет пользуются близкие и друзья автора — очень разные люди,
-        от тех, кто предпочитает командную строку, до тех, кто старается лишний раз ничего не
-        нажимать.</p>
-
-        <figure class="author-photo">
-          <img src="./author-photo.png" width="900" height="700" alt="Натюрморт рабочего места автора: фотоаппарат, объективы, ноутбук с открытым отчётом PhotoArchive на экране, рядом стопка старых бумажных фотографий">
-          <figcaption>Эта программа появилась не в отделе маркетинга. Она выросла из попытки
-          навести порядок в собственном семейном архиве.</figcaption>
+        <figure class="ba-panel ba-after">
+          <figcaption class="ba-label">Стало</figcaption>
+          <ul class="tree">
+            <li class="root">Семейный архив</li>
+            <li class="lvl1 folder">Albums</li>
+            <li class="lvl2">Отпуск на море 2014</li>
+            <li class="lvl2">День рождения</li>
+            <li class="lvl1 folder">ByDate</li>
+            <li class="lvl2">2015 · 2016 · 2018</li>
+          </ul>
         </figure>
       </div>
     </div>
   </section>
 
-  <!-- ДОКУМЕНТАЦИЯ -->
-  <section id="docs" class="section-border-top">
+  <!-- WHAT IT DOES / DOESN'T -->
+  <section class="section" id="what">
     <div class="container">
-      <div class="prose center">
-        <h2>Документация начинается ещё до первого запуска</h2>
-        <p>Не обязательно читать сотни страниц, чтобы попробовать программу. Начните с того
-        объёма информации, который нужен именно вам.</p>
+      <h2>Что делает программа</h2>
+      <p class="section-lede">
+        Со временем фотографии накапливаются повсюду — на компьютере, телефоне, старых флешках
+        и дисках, в скачанных архивах. PhotoArchive проходит по всем этим источникам и собирает
+        снимки в одно упорядоченное место: то, что вы осмысленно раскладывали по папкам,
+        становится альбомами, а всё остальное аккуратно раскладывается по дате съёмки. Точные
+        повторы, пришедшие с разных носителей, не копируются дважды.
+      </p>
+
+      <div class="two-col">
+        <div class="col-card col-does">
+          <h3>Что делает</h3>
+          <ul class="ticks">
+            <li>Собирает фото и видео из любых папок, дисков и съёмных носителей в один архив.</li>
+            <li>Сохраняет ваши осмысленно названные папки как альбомы, а остальное раскладывает по дате съёмки.</li>
+            <li>Находит и не копирует повторно точные дубликаты одного и того же файла.</li>
+            <li>Определяет дату съёмки по метаданным самого файла.</li>
+            <li>В конце показывает понятный отчёт: сколько собрано, что стоит проверить.</li>
+          </ul>
+        </div>
+        <div class="col-card col-doesnt">
+          <h3>Чего не делает</h3>
+          <ul class="crosses">
+            <li>Не изменяет, не удаляет, не переносит и не переименовывает ваши оригиналы — только читает их.</li>
+            <li>Не выходит в интернет: все фотографии остаются на вашем компьютере и никуда не отправляются.</li>
+            <li>Не требует установки — это один файл, который запускается сразу.</li>
+            <li>Не заставляет принимать необратимые решения — сначала можно всё посмотреть, ничем не рискуя.</li>
+            <li>Не берёт денег: ни оплаты, ни подписки, ни скрытых платных функций.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TRUST PRINCIPLES -->
+  <section class="section section-alt" id="trust">
+    <div class="container">
+      <h2>Почему этому можно доверить семейный архив</h2>
+      <p class="section-lede muted">
+        Программа с самого начала строилась вокруг одного правила: не заставлять человека
+        принимать необратимые решения.
+      </p>
+      <div class="cards cards-5">
+        <article class="principle">
+          <span class="p-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><rect x="4" y="7" width="12" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-2"/></svg>
+          </span>
+          <h3>Только копирование</h3>
+          <p>Программа не изменяет и не удаляет ваши файлы. Она создаёт новый архив, а оригиналы остаются ровно там, где были. Записывать что-либо в исходную папку она попросту не умеет.</p>
+        </article>
+        <article class="principle">
+          <span class="p-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+          </span>
+          <h3>Всё локально</h3>
+          <p>Никакого интернета. Обработка идёт только на вашем компьютере, ни одна фотография его не покидает. Даже город для раскладки по датам берётся из данных самого файла, а не из сети.</p>
+        </article>
+        <article class="principle">
+          <span class="p-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M1.5 12S5 5 12 5s10.5 7 10.5 7-3.5 7-10.5 7S1.5 12 1.5 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+          </span>
+          <h3>Сначала посмотреть, потом делать</h3>
+          <p>Перед реальной сборкой можно запустить сканирование и пробный прогон — они ничего не записывают на диск и заранее показывают, что получится. Настоящая сборка начинается только после того, как вы наберёте слово «да».</p>
+        </article>
+        <article class="principle">
+          <span class="p-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M7 8h10a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3v-6a3 3 0 0 1 3-3Z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/></svg>
+          </span>
+          <h3>Лишняя копия лучше потери</h3>
+          <p>Когда невозможно быть до конца уверенным в правильном решении, программа предпочитает сохранить лишнюю копию, а не потерять снимок. Место на диске всегда можно освободить — потерянную семейную фотографию вернуть нельзя.</p>
+        </article>
+        <article class="principle">
+          <span class="p-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12h8M12 8v8"/></svg>
+          </span>
+          <h3>Ничего лишнего</h3>
+          <p>Программа не пытается выглядеть модно: одно окно, три понятных пункта, никаких меню и настроек. Так задумано — там, где дело касается ваших фотографий, нечему вас отвлекать и негде случайно что-то испортить.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section class="section" id="how">
+    <div class="container">
+      <h2>Три простых шага</h2>
+      <p class="section-lede">
+        После запуска <code>PhotoArchive.exe</code> открывается одно окно с меню из трёх пунктов
+        — и всё. Никаких сложных настроек и десятков кнопок: выбираете пункт цифрой, нажимаете
+        Enter. Для первого раза достаточно пройти пункты по порядку — так вы заранее увидите
+        результат, ничем не рискуя. Остановить программу можно в любой момент.
+      </p>
+
+      <!-- interface reassurance -->
+      <div class="media-row">
+        <div class="media-copy">
+          <h3>Как это выглядит</h3>
+          <p>
+            Выглядит непривычно — окно с текстом, а не пёстрая программа с кнопками. Пусть это
+            не смущает: именно поэтому здесь нечему сломаться. Всего три пункта с понятными
+            названиями, а первый — «Сканирование» — вообще ничего не меняет, только смотрит и
+            считает. Внизу подсказка «Ваш выбор [по умолчанию 1]» — можно просто нажать Enter.
+          </p>
+        </div>
+        <figure class="media-figure plaque">
+          <div class="win-label" aria-hidden="true">PhotoArchive.exe</div>
+          <img src="assets/img/interface.png" width="1200" height="909" loading="lazy"
+               alt="Стартовое окно PhotoArchive: тёмная консоль с меню из трёх пунктов — сканирование, пробный прогон, сборка архива.">
+        </figure>
       </div>
 
-      <div class="docs-grid">
-        <div class="docs-card card">
-          <h3>Письмо автора</h3>
-          <p>Почему вообще появилась PhotoArchive и какие задачи она должна была решить. Если
-          хотите понять философию программы — начните именно с этого документа.</p>
-          <p class="link-line"><a href="./letter.html">Читать полностью →</a></p>
+      <ol class="steps">
+        <li class="step">
+          <span class="step-num" aria-hidden="true">1</span>
+          <div>
+            <h3>Сканирование</h3>
+            <p>Укажите папку или диск с фотографиями. Программа посчитает, сколько там фото и видео и сколько места они занимают. На диск при этом ничего не записывается.</p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="step-num" aria-hidden="true">2</span>
+          <div>
+            <h3>Пробный прогон</h3>
+            <p>Укажите, куда собрать архив. Программа покажет, что получилось бы при настоящей сборке: сколько снимков попадёт в альбомы, сколько — по датам, сколько найдётся повторов. Файлы всё ещё не копируются — это предварительный просмотр.</p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="step-num" aria-hidden="true">3</span>
+          <div>
+            <h3>Сборка архива</h3>
+            <p>Программа ещё раз покажет выбранные папки и попросит подтвердить, набрав слово «да» — случайно нажать не получится. Дальше начинается копирование с прогресс-баром, а в конце — понятный итог по всему, что было сделано.</p>
+          </div>
+        </li>
+      </ol>
+
+      <p class="note muted">
+        Прервать работу можно в любой момент — недописанный файл в архив попасть не может.
+        Повторный запуск сам разберётся, что уже собрано, и продолжит с этого места, ничего
+        не задвоив.
+      </p>
+    </div>
+  </section>
+
+  <!-- WHAT YOU GET -->
+  <section class="section section-alt" id="result">
+    <div class="container">
+      <h2>Что вы получите в итоге</h2>
+
+      <!-- A: structure (zig row, media left) -->
+      <div class="media-row reverse">
+        <div class="media-copy">
+          <h3>Понятная структура</h3>
+          <p>
+            Внутри выбранной папки появятся две основные части. <b>Albums\</b> — ваши осмысленно
+            названные папки, сохранённые как альбомы, ровно так, как было у вас. <b>ByDate\</b> —
+            всё остальное, аккуратно разложенное по годам и месяцам съёмки. Найти нужный снимок
+            потом так же просто, как открыть папку.
+          </p>
         </div>
-        <div class="docs-card card">
+        <figure class="media-figure plaque tree-figure" aria-hidden="true">
+          <ul class="tree tree-lg">
+            <li class="root">Семейный архив</li>
+            <li class="lvl1 folder">Albums</li>
+            <li class="lvl2">Отпуск на море 2014</li>
+            <li class="lvl2">День рождения</li>
+            <li class="lvl2">Поездка к родным</li>
+            <li class="lvl1 folder">ByDate</li>
+            <li class="lvl2">2015 › 2015-07</li>
+            <li class="lvl2">2016 › 2016-01</li>
+            <li class="lvl2">2018 › 2018-09</li>
+          </ul>
+        </figure>
+      </div>
+
+      <!-- B: dedup (text only, calm) -->
+      <div class="prose-block">
+        <h3>Разумная работа с повторами</h3>
+        <p>
+          Точные копии одного и того же файла, пришедшие с разных дисков, программа распознаёт
+          по содержимому и не копирует дважды — имя роли не играет. А вот похожие кадры из
+          серийной съёмки она <b>не</b> выбрасывает: программа не берётся решать, какой из них
+          «лучший», и сохраняет все — лишний снимок всегда можно удалить вручную, а решающий
+          кадр так не потерять.
+        </p>
+      </div>
+
+      <!-- C: report preview (zig row, media right) -->
+      <div class="media-row">
+        <div class="media-copy">
+          <h3>Понятный отчёт</h3>
+          <p>
+            После каждого запуска программа готовит наглядный отчёт, который открывается в
+            обычном браузере на этом же компьютере. В нём видно, сколько найдено фотографий и
+            видео, какие годы представлены лучше всего, есть ли снимки без даты и что стоит
+            проверить вручную. Ничего устанавливать и никуда отправлять не нужно.
+          </p>
+        </div>
+        <figure class="media-figure plaque report-plaque">
+          <div class="win-label" aria-hidden="true">report.html</div>
+          <div class="report-clip">
+            <img src="assets/img/report-preview.png" width="740" height="400" loading="lazy"
+                 alt="Пример итогового отчёта PhotoArchive с общей статистикой архива.">
+          </div>
+          <a class="btn btn-secondary btn-sm report-open" href="report_sanitized.html" target="_blank" rel="noopener">Открыть пример отчёта</a>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <!-- AUTHOR -->
+  <section class="section" id="author">
+    <div class="container narrow">
+      <h2 class="center">Несколько слов от автора</h2>
+      <blockquote class="author-quote">
+        <p>«Самое ценное, что хранится на моём компьютере, занимает совсем немного места. Это семейные фотографии. Компьютер можно заменить, жёсткий диск — купить новый. Но невозможно заново сделать фотографию человека, которого уже нет рядом.</p>
+        <p>Я долго искал программу, которой действительно доверил бы фотографии своей семьи, — и, не найдя, решил написать её сам. Такую, которая не сделает ничего без моего ведома и не поставит снимки под угрозу из-за ошибки, моей или своей.</p>
+        <p>Берегите свои фотографии — с годами их ценность только возрастает».</p>
+      </blockquote>
+      <p class="author-sign">Владимир Олейников <span>· Разработчик PhotoArchive</span></p>
+      <p class="author-actions">
+        <a class="btn btn-secondary btn-sm" href="PhotoArchive_ot_avtora.pdf" target="_blank" rel="noopener noreferrer">Прочитать письмо целиком</a>
+        <a class="link-mail" href="#" data-mail>Написать автору</a>
+      </p>
+    </div>
+  </section>
+
+  <!-- DOCS -->
+  <section class="section section-alt" id="docs">
+    <div class="container">
+      <h2>Документация</h2>
+      <p class="section-lede">
+        Всё, что нужно знать о программе, — простым языком и по порядку. Любой документ можно
+        открыть прямо в браузере или скачать себе. Рекомендуем начать с буклета и быстрого старта.
+      </p>
+      <div class="cards docs-grid">
+        <article class="doc-card">
+          <span class="doc-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 2h9l5 5v15a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Z"/><path d="M14 2v6h6"/></svg></span>
+          <h3>Буклет</h3>
+          <p>На одной странице: что программа делает и чего не делает.</p>
+          <p class="doc-links"><a href="PhotoArchive_buklet.pdf" target="_blank" rel="noopener noreferrer">Открыть</a><a href="PhotoArchive_buklet.pdf" download>Скачать</a></p>
+        </article>
+        <article class="doc-card">
+          <span class="doc-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg></span>
           <h3>Быстрый старт</h3>
-          <p>Первое знакомство с программой и первый запуск — минимум времени, максимум
-          практики.</p>
-          <p class="link-line"><a href="./quickstart.html">Читать по шагам →</a></p>
-        </div>
-        <div class="docs-card card">
-          <h3>Частые вопросы</h3>
-          <p>«Изменяет ли программа мои фотографии? Нет. PhotoArchive работает только на чтение
-          исходного архива.» Здесь же — что делать при отключении питания, как обрабатываются
-          фото без даты и другие частые ситуации.</p>
-          <p class="link-line"><a href="./faq.html">Открыть FAQ полностью →</a></p>
-        </div>
-        <div class="docs-card card">
-          <h3>Полная документация</h3>
-          <p>Подробное описание всех режимов, настроек, структуры архива и принципов работы.</p>
-          <p class="link-line"><a href="https://github.com/vo1012/PhotoArchive/blob/main/README.md">Открыть README →</a></p>
-        </div>
+          <p>Как собрать первый архив, по шагам, без технических подробностей.</p>
+          <p class="doc-links"><a href="QUICKSTART.pdf" target="_blank" rel="noopener noreferrer">Открыть</a><a href="QUICKSTART.pdf" download>Скачать</a></p>
+        </article>
+        <article class="doc-card">
+          <span class="doc-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 4.8.9c0 1.7-2.3 2.1-2.3 3.6M12 17h.01"/></svg></span>
+          <h3>Частые вопросы (FAQ)</h3>
+          <p>Практические примеры для нетипичных случаев и частых вопросов.</p>
+          <p class="doc-links"><a href="FAQ.pdf" target="_blank" rel="noopener noreferrer">Открыть</a><a href="FAQ.pdf" download>Скачать</a></p>
+        </article>
+        <article class="doc-card">
+          <span class="doc-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h16v13H7l-3 3V4Z"/></svg></span>
+          <h3>Письмо от автора</h3>
+          <p>Зачем нужна эта программа и какими принципами она руководствуется.</p>
+          <p class="doc-links"><a href="PhotoArchive_ot_avtora.pdf" target="_blank" rel="noopener noreferrer">Открыть</a><a href="PhotoArchive_ot_avtora.pdf" download>Скачать</a></p>
+        </article>
+        <article class="doc-card">
+          <span class="doc-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5a2 2 0 0 1 2-2h8l6 6v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5Z"/><path d="M8 12h8M8 16h8M8 8h3"/></svg></span>
+          <h3>README (технический справочник)</h3>
+          <p>Точные параметры, настройки и детали алгоритмов. Для тех, кому нужны подробности.</p>
+          <p class="doc-links"><a href="https://github.com/vo1012/PhotoArchive/blob/main/README.md" target="_blank" rel="noopener noreferrer">Открыть на GitHub</a></p>
+        </article>
+        <article class="doc-card">
+          <span class="doc-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m9 18-6-6 6-6M15 6l6 6-6 6"/></svg></span>
+          <h3>Исходный код на GitHub</h3>
+          <p>Открытый код под лицензией Apache 2.0. Можно изучить, как именно работает программа.</p>
+          <p class="doc-links"><a href="https://github.com/vo1012/PhotoArchive" target="_blank" rel="noopener noreferrer">Открыть репозиторий</a></p>
+        </article>
       </div>
     </div>
   </section>
 
-  <!-- ПОПРОБУЙТЕ. БЕЗ РИСКА. / СКАЧАТЬ -->
-  <section id="try" class="section-border-top">
-    <div class="container">
-      <div class="try-wrap">
-        <h2>Попробуйте. Без риска.</h2>
-        <p>Не начинайте со сборки архива. Не меняйте настройки. Не принимайте поспешных
-        решений.</p>
-        <p>Просто выберите папку с фотографиями и запустите режим «Посмотреть, что найдётся».
-        Через несколько минут вы получите подробный отчёт о своём архиве — без копирования
-        файлов, без изменений, без риска.</p>
-        <p>Возможно, именно после этого вы поймёте, что навести порядок не так страшно, как
-        казалось.</p>
-      </div>
+  <!-- DOWNLOAD -->
+  <section class="section download" id="download">
+    <div class="container narrow center">
+      <h2>Скачать PhotoArchive</h2>
+      <p class="section-lede">
+        Устанавливать ничего не нужно — это один портативный файл, который запускается сразу.
+        Скачайте последнюю версию из раздела Releases на GitHub.
+      </p>
+      <a class="btn btn-primary btn-lg" href="https://github.com/vo1012/PhotoArchive/releases/latest" target="_blank" rel="noopener noreferrer">Скачать последнюю версию</a>
 
-      <div id="download" class="try-wrap" style="margin-top:64px">
-        <h2>Скачать</h2>
-        <div class="download-buttons">
-          <a class="btn btn-primary" href="https://github.com/vo1012/PhotoArchive/releases/latest/download/PhotoArchive.exe">Скачать .exe</a>
-          <a class="btn btn-secondary" href="https://github.com/vo1012/PhotoArchive/releases/latest/download/PhotoArchive.zip">Скачать ZIP</a>
-        </div>
-        <p class="download-specs">Бесплатно · Windows · Открытый исходный код</p>
+      <p class="download-hint simple muted">Программа простая — откроется одно окно с тремя понятными пунктами. Так и должно быть.</p>
 
-        <div class="defender-note">
-          <p>При первом запуске Windows может показать окно «Windows защитила ваш компьютер» —
-          это стандартная реакция системы на новую программу без миллионов загрузок, не признак
-          опасности. Программа с открытым исходным кодом (см. «<a href="#principles">Принципы</a>»
-          выше) — проверить его может кто угодно. Чтобы продолжить: в этом окне нажмите
-          «<strong>Дополнительно</strong>», затем «<strong>Выполнить в любом случае</strong>».</p>
-        </div>
-      </div>
+      <!-- SMARTSCREEN-HINT: временный хинт, удаляется целиком одним блоком -->
+      <p class="download-hint muted">
+        При первом запуске Windows может показать синее окно «Windows защитила ваш компьютер» —
+        это стандартное предупреждение для новых программ, а не ошибка. Нажмите «Подробнее» →
+        «Выполнить в любом случае». Исходный код открыт, программу можно проверить.
+      </p>
+      <!-- /SMARTSCREEN-HINT -->
+
+      <ul class="req ticks center-list">
+        <li>Windows 8.1 (64-бит) или новее</li>
+        <li>Установка не требуется — портативный <code>.exe</code></li>
+        <li>Не нужен интернет — всё работает локально</li>
+        <li>Свободного места на диске — не меньше объёма ваших фотографий, плюс небольшой запас</li>
+      </ul>
+
+      <p class="fineprint muted">
+        Исходный код открыт под лицензией Apache 2.0 — любой может проверить, как именно работает
+        программа. Мы ничего не продаём и не зарабатываем на ваших данных, поэтому у нас нет
+        причин их собирать или куда-либо передавать.
+      </p>
     </div>
   </section>
 
-  <!-- ВОПРОСЫ -->
-  <section id="faq" class="section-border-top">
-    <div class="container">
-      <div class="prose center">
-        <h2>Вопросы</h2>
-      </div>
-      <div class="faq-list">
-        <div class="faq-item">
-          <h3>Точно ли исходные фотографии не пострадают?</h3>
-          <p>Да. Программа только читает файлы источника — переименовать, переместить или
-          удалить что-либо там она не умеет технически.</p>
-        </div>
-        <div class="faq-item">
-          <h3>Нужен ли интернет?</h3>
-          <p>Нет. Вся обработка — на этом же компьютере, ничего никуда не отправляется.</p>
-        </div>
-        <div class="faq-item">
-          <h3>Платно?</h3>
-          <p>Нет, бесплатна и останется такой для всех. Донат — добровольный и ни к чему не
-          привязан.</p>
-        </div>
-        <div class="faq-item">
-          <h3>Нужно ли что-то устанавливать?</h3>
-          <p>Нет — portable <code>.exe</code>, запускается сразу, без установки и учётной
-          записи.</p>
-        </div>
-        <div class="faq-item">
-          <h3>Смогу ли я потом смотреть и искать фото прямо в программе?</h3>
-          <p>Нет, PhotoArchive не хранит и не показывает фото сама — результат работы это
-          обычные папки с понятными именами, открываются любым приложением, каким вы уже
-          пользуетесь (Проводник, встроенное «Фото», любой каталогизатор).</p>
-        </div>
-      </div>
-      <p class="faq-more"><a href="./faq.html">Все вопросы и ответы →</a></p>
+  <!-- SUPPORT -->
+  <section class="section support" id="support">
+    <div class="container narrow">
+      <h2>Как помочь проекту</h2>
+      <p class="muted center">PhotoArchive только начинает свой путь. Самая ценная поддержка сейчас — не деньги, а ваш опыт.</p>
+      <ul class="help-list">
+        <li><b>Попробуйте</b> программу на своём архиве и посмотрите, всё ли вас устраивает.</li>
+        <li><b>Расскажите близким</b>, которым дороги их семейные фотографии, — если программа пригодилась вам.</li>
+        <li><b>Напишите автору</b>, если заметили ошибку или неудобство. Это прямо влияет на то, каким станет продукт.</li>
+      </ul>
+      <p class="center">
+        Программа бесплатна и останется такой. Если однажды вы захотите поддержать разработку —
+        это можно сделать добровольно, в форме благодарности автору; такая поддержка не открывает
+        никаких дополнительных функций. Актуальный способ подскажет автор.
+      </p>
+      <p class="center"><a class="btn btn-secondary btn-sm" href="#" data-mail>Написать автору</a></p>
     </div>
   </section>
 
 </main>
 
-<footer>
-  <div class="container">
-    <div class="foot-grid">
-      <div class="foot-col">
-        <h4>Документация</h4>
-        <ul>
-          <li><a href="https://github.com/vo1012/PhotoArchive/blob/main/README.md">README</a></li>
-          <li><a href="./quickstart.html">Быстрый старт</a></li>
-          <li><a href="./faq.html">Частые вопросы</a></li>
-          <li><a href="./letter.html">Письмо автора</a></li>
-          <li><a href="./PhotoArchive_buklet.pdf">Буклет PhotoArchive (PDF)</a></li>
-        </ul>
-      </div>
-      <div class="foot-col">
-        <h4>Проект</h4>
-        <ul>
-          <li><a href="https://github.com/vo1012/PhotoArchive">Исходный код на GitHub</a></li>
-          <li><a href="https://github.com/vo1012/PhotoArchive/blob/main/LICENSE">Лицензия Apache 2.0</a></li>
-          <li><a href="https://github.com/vo1012/PhotoArchive/releases/latest">Все версии (Releases)</a></li>
-        </ul>
-      </div>
-      <div class="foot-col foot-donate-col" id="contacts">
-        <h4>Контакты</h4>
-        <div class="foot-donate">
-          <p>Есть вопрос по работе программы? Загляните в <a href="./faq.html">FAQ</a>. Кажется,
-          чего-то не хватает? Напишите автору напрямую:
-          <a class="js-email" data-u="0002evihcraotohp" data-d="ur.liam" href="#">адрес загружается…</a>
-          — необязательно и не связано ни с какими функциями программы. Нашли ошибку или хотите
-          предложить улучшение? Заведите <a href="https://github.com/vo1012/PhotoArchive/issues">Issue
-          на GitHub</a>. PhotoArchive развивается благодаря реальной обратной связи, а не
-          догадкам о том, что могло бы пригодиться.</p>
-          <noscript><p>Адрес электронной почты собирается скриптом на странице — с отключённым
-          JavaScript воспользуйтесь <a href="https://github.com/vo1012/PhotoArchive/issues">issue
-          на GitHub</a>.</p></noscript>
-        </div>
-      </div>
+<!-- DECORATIVE PHOTO STRIP -->
+<div class="photo-strip" aria-hidden="true">
+  <img src="assets/img/gallery-1.svg" alt="" loading="lazy" width="400" height="500">
+  <img src="assets/img/gallery-2.svg" alt="" loading="lazy" width="400" height="500">
+  <img src="assets/img/gallery-3.svg" alt="" loading="lazy" width="400" height="500">
+  <img src="assets/img/gallery-4.svg" alt="" loading="lazy" width="400" height="500">
+  <img src="assets/img/gallery-5.svg" alt="" loading="lazy" width="400" height="500">
+</div>
+
+<footer class="site-footer">
+  <div class="container footer-grid">
+    <div class="foot-about">
+      <span class="brand-name">PhotoArchive</span>
+      <p class="muted">Бесплатная программа для сборки семейного фотоархива. Работает локально, не меняет оригиналы.</p>
+      <p class="muted small">Некоммерческий проект с открытым исходным кодом.</p>
     </div>
-    <div class="foot-bottom">
-      <span>© 2026 Владимир Олейников · Apache License 2.0</span>
+    <nav class="foot-col" aria-label="Документация">
+      <h4>Документация</h4>
+      <a href="PhotoArchive_buklet.pdf" target="_blank" rel="noopener noreferrer">Буклет</a>
+      <a href="QUICKSTART.pdf" target="_blank" rel="noopener noreferrer">Быстрый старт</a>
+      <a href="FAQ.pdf" target="_blank" rel="noopener noreferrer">FAQ</a>
+      <a href="PhotoArchive_ot_avtora.pdf" target="_blank" rel="noopener noreferrer">От автора</a>
+      <a href="https://github.com/vo1012/PhotoArchive/blob/main/README.md" target="_blank" rel="noopener noreferrer">README</a>
+    </nav>
+    <nav class="foot-col" aria-label="Проект">
+      <h4>Проект</h4>
+      <a href="https://github.com/vo1012/PhotoArchive" target="_blank" rel="noopener noreferrer">GitHub (репозиторий)</a>
+      <a href="https://github.com/vo1012/PhotoArchive/releases/latest" target="_blank" rel="noopener noreferrer">Releases (скачать)</a>
+    </nav>
+    <div class="foot-col">
+      <h4>Контакты</h4>
+      <p class="muted small">Вопросы, сообщения об ошибках и предложения — напишите автору.</p>
+      <a class="btn btn-secondary btn-sm" href="#" data-mail>Написать автору</a>
     </div>
+  </div>
+  <div class="container foot-bottom muted small">
+    © <span id="year">2026</span> Владимир Олейников · PhotoArchive · Лицензия Apache 2.0
   </div>
 </footer>
 
-<script>
-(function(){
-  var toggle = document.getElementById('navToggle');
-  var links = document.getElementById('navLinks');
-  var icon = document.getElementById('navToggleIcon');
-  if(!toggle) return;
-  toggle.addEventListener('click', function(){
-    var open = links.classList.toggle('open');
-    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-    icon.innerHTML = '<use href="#' + (open ? 'i-close' : 'i-menu') + '"/>';
-  });
-  links.querySelectorAll('a').forEach(function(a){
-    a.addEventListener('click', function(){
-      links.classList.remove('open');
-      toggle.setAttribute('aria-expanded', 'false');
-      icon.innerHTML = '<use href="#i-menu"/>';
-    });
-  });
-})();
-
-(function(){
-  // Адрес не хранится готовой строкой в статическом HTML (ни как текст, ни в href) --
-  // каждая половина реверсирована в data-атрибуте и собирается в mailto: только здесь, в
-  // браузере (см. CLAUDE.md, донат-канал = сайт).
-  function deobfuscate(s){ return s.split('').reverse().join(''); }
-  document.querySelectorAll('a.js-email').forEach(function(el){
-    var addr = deobfuscate(el.getAttribute('data-u')) + '@' + deobfuscate(el.getAttribute('data-d'));
-    el.href = 'mailto:' + addr;
-    el.textContent = addr;
-  });
-})();
-</script>
-
+<script src="assets/site.js"></script>
 </body>
 </html>

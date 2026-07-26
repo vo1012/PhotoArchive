@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="PhotoArchive">
+  <rect x="2" y="2" width="60" height="60" rx="13" fill="#F0F2EC"/>
+  <rect x="2.75" y="2.75" width="58.5" height="58.5" rx="12.25" fill="none" stroke="#B9C2B2" stroke-width="1.5"/>
+  <!-- back photo -->
+  <rect x="15" y="20" width="30" height="24" rx="3" transform="rotate(-9 30 32)" fill="#ffffff" stroke="#24544A" stroke-width="2.4"/>
+  <!-- front photo -->
+  <g transform="rotate(7 34 34)">
+    <rect x="20" y="22" width="30" height="24" rx="3" fill="#ffffff" stroke="#24544A" stroke-width="2.4"/>
+    <circle cx="29.5" cy="30.5" r="3.2" fill="#A85A2A"/>
+    <path d="M23 43 L31 34 L37 40 L41 36 L47 43 Z" fill="#24544A"/>
+  </g>
+</svg>
