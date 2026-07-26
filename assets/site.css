@@ -100,17 +100,10 @@ h2+.section-lede{margin-top:.25rem}
 .badges li{font-size:.86rem;color:var(--color-muted);border:1px solid var(--color-border);
   border-radius:999px;padding:.28rem .8rem;background:var(--color-bg)}
 
-/* было → стало */
-.hero-visual{display:flex;align-items:center;gap:.75rem}
-.ba-panel{margin:0;background:var(--color-surface);border:1px solid var(--color-border);
-  border-radius:var(--radius);padding:1rem 1.1rem;flex:1;box-shadow:0 6px 20px rgba(36,84,74,.06)}
-.ba-label{font-family:var(--font-sans);font-size:.72rem;letter-spacing:.12em;text-transform:uppercase;
-  color:var(--color-muted);margin-bottom:.6rem}
-.ba-arrow{flex:0 0 auto;color:var(--color-accent)}
-.filelist,.tree{list-style:none;margin:0;padding:0;font-family:var(--font-mono);font-size:.82rem;line-height:1.9}
-.filelist.messy li{color:var(--color-muted);position:relative;padding-left:1.3rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.filelist.messy li::before{content:"";position:absolute;left:0;top:.45em;width:.85rem;height:.62rem;
-  border:1.5px solid #b7a98f;border-radius:2px;background:#e9e2d3}
+/* было → стало, одним кадром (2026-07-26: раньше здесь был текстовый мокап filelist/ba-panel) */
+.hero-visual{margin:0}
+
+.tree{list-style:none;margin:0;padding:0;font-family:var(--font-mono);font-size:.82rem;line-height:1.9}
 .tree li{position:relative;padding-left:1.4rem;color:var(--color-text)}
 .tree .root{color:var(--color-primary);font-weight:700;padding-left:1.4rem}
 .tree .root::before{content:"";position:absolute;left:0;top:.4em;width:.9rem;height:.66rem;border-radius:2px;
@@ -284,8 +277,6 @@ h2+.section-lede{margin-top:.25rem}
   .media-row .media-figure{order:-1} /* image above text on mobile */
   .cards-5,.docs-grid{grid-template-columns:1fr}
   .footer-grid{grid-template-columns:1fr 1fr;gap:1.6rem}
-  .hero-visual{flex-direction:column}
-  .ba-arrow{transform:rotate(90deg)}
   .photo-strip img:nth-child(3){display:none}
   .photo-strip img{height:150px}
 }
