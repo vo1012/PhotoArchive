@@ -253,8 +253,16 @@ h2+.section-lede{margin-top:.25rem}
 .download .container{background:linear-gradient(180deg,rgba(36,84,74,.06),rgba(36,84,74,.03));
   border:1px solid var(--color-border);border-radius:18px;padding-block:clamp(2.5rem,5vw,3.5rem)}
 .download-hint{font-size:.9rem;max-width:60ch;margin-inline:auto}
-.download-hint.simple{margin-top:1rem;color:var(--color-muted)}
-.download-hint-wide{max-width:80ch}
+.download-hint.simple{margin-top:1rem}
+/* exe/zip captions read as normal body copy, not a small caption -- SmartScreen note below
+   stays a small muted footnote via plain .download-hint, kept deliberately unlike these two */
+.download-hint.download-hint-body{font-size:1.05rem;line-height:1.65;color:var(--color-text)}
+
+/* SmartScreen hint: a calm, non-alarming callout card (accent bar like .author-quote),
+   not a yellow/red warning box -- see Design.md 7.8 */
+.smartscreen-note{margin:1.5rem auto 0;padding:1rem 1.2rem;max-width:60ch;text-align:left;
+  background:var(--color-surface);border-left:3px solid var(--color-accent);
+  border-radius:0 12px 12px 0;font-size:1.05rem;line-height:1.65;color:var(--color-text)}
 .req{margin:1.8rem auto 0;max-width:44ch;text-align:left;display:inline-block}
 .center-list{text-align:left}
 .req li{font-size:1rem}
