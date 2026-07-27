@@ -259,10 +259,12 @@ h2+.section-lede{margin-top:.25rem}
 .download-hint.download-hint-body{font-size:1.05rem;line-height:1.65;color:var(--color-text)}
 
 /* SmartScreen hint: a calm, non-alarming callout card (accent bar like .author-quote),
-   not a yellow/red warning box -- see Design.md 7.8 */
+   not a yellow/red warning box -- see Design.md 7.8. Text size back to the original small
+   caption size (2026-07-27, direct user revert); text color is a deliberate one-off #000,
+   not a --color-* token -- explicit user request ("не цвет сайта, но так надо") */
 .smartscreen-note{margin:1.5rem auto 0;padding:1rem 1.2rem;max-width:60ch;text-align:left;
   background:var(--color-surface);border-left:3px solid var(--color-accent);
-  border-radius:0 12px 12px 0;font-size:1.05rem;line-height:1.65;color:var(--color-text)}
+  border-radius:0 12px 12px 0;font-size:.9rem;color:#000}
 .req{margin:1.8rem auto 0;max-width:44ch;text-align:left;display:inline-block}
 .center-list{text-align:left}
 .req li{font-size:1rem}
@@ -270,9 +272,10 @@ h2+.section-lede{margin-top:.25rem}
 
 /* ============ Support ============ */
 /* Section container widened to match "Документация" (was .narrow, 760px) -- keep the
-   actual reading column at the same comfortable width used elsewhere (.section-lede),
-   centered in the now-wider section instead of narrowing the whole section. */
-.support h2,.support>.container>p,.help-list{max-width:70ch;margin-inline:auto}
+   actual reading column at the same comfortable width used elsewhere (.section-lede), flush
+   left under the H2 like "Документация" (.section-lede there isn't centered either -- no
+   margin-inline:auto here on purpose, that would indent it away from the heading). */
+.support h2,.support>.container>p,.help-list{max-width:70ch}
 .help-list{list-style:none;padding:0;margin:1.5rem 0;display:grid;gap:.8rem}
 .help-list li{position:relative;padding-left:1.8rem;font-size:1.05rem}
 .help-list li::before{content:"";position:absolute;left:0;top:.55em;width:.7rem;height:.7rem;border-radius:50%;
