@@ -66,7 +66,7 @@ import report  # PROMPT_archive_report.md, границы: отдельный м
 # blanket ignore of all warnings, so any other future PIL/library warning still surfaces.
 warnings.filterwarnings("ignore", message="Palette images with Transparency.*", category=UserWarning)
 
-__version__ = "0.1.1"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
+__version__ = "0.2.0"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
                                  # с RULES_VERSION ниже (та про совместимость архива, а не exe)
 RULES_VERSION = "2026-07-12"   # дата последнего изменения бизнес-правил -- см. RULES.md;
                                 # менять руками при изменении логики раскладки/дедупа/дат
@@ -3159,22 +3159,28 @@ _place_cache: dict = {}  # (rounded_lat, rounded_lon, home_country) -> place str
 
 
 def place_for_gps(lat, lon, home_country="RU"):
-    """REVIEW-HANDOFF.md, Раунд 41 [БЛОКЕР] 1: `rg.search()` costs ~130 мс/вызов necessarily
-    UNBATCHED -- measured ~5000x cheaper as one batched call across many points, but this
-    pipeline hashes/copies SOURCE items strictly one at a time by design (see the "no
-    read-ahead batching" comment on the walk loop in run_for_source()): files extracted from
-    nested zip/rar archives are deleted from tmp_extract as soon as that archive's generator
-    scope closes, so pulling several items ahead into a batch risks operating on a file that
-    is already gone. True cross-file batching would have to fight that safety guarantee.
+    """REVIEW-HANDOFF.md, Раунд 42 [БЛОКЕР] 1 (продолжение Раунда 41): реальная причина
+    ~130-800 мс/вызов у `rg.search()` -- не построение KD-дерева и не размер датасета, а
+    режим `mode=2` (по умолчанию в библиотеке) -- `cKDTree_MP.pquery()` на КАЖДЫЙ вызов
+    спавнит свежий пул `multiprocessing.Process` (по числу ядер) и джойнит его; на Windows
+    (`spawn`, не `fork()`) это и есть весь наблюдаемый расход. Измерено
+    эмпирически (не на слово): `mode=1` (однопоточный `scipy.spatial.cKDTree.query()`,
+    без spawn'а процессов) на той же машине -- ~0.01 мс/вызов, единственный
+    некомпенсируемый расход остаётся на самое первое обращение в процессе (загрузка
+    ~145k городов + построение дерева, ~0.3 с, происходит один раз благодаря `@singleton`
+    в самой библиотеке, см. `reverse_geocoder/__init__.py`). Раунд 41 [БЛОКЕР] 1 был
+    закрыт кешем по округлённым координатам, потому что диагноз тогда был "вызов дорог
+    по своей природе, батчить нельзя (SOURCE обходится по одному элементу -- см. `run_for_
+    source()`)" -- верным было только следствие (нельзя батчить), не причина: сам вызов
+    дорог не по своей природе, а из-за неверного режима, поэтому решение
+    "не батчить, а кешировать" боролось не с той стоимостью и не спасало маршруты без
+    пространственной кластеризации GPS (поход/дорога/шоппинг-улица -- см. таблицу
+    Раунда 42). `mode=1` устраняет стоимость для ЛЮБОГО паттерна маршрута без изменения
+    архитектуры обхода источника.
 
-    Instead: cache by (lat, lon) rounded to 2 decimal places (~1.1 km at the equator, coarser
-    near the poles) -- photos from the same event/venue, the common case for a family photo
-    archive, collapse onto one real `rg.search()` call instead of paying the per-file cost
-    each time. This is a deliberate precision trade-off, not a technical minimum: a point
-    right at the boundary between two cities could theoretically reuse a neighbouring point's
-    answer. Chosen over exact-coordinate caching (safer, but real phone GPS jitters enough
-    between shots at the same physical spot that it rarely hits) after discussion with the
-    user -- see SESSION-HANDOFF.txt."""
+    Кеш по (lat, lon), округлённым до 2 знаков (~1.1 км на экваторе), оставлен как есть --
+    он больше не критичен для устранения блокера, но не вреден (экономит даже те ~0.01 мс
+    на точных повторах) и уже покрыт тестами (`tests/test_place_cache.py`)."""
     if lat is None or lon is None:
         return None
     cache_key = (round(lat, 2), round(lon, 2), home_country)
@@ -3188,7 +3194,10 @@ def place_for_gps(lat, lon, home_country="RU"):
         # mid-line on a real console, producing garbled output like "обработка источника: :
         # 7файл [00:02, 3.62файл/s]Loading formatted geocoded file...". Silencing it here is a
         # supported library parameter, not a workaround.
-        result = rg.search([(lat, lon)], verbose=False)
+        # mode=1 -- см. докстринг функции: mode=2 (умолчание библиотеки) спавнит процессы
+        # на каждый вызов, mode=1 использует тот же закешированный (`@singleton`) экземпляр
+        # без multiprocessing, ~80000x быстрее на измерении Раунда 42.
+        result = rg.search([(lat, lon)], mode=1, verbose=False)
         if not result:
             _place_cache[cache_key] = None
             return None
