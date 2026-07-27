@@ -260,11 +260,10 @@ h2+.section-lede{margin-top:.25rem}
 
 /* SmartScreen hint: a calm, non-alarming callout card (accent bar like .author-quote),
    not a yellow/red warning box -- see Design.md 7.8. Text size back to the original small
-   caption size (2026-07-27, direct user revert); text color is a deliberate one-off #000,
-   not a --color-* token -- explicit user request ("не цвет сайта, но так надо") */
+   caption size (2026-07-27, direct user revert). */
 .smartscreen-note{margin:1.5rem auto 0;padding:1rem 1.2rem;max-width:60ch;text-align:left;
   background:var(--color-surface);border-left:3px solid var(--color-accent);
-  border-radius:0 12px 12px 0;font-size:.9rem;color:#000}
+  border-radius:0 12px 12px 0;font-size:.9rem;color:var(--color-text)}
 .req{margin:1.8rem auto 0;max-width:44ch;text-align:left;display:inline-block}
 .center-list{text-align:left}
 .req li{font-size:1rem}
