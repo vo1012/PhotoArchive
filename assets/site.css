@@ -106,23 +106,34 @@ h2+.section-lede{margin-top:.25rem}
 /* было → стало, одним кадром (2026-07-26: раньше здесь был текстовый мокап filelist/ba-panel) */
 .hero-visual{margin:0}
 
-.tree{list-style:none;margin:0;padding:0;font-family:var(--font-mono);font-size:.82rem;line-height:1.9}
-.tree li{position:relative;padding-left:1.5rem;color:var(--color-text)}
-/* folder icon (line-art, currentColor via mask) before every folder row, like a Linux file
-   manager tree -- file leaves (.file) opt out below */
-.tree li::before{content:"";position:absolute;left:0;top:.34em;width:1rem;height:.85rem;
-  background-color:var(--color-primary);
+/* Real nested <ul> per folder (see index.html) -- lets CSS :last-child draw actual tree
+   connector lines (├─/└─/│) instead of just indentation, like a Linux file manager tree. */
+.tree,.tree ul{list-style:none;margin:0;padding:0;font-family:var(--font-mono);font-size:.82rem;line-height:1.9}
+.tree{color:var(--color-text)}
+.tree ul{padding-left:1.5rem;margin-left:.5rem}
+.tree li{position:relative;margin:0}
+.tree>li{font-weight:700;color:var(--color-primary)}
+.tree .folder{font-weight:700;color:var(--color-primary)}
+.tree .file{color:var(--color-muted);font-size:.94em}
+
+/* connector lines: every li inside a nested ul gets a vertical line down to the next
+   sibling (shortened on the last child, giving the "└" corner) plus a horizontal stub
+   out to its icon/text (the "├─"/"└─" elbow) -- the lone root li has neither */
+.tree ul li{padding-left:1.3rem}
+.tree ul li::before{content:"";position:absolute;left:0;top:0;width:0;height:100%;
+  border-left:1px solid var(--color-border)}
+.tree ul li:last-child::before{height:1em}
+.tree ul li::after{content:"";position:absolute;left:0;top:1em;width:1rem;height:0;
+  border-top:1px solid var(--color-border)}
+
+/* folder icon: a real inline element, not a pseudo-element (::before/::after above are
+   already spoken for by the connector lines) -- line-art via CSS mask, like the rest of
+   the site's icon system (Design.md 4.5), not an emoji */
+.tree .ico{display:inline-block;width:.95rem;height:.8rem;margin-right:.4rem;
+  vertical-align:-0.1em;background-color:var(--color-muted);
   -webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M2 5a2 2 0 0 1 2-2h4.5l1.7 2H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5Z'/%3E%3C/svg%3E") center/contain no-repeat;
   mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M2 5a2 2 0 0 1 2-2h4.5l1.7 2H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5Z'/%3E%3C/svg%3E") center/contain no-repeat}
-.tree .root{color:var(--color-primary);font-weight:700;padding-left:1.5rem}
-.tree .folder{color:var(--color-primary);font-weight:700;margin-top:.15rem}
-.tree .lvl1{padding-left:1.6rem}
-.tree .lvl1::before{left:.3rem;width:.92rem;height:.78rem;opacity:.9}
-.tree .lvl2{padding-left:2.8rem;color:var(--color-muted)}
-.tree .lvl2::before{left:1.5rem;width:.82rem;height:.7rem;background-color:var(--color-muted)}
-.tree .lvl3{padding-left:4rem;color:var(--color-muted);font-size:.94em}
-.tree .lvl3::before{left:2.7rem;width:.7rem;height:.6rem;background-color:var(--color-muted);opacity:.85}
-.tree li.file::before{content:none}
+.tree>li>.ico,.tree .folder>.ico{background-color:var(--color-primary)}
 
 /* ============ Two columns (does / doesn't) ============ */
 .two-col{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin-top:2rem}
