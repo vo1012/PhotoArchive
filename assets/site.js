@@ -55,11 +55,19 @@
         btn.addEventListener('click', function () {
           navigator.clipboard.writeText(addr).then(function () {
             btn.textContent = 'Скопировано';
-            setTimeout(function () { btn.textContent = 'Скопировать адрес'; }, 1800);
+            // job done -- fade the whole box out shortly after a successful copy
+            setTimeout(function () { box.remove(); }, 2200);
           });
         });
+        var close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'mail-fallback-close';
+        close.setAttribute('aria-label', 'Закрыть');
+        close.textContent = '×';
+        close.addEventListener('click', function () { box.remove(); });
         box.appendChild(text);
         box.appendChild(btn);
+        box.appendChild(close);
         a.insertAdjacentElement('afterend', box);
       }, 900);
     });

@@ -228,8 +228,13 @@ h2+.section-lede{margin-top:.25rem}
 .mail-fallback-copy{font:inherit;font-family:var(--font-sans);font-weight:600;color:var(--color-primary);
   background:none;border:none;padding:0;cursor:pointer;text-decoration:underline;
   text-decoration-color:var(--color-accent);text-underline-offset:2px}
+.mail-fallback-close{font:inherit;line-height:1;color:var(--color-muted);background:none;border:none;
+  padding:0;margin-left:.1rem;cursor:pointer;font-size:1.1em}
+.mail-fallback-close:hover{color:var(--color-text)}
 .site-footer .mail-fallback{background:rgba(255,255,255,.08);border-color:#5f7a70;color:#dbe4de}
 .site-footer .mail-fallback-copy{color:#fff}
+.site-footer .mail-fallback-close{color:#b9c9c1}
+.site-footer .mail-fallback-close:hover{color:#fff}
 
 /* ============ Docs ============ */
 .docs-grid{grid-template-columns:repeat(3,1fr)}
@@ -256,6 +261,10 @@ h2+.section-lede{margin-top:.25rem}
 .fineprint{margin-top:1.6rem;font-size:.92rem;max-width:60ch;margin-inline:auto}
 
 /* ============ Support ============ */
+/* Section container widened to match "Документация" (was .narrow, 760px) -- keep the
+   actual reading column at the same comfortable width used elsewhere (.section-lede),
+   centered in the now-wider section instead of narrowing the whole section. */
+.support h2,.support>.container>p,.help-list{max-width:70ch;margin-inline:auto}
 .help-list{list-style:none;padding:0;margin:1.5rem 0;display:grid;gap:.8rem}
 .help-list li{position:relative;padding-left:1.8rem;font-size:1.05rem}
 .help-list li::before{content:"";position:absolute;left:0;top:.55em;width:.7rem;height:.7rem;border-radius:50%;
