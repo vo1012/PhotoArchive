@@ -181,15 +181,12 @@ h2+.section-lede{margin-top:.25rem}
 .win-label{font-family:var(--font-mono);font-size:.75rem;color:var(--color-muted);
   padding:.15rem .2rem .6rem;text-align:center}
 
-.report-plaque{padding-bottom:2.6rem;cursor:pointer}
+.report-plaque{padding-bottom:2.6rem}
 .report-clip{position:relative;border-radius:8px;overflow:hidden;
   -webkit-mask-image:linear-gradient(to bottom,#000 72%,transparent 100%);
   mask-image:linear-gradient(to bottom,#000 72%,transparent 100%)}
-/* whole card is clickable/hoverable, not just the small button label (report-card-hit sits on
-   top of the image and below the visible button so a click anywhere lands on report_sanitized.html) */
-.report-card-hit{position:absolute;inset:0;z-index:1}
 .report-open{position:absolute;left:50%;bottom:.9rem;transform:translateX(-50%);
-  background:var(--color-surface);z-index:2;pointer-events:none}
+  background:var(--color-surface);z-index:2}
 .report-plaque:hover .report-open{background:rgba(36,84,74,.08);text-decoration:underline;
   text-decoration-color:var(--color-accent);text-underline-offset:3px}
 
@@ -249,6 +246,19 @@ h2+.section-lede{margin-top:.25rem}
 .doc-links{display:flex;gap:1.2rem;margin:0}
 .doc-links a{font-weight:600}
 
+/* ============ Advanced (calmer aside section) ============ */
+.advanced{background:var(--color-surface);border-top:1px solid var(--color-border);
+  border-bottom:1px solid var(--color-border);padding-block:clamp(2.5rem,5vw,4rem)}
+.advanced .section-lede{font-size:1.05rem}
+.advanced-groups{display:grid;grid-template-columns:1fr 1fr;gap:0 3rem;margin-top:1.5rem}
+.advanced-group{padding-block:1.3rem;border-top:1px solid var(--color-border)}
+.advanced-group h3{font-size:1.15rem;margin-bottom:.6rem}
+.advanced-list{list-style:none;margin:0;padding:0}
+.advanced-list li{position:relative;padding-left:1.2rem;margin-bottom:.7rem;font-size:.98rem}
+.advanced-list li::before{content:"–";position:absolute;left:0;color:var(--color-muted)}
+.advanced-group p{margin:0;font-size:.98rem}
+.advanced-more{margin-top:1.8rem;font-size:.95rem}
+
 /* ============ Download ============ */
 .download .container{background:linear-gradient(180deg,rgba(36,84,74,.06),rgba(36,84,74,.03));
   border:1px solid var(--color-border);border-radius:18px;padding-block:clamp(2.5rem,5vw,3.5rem)}
@@ -257,6 +267,17 @@ h2+.section-lede{margin-top:.25rem}
 /* exe/zip captions read as normal body copy, not a small caption -- SmartScreen note below
    stays a small muted footnote via plain .download-hint, kept deliberately unlike these two */
 .download-hint.download-hint-body{font-size:1.05rem;line-height:1.65;color:var(--color-text)}
+
+.download-choices{display:flex;flex-wrap:wrap;justify-content:center;gap:1rem;margin-top:1.6rem}
+.btn-download{position:relative;flex:1 1 260px;max-width:340px;flex-direction:column;
+  align-items:center;gap:.3rem;white-space:normal;text-align:center;padding:1.1rem 1.4rem}
+.btn-download-main{font-size:1.08rem;font-weight:600}
+.btn-download-sub{font-size:.82rem;font-weight:400}
+.btn-primary .btn-download-sub{color:rgba(255,255,255,.8)}
+.btn-secondary .btn-download-sub{color:var(--color-muted)}
+.badge-recommend{position:absolute;top:-.65rem;right:1rem;background:var(--color-accent);
+  color:#fff;font-size:.72rem;font-weight:700;letter-spacing:.02em;border-radius:999px;
+  padding:.25rem .6rem}
 
 /* SmartScreen hint: a calm, non-alarming callout card (accent bar like .author-quote),
    not a yellow/red warning box -- see Design.md 7.8. Text size back to the original small
@@ -330,6 +351,9 @@ h2+.section-lede{margin-top:.25rem}
   .media-row.reverse .media-copy,.media-row.reverse .media-figure{order:0}
   .media-row .media-figure{order:-1} /* image above text on mobile */
   .cards-5,.docs-grid{grid-template-columns:1fr}
+  .advanced-groups{grid-template-columns:1fr}
+  .download-choices{flex-direction:column;align-items:stretch}
+  .btn-download{max-width:100%}
   .footer-grid{grid-template-columns:1fr 1fr;gap:1.6rem}
   .photo-strip img:nth-child(3){display:none}
   .photo-strip img{height:150px}
