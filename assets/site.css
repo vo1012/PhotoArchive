@@ -189,6 +189,11 @@ h2+.section-lede{margin-top:.25rem}
   background:var(--color-surface);z-index:2}
 .report-plaque:hover .report-open{background:rgba(36,84,74,.08);text-decoration:underline;
   text-decoration-color:var(--color-accent);text-underline-offset:3px}
+.report-open:hover,
+.report-open:active,
+.report-open:focus-visible{
+  transform:translateX(-50%);
+}
 
 .tree-figure{padding:1.6rem 1.8rem}
 .tree-lg{font-size:.98rem;line-height:2.1}
