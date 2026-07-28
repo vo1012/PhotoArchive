@@ -84,4 +84,54 @@
       history.replaceState(null, '', location.pathname + location.search);
     });
   }
+
+  // Live file size on the download buttons (2026-07-28). Not a new third-party request in
+  // the site's "no external requests" sense -- both buttons already link straight to
+  // github.com, this just reads the same repo's public release metadata. The static text
+  // already in the HTML (see index.html [data-asset]) is the fallback: if the request fails,
+  // is slow, or GitHub's unauthenticated rate limit (~60/h per IP) is hit, it's left as-is,
+  // silently -- this is a nice-to-have, not something worth showing an error for.
+  var sizeCacheKey = 'pa_release_asset_sizes_v1';
+  var sizeCacheTtlMs = 24 * 60 * 60 * 1000; // release sizes only change on a new release
+
+  function applyAssetSizes(sizesByName) {
+    document.querySelectorAll('[data-asset]').forEach(function (el) {
+      var size = sizesByName[el.getAttribute('data-asset')];
+      if (size) el.textContent = size;
+    });
+  }
+
+  function formatMB(bytes) {
+    return Math.round(bytes / 1048576) + ' МБ';
+  }
+
+  var cachedSizes = null;
+  try {
+    var raw = localStorage.getItem(sizeCacheKey);
+    if (raw) {
+      var parsed = JSON.parse(raw);
+      if (Date.now() - parsed.ts < sizeCacheTtlMs) cachedSizes = parsed.sizes;
+    }
+  } catch (e) { /* localStorage unavailable (private mode etc.) -- just re-fetch */ }
+
+  if (cachedSizes) {
+    applyAssetSizes(cachedSizes);
+  } else if (window.fetch) {
+    var sizeController = window.AbortController ? new AbortController() : null;
+    var sizeTimeout = sizeController && setTimeout(function () { sizeController.abort(); }, 5000);
+    fetch('https://api.github.com/repos/vo1012/PhotoArchive/releases/latest',
+      sizeController ? { signal: sizeController.signal } : {})
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!data || !Array.isArray(data.assets)) return;
+        var sizes = {};
+        data.assets.forEach(function (a) { sizes[a.name] = formatMB(a.size); });
+        applyAssetSizes(sizes);
+        try {
+          localStorage.setItem(sizeCacheKey, JSON.stringify({ ts: Date.now(), sizes: sizes }));
+        } catch (e) { /* storage full/unavailable -- fine, just re-fetch next time */ }
+      })
+      .catch(function () { /* offline/rate-limited/CORS -- static fallback text stays */ })
+      .finally(function () { if (sizeTimeout) clearTimeout(sizeTimeout); });
+  }
 })();
