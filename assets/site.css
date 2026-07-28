@@ -376,3 +376,12 @@ h2+.section-lede{margin-top:.25rem}
   color:#fff;
 }
 .step-note{margin-top:1.3rem}
+
+.keep-originals-note{
+  margin:2.5rem auto 0;
+  max-width:70ch;
+  padding:1.1rem 1.4rem;
+  background:var(--color-surface);
+  border-left:3px solid var(--color-accent);
+  border-radius:0 10px 10px 0;
+}
