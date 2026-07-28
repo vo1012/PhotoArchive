@@ -370,3 +370,9 @@ h2+.section-lede{margin-top:.25rem}
 @media (prefers-reduced-motion:reduce){
   *{scroll-behavior:auto!important;transition:none!important;animation:none!important}
 }
+
+.step-num-alert{
+  background:var(--color-accent);
+  color:#fff;
+}
+.step-note{margin-top:1.3rem}
