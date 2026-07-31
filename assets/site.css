@@ -166,6 +166,7 @@ h2+.section-lede{margin-top:.25rem}
   align-items:center;margin-block:2.5rem}
 .media-copy h3{color:var(--color-primary)}
 .media-copy p{margin:0;font-size:1.08rem}
+.media-copy p+p{margin-top:.85rem}
 .media-row.reverse .media-copy{order:2}
 .media-row.reverse .media-figure{order:1}
 
