@@ -1,9 +1,14 @@
 """ROADMAP.md, analyze как "2 части": обнаружение существующих архивов (__служебные_файлы)
 внутри просканированного SOURCE во время analyze/analyze-full -- SourceWalker.found_archive_roots
 (побочный продукт обхода, см. photosort_win.py:SourceWalker._walk_dir), классификация
-top-level/nested (photosort_win.py:classify_found_archives) и рендер части 2 report.html
-(report.py:_render_found_archives)."""
+top-level/nested (photosort_win.py:classify_found_archives) и _render_found_archives()
+(report.py). REVIEW-HANDOFF.md, Раунд 44: с SESSION-HANDOFF.txt пункта I (a41117c) единственный
+прод-вызов generate_report_from_analyze_stats() (photosort_win.py:_finalize_analyze_report())
+больше не передаёт found_archives= -- "часть 2" report.html в проде больше не рендерится,
+_render_found_archives() вызывается только этим тестовым файлом напрямую (сама инфраструктура
+сознательно оставлена нетронутой, см. SESSION-HANDOFF.txt, «I» -- полное вычищение отложено)."""
 import os
+from collections import Counter
 
 import photosort_win as m
 import report as r
@@ -212,3 +217,170 @@ def test_render_found_archives_nested_escalates_caveat_and_adds_checklist_item()
     assert "НЕДОСТОВЕРНЫ" in html_out
     assert "постороннюю структуру" in html_out.lower() or "посторонних структур" in html_out.lower()
     assert child in html_out
+
+
+# ---------------------------------------------------------------------------
+# SourceWalker: exclude_found_archives (SESSION-HANDOFF.txt, пункт I, 2026-07-31) --
+# analyze/analyze-quick/analyze-full excludes a found archive's content from STATISTICS by
+# default; [3]/CLI archive/--dry-run never pass this flag at all, unaffected.
+# ---------------------------------------------------------------------------
+
+def _rel_paths(items):
+    return sorted(item.rel_path for item in items)
+
+
+def test_exclude_found_archives_skips_descent_and_counts_files(tmp_path):
+    source = tmp_path / "source"
+    archive_root = source / "old_photos"
+    (archive_root / "__служебные_файлы").mkdir(parents=True)
+    (archive_root / "Albums").mkdir()
+    (archive_root / "Albums" / "x.jpg").write_bytes(b"x")
+    (archive_root / "ByDate").mkdir()
+    (archive_root / "ByDate" / "y.jpg").write_bytes(b"y")
+    (source / "fresh.jpg").write_bytes(b"z")
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None, exclude_found_archives=True)
+    items = list(walker.walk())
+
+    assert _rel_paths(items) == ["fresh.jpg"]
+    assert walker.excluded_found_archives == [(os.path.realpath(str(archive_root)), 2)]
+    # found_archive_roots -- бухгалтерия по-прежнему заполняется (питает "уже есть собранный
+    # архив" в рекомендациях, см. report.py:_render_analyze_recommendations()), даже когда
+    # содержимое реально исключено из обхода.
+    assert os.path.realpath(str(archive_root)) in walker.found_archive_roots
+
+
+def test_exclude_found_archives_false_walks_everything_as_before(tmp_path):
+    """Дефолт SourceWalker(...) без exclude_found_archives=True -- [3]/CLI archive/--dry-run,
+    которые никогда не передают этот параметр -- поведение НЕ меняется этим пунктом."""
+    source = tmp_path / "source"
+    archive_root = source / "old_photos"
+    (archive_root / "__служебные_файлы").mkdir(parents=True)
+    (archive_root / "Albums").mkdir()
+    (archive_root / "Albums" / "x.jpg").write_bytes(b"x")
+    (source / "fresh.jpg").write_bytes(b"z")
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None)
+    items = list(walker.walk())
+
+    assert _rel_paths(items) == ["fresh.jpg", "old_photos/Albums/x.jpg"]
+    assert walker.excluded_found_archives == []
+
+
+def test_exclude_found_archives_never_excludes_the_walk_root_itself(tmp_path):
+    """Критично для [4] Паспорт архива (run_passport(): cfg.source=TARGET) -- TARGET по
+    конструкции сам содержит __служебные_файлы/Albums/ByDate прямо в корне. Если бы это
+    засчитывалось как "найденный архив внутри SOURCE", паспорт исключил бы вообще всё
+    содержимое TARGET из собственной проверки -- is_root должен быть железной защитой."""
+    source = tmp_path / "source"  # играет роль TARGET для run_passport()
+    (source / "__служебные_файлы").mkdir(parents=True)
+    (source / "Albums").mkdir()
+    (source / "Albums" / "x.jpg").write_bytes(b"x")
+    (source / "ByDate").mkdir()
+    (source / "ByDate" / "y.jpg").write_bytes(b"y")
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None, exclude_found_archives=True)
+    items = list(walker.walk())
+
+    assert _rel_paths(items) == ["Albums/x.jpg", "ByDate/y.jpg"]
+    assert walker.excluded_found_archives == []
+
+
+def test_run_analyze_excludes_found_archive_content_by_default(tmp_path):
+    source = tmp_path / "source"
+    archive_root = source / "old_photos"
+    (archive_root / "__служебные_файлы").mkdir(parents=True)
+    (archive_root / "Albums").mkdir()
+    (archive_root / "Albums" / "x.jpg").write_bytes(b"x")
+    (source / "fresh.jpg").write_bytes(b"z")
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)  # include_found_archives_in_analyze не задан -- дефолт False
+    stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+    assert stats.total_files == 1  # только fresh.jpg -- x.jpg исключён
+    assert stats.excluded_found_archives == [(os.path.realpath(str(archive_root)), 1)]
+    assert stats.found_archive_top_level == [os.path.realpath(str(archive_root))]
+
+
+def test_run_analyze_includes_found_archive_when_config_opts_in(tmp_path):
+    source = tmp_path / "source"
+    archive_root = source / "old_photos"
+    (archive_root / "__служебные_файлы").mkdir(parents=True)
+    (archive_root / "Albums").mkdir()
+    (archive_root / "Albums" / "x.jpg").write_bytes(b"x")
+    (source / "fresh.jpg").write_bytes(b"z")
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path, include_found_archives_in_analyze=True)
+    stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+    assert stats.total_files == 2  # оба файла посчитаны -- исключение выключено явно
+    assert stats.excluded_found_archives == []
+    assert stats.found_archive_top_level == [os.path.realpath(str(archive_root))]
+
+
+# ---------------------------------------------------------------------------
+# report.py: рекомендация про найденный/исключённый архив (пункт I)
+# ---------------------------------------------------------------------------
+
+def test_analyze_recommendations_mentions_exclusion_when_content_was_excluded():
+    model = {"excluded_found_archives": [("/src/old_photos", 42)], "found_archive_count": 1}
+    html_out = r._render_analyze_recommendations(model)
+    assert "исключён из этой статистики" in html_out
+    assert "42" in html_out
+    assert "Паспорт архива" in html_out
+    assert "дублирования не будет" not in html_out  # старая формулировка не должна дублироваться
+
+
+def test_analyze_recommendations_keeps_old_wording_when_nothing_excluded():
+    model = {"excluded_found_archives": [], "found_archive_count": 1}
+    html_out = r._render_analyze_recommendations(model)
+    assert "На этом источнике уже есть собранный архив" in html_out
+    assert "дублирования не будет" in html_out
+    assert "исключён из этой статистики" not in html_out
+
+
+def test_generate_report_from_analyze_stats_no_longer_renders_found_archive_block(tmp_path):
+    """2026-07-31, пункт I: analyze больше не строит "Часть 2" -- found_archives-параметр
+    generate_report_from_analyze_stats() не передаётся вовсе из _finalize_analyze_report()
+    (photosort_win.py), поведение по умолчанию (found_archives=None) уже "не рендерить"."""
+    stats = _FakeAnalyzeStatsForFoundArchivesReport()
+    out_path = tmp_path / "report.html"
+    r.generate_report_from_analyze_stats(stats, str(out_path), level="analyze")
+    html_out = out_path.read_text(encoding="utf-8")
+    assert "На этом диске найден архив" not in html_out
+
+
+class _FakeAnalyzeStatsForFoundArchivesReport:
+    """Минимальная замена AnalyzeStats для одного прицельного теста выше -- см. _FakeAnalyzeStats
+    в tests/test_report.py для более полной версии, не импортируется отсюда, чтобы не тянуть
+    межмодульную тестовую зависимость ради одного поля."""
+    def __init__(self):
+        self.n_images = 1
+        self.n_raw = 0
+        self.n_videos = 0
+        self.oldest_date = None
+        self.oldest_display = None
+        self.n_near_dupes = 0
+        self.predicted_unique_count = 1
+        self.n_exact_dupes = 0
+        self.n_broken_or_zero = 0
+        self.total_bytes = 100
+        self.predicted_unique_bytes = 100
+        self.dates_by_year = Counter()
+        self.dates_by_year_month = Counter()
+        self.tier_counts = Counter()
+        self.near_dup_edges = []
+        self.n_archives_found = 0
+        self.found_archive_top_level = ["/some/found/archive"]
+        self.excluded_found_archives = [("/some/found/archive", 5)]
+        self.cities = Counter()
+        self.cameras = Counter()
+        self.encrypted_archive_paths = []

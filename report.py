@@ -51,6 +51,83 @@ CSV_NAMES = ("appended", "skipped", "disputes", "dates_review", "albums_merged",
 
 TOP_N = 10  # PROMPT_archive_report.md, раздел 0: топ-N + отсылка к полному CSV, не всё целиком
 
+# Пункт D ("большой разбор report.html", SESSION-HANDOFF.txt): ISO 3166-1 alpha-2 -> русское
+# название страны -- для остального мира на диаграмме "География" ("Город, CC" -> "Город
+# (Страна)"). place_for_gps() (photosort_win.py) отдаёт код именно в этом регистре/формате
+# (reverse_geocoder). Не тянуть pycountry ради этого (та библиотека даёт только английские
+# названия) -- статическая таблица, весь стандартный список ISO 3166-1, код без перевода
+# (редкий/устаревший/спорный) просто показывается как есть в _country_name_ru()."""
+COUNTRY_NAMES_RU = {
+    "AD": "Андорра", "AE": "ОАЭ", "AF": "Афганистан", "AG": "Антигуа и Барбуда",
+    "AI": "Ангилья", "AL": "Албания", "AM": "Армения", "AO": "Ангола", "AQ": "Антарктида",
+    "AR": "Аргентина", "AS": "Американское Самоа", "AT": "Австрия", "AU": "Австралия",
+    "AW": "Аруба", "AX": "Аландские острова", "AZ": "Азербайджан",
+    "BA": "Босния и Герцеговина", "BB": "Барбадос", "BD": "Бангладеш", "BE": "Бельгия",
+    "BF": "Буркина-Фасо", "BG": "Болгария", "BH": "Бахрейн", "BI": "Бурунди", "BJ": "Бенин",
+    "BL": "Сен-Бартелеми", "BM": "Бермуды", "BN": "Бруней", "BO": "Боливия",
+    "BQ": "Бонэйр, Синт-Эстатиус и Саба", "BR": "Бразилия", "BS": "Багамы", "BT": "Бутан",
+    "BV": "остров Буве", "BW": "Ботсвана", "BY": "Беларусь", "BZ": "Белиз", "CA": "Канада",
+    "CC": "Кокосовые острова", "CD": "ДР Конго", "CF": "ЦАР", "CG": "Республика Конго",
+    "CH": "Швейцария", "CI": "Кот-д'Ивуар", "CK": "острова Кука", "CL": "Чили",
+    "CM": "Камерун", "CN": "Китай", "CO": "Колумбия", "CR": "Коста-Рика", "CU": "Куба",
+    "CV": "Кабо-Верде", "CW": "Кюрасао", "CX": "остров Рождества", "CY": "Кипр",
+    "CZ": "Чехия", "DE": "Германия", "DJ": "Джибути", "DK": "Дания", "DM": "Доминика",
+    "DO": "Доминиканская Республика", "DZ": "Алжир", "EC": "Эквадор", "EE": "Эстония",
+    "EG": "Египет", "EH": "Западная Сахара", "ER": "Эритрея", "ES": "Испания",
+    "ET": "Эфиопия", "FI": "Финляндия", "FJ": "Фиджи", "FK": "Фолклендские острова",
+    "FM": "Микронезия", "FO": "Фарерские острова", "FR": "Франция", "GA": "Габон",
+    "GB": "Великобритания", "GD": "Гренада", "GE": "Грузия", "GF": "Французская Гвиана",
+    "GG": "Гернси", "GH": "Гана", "GI": "Гибралтар", "GL": "Гренландия", "GM": "Гамбия",
+    "GN": "Гвинея", "GP": "Гваделупа", "GQ": "Экваториальная Гвинея", "GR": "Греция",
+    "GS": "Южная Георгия и Южные Сандвичевы острова", "GT": "Гватемала", "GU": "Гуам",
+    "GW": "Гвинея-Бисау", "GY": "Гайана", "HK": "Гонконг",
+    "HM": "острова Херд и Макдональд", "HN": "Гондурас", "HR": "Хорватия", "HT": "Гаити",
+    "HU": "Венгрия", "ID": "Индонезия", "IE": "Ирландия", "IL": "Израиль", "IM": "Остров Мэн",
+    "IN": "Индия", "IO": "Британская территория в Индийском океане", "IQ": "Ирак",
+    "IR": "Иран", "IS": "Исландия", "IT": "Италия", "JE": "Джерси", "JM": "Ямайка",
+    "JO": "Иордания", "JP": "Япония", "KE": "Кения", "KG": "Киргизия", "KH": "Камбоджа",
+    "KI": "Кирибати", "KM": "Коморы", "KN": "Сент-Китс и Невис", "KP": "КНДР",
+    "KR": "Южная Корея", "KW": "Кувейт", "KY": "Каймановы острова", "KZ": "Казахстан",
+    "LA": "Лаос", "LB": "Ливан", "LC": "Сент-Люсия", "LI": "Лихтенштейн", "LK": "Шри-Ланка",
+    "LR": "Либерия", "LS": "Лесото", "LT": "Литва", "LU": "Люксембург", "LV": "Латвия",
+    "LY": "Ливия", "MA": "Марокко", "MC": "Монако", "MD": "Молдова", "ME": "Черногория",
+    "MF": "Сен-Мартен", "MG": "Мадагаскар", "MH": "Маршалловы острова",
+    "MK": "Северная Македония", "ML": "Мали", "MM": "Мьянма", "MN": "Монголия",
+    "MO": "Макао", "MP": "Северные Марианские острова", "MQ": "Мартиника",
+    "MR": "Мавритания", "MS": "Монтсеррат", "MT": "Мальта", "MU": "Маврикий",
+    "MV": "Мальдивы", "MW": "Малави", "MX": "Мексика", "MY": "Малайзия", "MZ": "Мозамбик",
+    "NA": "Намибия", "NC": "Новая Каледония", "NE": "Нигер", "NF": "Остров Норфолк",
+    "NG": "Нигерия", "NI": "Никарагуа", "NL": "Нидерланды", "NO": "Норвегия", "NP": "Непал",
+    "NR": "Науру", "NU": "Ниуэ", "NZ": "Новая Зеландия", "OM": "Оман", "PA": "Панама",
+    "PE": "Перу", "PF": "Французская Полинезия", "PG": "Папуа — Новая Гвинея",
+    "PH": "Филиппины", "PK": "Пакистан", "PL": "Польша", "PM": "Сен-Пьер и Микелон",
+    "PN": "Питкэрн", "PR": "Пуэрто-Рико", "PS": "Палестина", "PT": "Португалия",
+    "PW": "Палау", "PY": "Парагвай", "QA": "Катар", "RE": "Реюньон", "RO": "Румыния",
+    "RS": "Сербия", "RU": "Россия", "RW": "Руанда", "SA": "Саудовская Аравия",
+    "SB": "Соломоновы острова", "SC": "Сейшелы", "SD": "Судан", "SE": "Швеция",
+    "SG": "Сингапур", "SH": "Остров Святой Елены", "SI": "Словения",
+    "SJ": "Шпицберген и Ян-Майен", "SK": "Словакия", "SL": "Сьерра-Леоне", "SM": "Сан-Марино",
+    "SN": "Сенегал", "SO": "Сомали", "SR": "Суринам", "SS": "Южный Судан",
+    "ST": "Сан-Томе и Принсипи", "SV": "Сальвадор", "SX": "Синт-Мартен", "SY": "Сирия",
+    "SZ": "Эсватини", "TC": "острова Тёркс и Кайкос", "TD": "Чад",
+    "TF": "Французские Южные и Антарктические территории", "TG": "Того", "TH": "Таиланд",
+    "TJ": "Таджикистан", "TK": "Токелау", "TL": "Восточный Тимор", "TM": "Туркменистан",
+    "TN": "Тунис", "TO": "Тонга", "TR": "Турция", "TT": "Тринидад и Тобаго", "TV": "Тувалу",
+    "TW": "Тайвань", "TZ": "Танзания", "UA": "Украина", "UG": "Уганда",
+    "UM": "Внешние малые острова США", "US": "США", "UY": "Уругвай", "UZ": "Узбекистан",
+    "VA": "Ватикан", "VC": "Сент-Винсент и Гренадины", "VE": "Венесуэла",
+    "VG": "Британские Виргинские острова", "VI": "Виргинские острова США", "VN": "Вьетнам",
+    "VU": "Вануату", "WF": "Уоллис и Футуна", "WS": "Самоа", "YE": "Йемен",
+    "YT": "Майотта", "ZA": "ЮАР", "ZM": "Замбия", "ZW": "Зимбабве",
+}
+
+
+def _country_name_ru(cc: str) -> str:
+    """Код без перевода в таблице (редкий/устаревший/спорный территориальный код) -- сам код
+    как есть, не молчаливая потеря/исключение (тот же принцип "log it, keep going", что и у
+    остального report.py)."""
+    return COUNTRY_NAMES_RU.get(cc, cc)
+
 # 4.9 (PROMPT_report_marketing.md): единый глоссарий терминов -- вынесен в отдельный
 # REPORT_TERM_GLOSSARY.md (2026-07-24, round 29 придирка: константа была справочной, не
 # использовалась программно ни в одном месте этого файла -- естественнее как документация,
@@ -273,11 +350,13 @@ def _parse_date_column(date_str):
 
 def _build_checklist_fields(data: dict) -> dict:
     """Поля Листа 3 ("Что стоит проверить") -- вынесено из build_model_from_rows() отдельной
-    функцией 2026-07-20, чтобы её можно было вызвать ДВАЖДЫ на разных подмножествах строк
-    (см. _split_rows_by_time()/generate_report()): "новое из этого пополнения" и "накопилось
-    раньше" -- без разделения Лист 3 читался как "результат этого прогона", хотя на самом
-    деле кумулятивная история архива (то же путаница, что была с "сэкономлено на точных
-    повторах" до явной оговорки в _render_sheet1()).
+    функцией 2026-07-20, изначально чтобы её можно было вызвать дважды на разных
+    подмножествах строк ("новое из этого пополнения" и "накопилось раньше", см.
+    _split_rows_by_time()/generate_report()). REVIEW-HANDOFF.md, Раунд 44: "раньше"-половина
+    убрана 2026-07-31 (729a2de, кумулятивное "Ваш архив" из обычного отчёта) -- сегодня
+    вызывается один раз, на отобранном по времени "новое" (generate_report()) либо на полной
+    model целиком (build_model_from_rows(), level=="analyze"/полный кумулятивный скан) --
+    не на паре подмножеств одного и того же прогона.
 
     "albums_merged" здесь больше НЕТ (убрано по решению пользователя 2026-07-20 вторым
     заходом) -- "N файлов пополнили уже существующие альбомы" не предлагало никакого
@@ -292,7 +371,11 @@ def _build_checklist_fields(data: dict) -> dict:
         # Раунд 31 (REVIEW-HANDOFF.md): живёт в этом же словаре ради переиспользования
         # разбивки "новое"/"раньше" (_split_rows_by_time()), рендерится ОТДЕЛЬНОЙ карточкой
         # (_render_exact_dup_examples()), не входит в Лист 3/_build_checklist_items().
-        "exact_dup_groups": _cluster_exact_dup(data.get("skipped", [])),
+        # Пункт B.3 ("большой разбор report.html", SESSION-HANDOFF.txt): переиспользует
+        # _cluster_exact_dup_full() (раньше только для полной страницы сверки) вместо
+        # отдельной "облегчённой" _cluster_exact_dup() -- превью-карточке тоже нужен origin
+        # ("скопировано из ‹origin›"), которого у старой облегчённой версии не было вообще.
+        "exact_dup_groups": _cluster_exact_dup_full(data),
         "disputes_by_folder": Counter(_win_dirname(r.get("source", "")) for r in disputes),
         "disputes_total": len(disputes),
         # Раунд 32, задача 2 (REVIEW-HANDOFF.md): имя файла + причина спора, не только счётчик
@@ -324,27 +407,44 @@ def _build_checklist_fields(data: dict) -> dict:
         # пользователю нужно то место, где искать СЕЙЧАС, тот же принцип, что у "Самый старый
         # файл" (Раунд 40).
         "undated_media": data.get("undated_media", []),
+        # Задача 5: та же группировка/превью, что Tier B/C (dates_review_detail) -- уже
+        # отфильтрована до ByDate/0000-undated/ (см. _cluster_undated()). Ключ намеренно
+        # ОТСУТСТВУЕТ в build_model_from_analyze_stats() (analyze не отслеживает undated_media
+        # поштучно) -- _build_checklist_items() различает "нет detail вообще" (analyze,
+        # .get() без ключа -> None) от "detail есть, но все файлы в Albums/" ([] после
+        # фильтра) -- разное поведение рендера для каждого случая.
+        "undated_detail": _cluster_undated(data.get("undated_media", [])),
+        # Пункт B.5 ("большой разбор report.html", SESSION-HANDOFF.txt): интро-фраза "сохранены
+        # ВСЕ N файлов, включая M спорных" -- N должно включать M (спорные физически тоже
+        # сохранены, в _Unsorted, просто не идут через run_logs.appended()/appended.csv,
+        # см. photosort_win.py:_process_decided_item() -- disputed пишется отдельным логом,
+        # run_logs.disputed()/disputes.csv), иначе M выглядел бы НЕ подмножеством N.
+        "total_new": len(appended) + len(disputes),
     }
 
 
-def _split_rows_by_time(data: dict, run_start: str) -> tuple:
-    """Делит CSV-строки (только категории Листа 3) на "этот прогон" (timestamp >= run_start)
-    и "раньше" -- по первой колонке timestamp, которая уже есть у каждого CSV-лога
+def _split_rows_by_time(data: dict, run_start: str) -> dict:
+    """Отбирает CSV-строки (только категории Листа 3) на "этот прогон" (timestamp >=
+    run_start) -- по первой колонке timestamp, которая уже есть у каждого CSV-лога
     (RunLogs._ts(), формат "%Y-%m-%d %H:%M:%S", лексикографически сравнимый). `run_start` --
     тот же формат, захваченный в photosort_win.py ДО начала обработки источников -- см.
     generate_report(). "appended"/"undated_media" нужны здесь для флагов качества/Tier D
     в _build_checklist_fields() -- сами по себе не категории Листа 3, но их разбивка по
     времени строится по тому же timestamp, тем же способом. "skipped" (Раунд 31,
     REVIEW-HANDOFF.md) -- та же логика для exact_dup_groups, отдельная от Листа 3 карточка
-    (_render_exact_dup_examples()), но нуждается в том же новое/раньше разделении."""
+    (_render_exact_dup_examples()), но нуждается в том же отборе по времени.
+
+    REVIEW-HANDOFF.md, Раунд 44: раньше возвращала пару (new, before) -- "before"-половина
+    (всё СТАРШЕ run_start) с 2026-07-31 (коммит 729a2de, убрана кумулятивная "Ваш архив")
+    нигде не рендерится и не читается ни одним вызывающим кодом -- вычислялась впустую на
+    каждом обычном отчёте. Строит и возвращает ТОЛЬКО отобранное "новое"."""
     names = ("near_dup_edges", "disputes", "dates_review", "unreadable", "appended",
               "undated_media", "skipped")
-    new, before = {}, {}
+    new = {}
     for name in names:
         rows = data.get(name, [])
         new[name] = [r for r in rows if (r.get("timestamp") or "") >= run_start]
-        before[name] = [r for r in rows if (r.get("timestamp") or "") < run_start]
-    return new, before
+    return new
 
 
 def build_model_from_rows(data: dict) -> dict:
@@ -432,7 +532,7 @@ def build_model_from_rows(data: dict) -> dict:
             # REVIEW-HANDOFF.md, Раунд 40: dest (реальный путь в АРХИВЕ), не row["source"]
             # (origin_display -- путь в источнике, для файлов из архивов вида "Foto.zip →
             # путь/файл.jpg", см. докстрины _row_size()/bytes_saved выше в этой же функции) --
-            # _render_sheet1() показывает папку+имя тем же способом, что и near-dup/точные
+            # _render_sheet1() показывает папку+имя тем же способом, что и near-dup/
             # повторы (_friendly_target_dir/_win_basename), а тот способ ищет ByDate/Albums --
             # маркер бывает только в путях архива.
             oldest = (sort_key, dest, place or album)
@@ -450,13 +550,19 @@ def build_model_from_rows(data: dict) -> dict:
         "unreadable": len(unreadable),
         "disputed": len(disputes),
     })
-    # 2026-07-26, по просьбе пользователя: "Точные повторы" на диаграмме "Итог решений
+    # 2026-07-26, по просьбе пользователя: "Дубли" на диаграмме "Итог решений
     # программы" не показывали разбивку по типу файла -- та же классификация по расширению
     # (_media_kind()), что уже используется для "Тип медиа"/"Объём по категориям" выше по
     # модулю, применённая к matched_with (реальный путь в архиве, decisions["skipped_present"]
     # считает те же строки skipped -- ЛЮБАЯ причина, не только already_present, см. коммент у
-    # _cluster_exact_dup() про осознанное расхождение с карточкой "Точные повторы — примеры").
+    # _cluster_exact_dup_full() про осознанное расхождение с карточкой "Дубли — примеры").
     skipped_present_by_type = Counter(_media_kind(r.get("matched_with", "")) for r in skipped)
+
+    # Пункт E ("большой разбор report.html", SESSION-HANDOFF.txt): "camera" -- новая колонка
+    # appended.csv (photosort_win.py:RunLogs.appended(), rec.camera/camera_from_tags()),
+    # файлы без определённой камеры (скриншоты, интернет-картинки, сканы) -- пустая строка,
+    # не входят сюда вообще (не искусственная категория "неизвестно").
+    cameras = Counter(r.get("camera") for r in appended if r.get("camera"))
 
     tier_counts = Counter(r.get("tier", "") for r in dates_review if r.get("tier"))
     # REVIEW-HANDOFF.md, раунд 3 [БЛОКЕР]: Tier D (без EXIF/имени/соседей/mtime-сигнала)
@@ -484,6 +590,7 @@ def build_model_from_rows(data: dict) -> dict:
         "exact_dupes": len(skipped),
         "decisions": decisions,
         "skipped_present_by_type": skipped_present_by_type,
+        "cameras": cameras,
         "tier_counts": tier_counts,
         "top_albums": top_albums,
         "rejected_noise_total": len(rejected_noise),
@@ -526,64 +633,29 @@ def _cluster_near_dup(near_dup_rows: list) -> list:
     return clusters
 
 
-def _cluster_exact_dup(skipped_rows: list) -> list:
-    """REVIEW-HANDOFF.md, Раунд 31: точные повторы (33% файлов реального прогона) были
-    единственной крупной категорией отчёта без единого примера -- "Похожие кадры" (2%)
-    показывают каждую группу поимённо, "Точные повторы" -- только число. Данные уже есть в
-    skipped.csv (source/matched_with), новых вычислений не требуется, только группировка.
+def _cluster_exact_dup_full(data: dict) -> list:
+    """2026-07-26, обсуждение с пользователем: недоверчивый пользователь, который не
+    принимает описание алгоритма как аргумент, хочет проверить дедуп САМ в файловой
+    системе -- для каждого заархивированного файла увидеть, откуда он взят, и какие именно
+    файлы источника были признаны его дублями (путь+имя, не просто число). Питает и превью
+    "Дубли — примеры" (Лист 3, урезано топ-N/"Показать ещё"), и отдельную полную
+    страницу сверки (generate_dedup_verification_page(), без урезания) -- см. пункт B.3 ниже.
 
     reason=="already_present" ТОЛЬКО -- реальный "файл уже есть в архиве" (пул дедупа,
     decide()), не raw_skipped_has_jpeg (RAW осознанно не зеркалирован при MIRROR_RAW=false --
     решение конфига, не совпадение содержимого) и не identical_at_destination (коллизия имён
     при записи, редкий отдельный случай) -- иначе число здесь разошлось бы с тем, что реально
-    означает "точный повтор" по сути, а не просто со всем, что когда-либо попало в
+    означает "дубль" по сути, а не просто со всем, что когда-либо попало в
     skipped.csv. Диаграмма "Итог решений программы" (model["decisions"]["skipped_present"])
     по-прежнему считает все три причины -- та цифра осталась как есть, разошлась с этой
     осознанно (см. обсуждение с пользователем).
 
-    Группировка -- по папке уже заархивированного файла (matched_with), не плоским списком
-    исходных путей: source в CSV не всегда настоящий путь (файлы из вложенных zip/rar выглядят
-    как "Foto2015.zip → 2015/Crimea/IMG_1234.jpg"), matched_with -- всегда полный путь в
-    TARGET, из него же берётся и папка (_friendly_target_dir), и имя (_win_basename) -- тот же
-    приём, что уже применяется для near-dup кластеров. Каждая архивная запись, для которой
-    нашёлся хотя бы один дубль в источнике, становится одной строкой в группе, с числом
-    найденных повторов -- при 8-9 тыс. повторов на большом архиве это на порядки меньше строк,
-    чем плоский список пар (обычно один и тот же файл дублируется много раз подряд, например
-    вся папка скопирована с телефона дважды).
-
-    Возвращает [(folder, total_count, [(matched_with, dup_count), ...]), ...], отсортировано
-    по убыванию total_count -- тот же принцип, что _cluster_near_dup() (крупные группы
-    первыми, топ-N берёт вызывающая сторона при рендере)."""
-    by_folder = defaultdict(lambda: defaultdict(int))
-    for r in skipped_rows:
-        if r.get("reason") != "already_present":
-            continue
-        matched = r.get("matched_with")
-        if not matched:
-            continue
-        by_folder[_friendly_target_dir(matched)][matched] += 1
-
-    groups = []
-    for folder, counts in by_folder.items():
-        total = sum(counts.values())
-        items = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
-        groups.append((folder, total, items))
-    groups.sort(key=lambda g: -g[1])
-    return groups
-
-
-def _cluster_exact_dup_full(data: dict) -> list:
-    """2026-07-26, обсуждение с пользователем: недоверчивый пользователь, который не
-    принимает описание алгоритма как аргумент, хочет проверить дедуп САМ в файловой
-    системе -- для каждого заархивированного файла увидеть, откуда он взят, и какие именно
-    файлы источника были признаны его дублями (путь+имя, не просто число). Это отдельная,
-    ПОЛНАЯ (без урезания топ-N/"и ещё N") версия _cluster_exact_dup() -- для отдельной
-    страницы сверки (см. generate_dedup_verification_page()), не для превью в Листе 3.
-
-    Та же фильтрация (reason=="already_present") и группировка по папке (matched_with), что
-    и _cluster_exact_dup(), но каждая запись дополнительно несёт origin (source из
-    appended.csv для этого же dest -- "откуда скопирован") и полный список source всех
-    найденных дублей (не только счётчик).
+    Группировка по папке (matched_with, через _friendly_target_dir()) -- каждая запись несёт
+    origin (source из appended.csv для этого же dest -- "откуда скопирован") и полный список
+    source всех найденных дублей (пункт B.3, "большой разбор report.html",
+    SESSION-HANDOFF.txt -- единственный источник данных теперь и для превью-карточки
+    _exact_dup_checklist_item(), и для полной страницы сверки, раньше это были две отдельные,
+    разошедшиеся по возможностям функции).
 
     Возвращает [(folder, [(matched_dest, origin_source, [dup_source, ...]), ...]), ...],
     группы отсортированы по убыванию суммарного числа дублей, файлы внутри группы -- тоже."""
@@ -631,7 +703,7 @@ def _cluster_disputes(disputes_rows: list) -> list:
     """REVIEW-HANDOFF.md, Раунд 32, задача 2: "Спорные" были единственной категорией отчёта
     совсем без деталей -- ни имени файла, ни причины, хотя оба поля уже есть в disputes.csv
     (source/reason), новых вычислений не требуется. Та же форма группировки, что
-    _cluster_exact_dup() -- по исходной папке (_win_dirname), не плоским списком.
+    _cluster_exact_dup_full() -- по исходной папке (_win_dirname), не плоским списком.
 
     Пусто для analyze (AnalyzeStats считает только n_broken_or_zero одним агрегатным числом,
     без source/reason на файл) -- тот же асимметричный охват, что уже есть у
@@ -654,7 +726,7 @@ def _cluster_dates_review(dates_review_rows: list) -> list:
     """2026-07-26, по просьбе пользователя (общий аудит "путь для проверки" по Листу 3):
     "N файлов получили дату приблизительно" (Tier B/C) показывал только счётчик по папке, без
     имени файла -- тот же класс проблемы, что уже был у Tier D ("без даты") и у "Спорных" до
-    Раунда 32. Та же форма группировки, что _cluster_disputes()/_cluster_exact_dup().
+    Раунда 32. Та же форма группировки, что _cluster_disputes()/_cluster_exact_dup_full().
 
     Группировка по dest (папка в АРХИВЕ, через _friendly_target_dir), не по source -- в
     отличие от _cluster_disputes() (файлы уходят в _Unsorted, зеркалируя структуру источника,
@@ -662,15 +734,57 @@ def _cluster_dates_review(dates_review_rows: list) -> list:
     как обычно в Albums/ByDate -- "где искать СЕЙЧАС" однозначно только через dest (тот же
     принцип, что уже применён к undated_media/Tier D выше).
 
+    2026-08-02, прямое замечание пользователя (тот же принцип, что уже применён к Tier D в
+    _cluster_undated() ниже): по RULES.md (блок UNDATED) точность даты определяет МЕСТО файла
+    только внутри ByDate -- Albums/ раскладывается по структуре исходных папок независимо от
+    даты, там неважно, точная дата, приблизительная или отсутствует вовсе. Файлы в Albums/
+    отфильтрованы здесь же -- "стоит перепроверить" для них по факту бесполезно (место файла
+    от даты не зависит), тот же довод, что уже был у Tier D.
+
     Возвращает [(folder, [(name, tier), ...]), ...], отсортировано по убыванию размера
     группы."""
+    # Пункт B.9 ("большой разбор report.html", SESSION-HANDOFF.txt): группировка теперь по
+    # АБСОЛЮТНОЙ папке (_win_dirname(dest)), не по уже "офрендленному" _friendly_target_dir()
+    # -- та лишена корня TARGET, из неё нельзя было бы построить file://-ссылку обратно.
+    # Friendly-текст для отображения по-прежнему строится на стороне рендера
+    # (_dates_review_checklist_item()), сам абсолютный путь используется только для href.
     by_folder = defaultdict(list)
     for r in dates_review_rows:
         if r.get("tier") not in ("B", "C"):
             continue
         dest = r.get("dest", "")
+        if "Albums" in dest.split("\\"):
+            continue
         name = _win_basename(dest) or dest
-        by_folder[_friendly_target_dir(dest)].append((name, r.get("tier", "")))
+        by_folder[_win_dirname(dest)].append((name, r.get("tier", "")))
+    groups = [(folder, items) for folder, items in by_folder.items()]
+    groups.sort(key=lambda g: -len(g[1]))
+    return groups
+
+
+def _cluster_undated(undated_rows: list) -> list:
+    """Задача 5 (SESSION-HANDOFF.txt, пакет "боевой прогон D:\\"): тот же паттерн
+    группировки, что уже применён к Tier B/C выше (_cluster_dates_review()) -- на боевом
+    прогоне 274 файла Tier D сплошным абзацем через запятую (без группировки) оказались
+    нечитаемы, старый комментарий ошибочно предполагал, что Tier D "их всегда мало".
+
+    По RULES.md (блок UNDATED) отсутствие даты определяет МЕСТО файла только внутри ByDate
+    (недатированное уходит в ByDate/0000-undated/) -- Albums/ раскладывается по структуре
+    исходных папок независимо от даты, там отсутствие даты ни на что не влияет. Живая
+    проверка на данных того же боевого прогона: все 274 файла лежали в Albums/, ни одного в
+    ByDate/0000-undated/ -- совет "стоит проставить дату" был для них по факту бесполезен
+    (место файла от даты не зависит). Файлы вне ByDate/0000-undated/ отфильтрованы здесь же,
+    ДО подсчёта и рендера -- по решению пользователя не показывать их вообще, не только
+    смягчить тон.
+
+    Возвращает [(folder, [name, ...]), ...], отсортировано по убыванию размера группы."""
+    by_folder = defaultdict(list)
+    for r in undated_rows:
+        dest = r.get("dest", "")
+        if "0000-undated" not in dest.split("\\"):
+            continue
+        name = _win_basename(dest) or dest
+        by_folder[_win_dirname(dest)].append(name)
     groups = [(folder, items) for folder, items in by_folder.items()]
     groups.sort(key=lambda g: -len(g[1]))
     return groups
@@ -701,49 +815,76 @@ def _fmt_video_duration(total_seconds: float) -> str:
     return f"{hours} {_plural(hours, 'час', 'часа', 'часов')}"
 
 
+def _fmt_run_duration(total_seconds: float) -> str:
+    """Длительность ЭТОГО прогона (секция "Пополнение архива", run_stats["duration_seconds"],
+    см. photosort_win.py:_run_impl()) -- в отличие от _fmt_video_duration() выше (округление
+    до целых часов, огрубляет масштаб архива), здесь читатель хочет знать, сколько реально
+    длился именно этот запуск -- часы и минуты словами, не ЧЧ:ММ:СС: отчёт читают один раз
+    постфактум, а не следят за живым таймером (тот формат -- у статус-строки Фазы 2,
+    ProgressReporter._build_two_line_status(), другая аудитория/момент)."""
+    total_seconds = max(int(total_seconds), 0)
+    hours, rem = divmod(total_seconds, 3600)
+    minutes = rem // 60
+    if hours:
+        parts = [f"{hours} {_plural(hours, 'час', 'часа', 'часов')}"]
+        if minutes:
+            parts.append(f"{minutes} {_plural(minutes, 'минута', 'минуты', 'минут')}")
+        return " ".join(parts)
+    if minutes:
+        return f"{minutes} {_plural(minutes, 'минута', 'минуты', 'минут')}"
+    return "меньше минуты"
+
+
 # ============================================================================
 # 3. SVG-графики (инлайн, без внешних библиотек)
 # ============================================================================
 
 
-def _svg_bar_chart(counter: Counter, width=680, height=220, color=COLOR_ACCENT) -> str:
-    items = sorted(counter.items())
-    if not items:
+# SESSION-HANDOFF.txt, "большой разбор report.html" (2026-07-31), пункт B.7 -- живой пример
+# пользователя нашёл: архив с несколькими годами вперемешку (1973 + пробел + 2003-2019)
+# зеркально возможен и с искажённым EXIF (одна битая дата в 1902 среди прочих 2020-х) --
+# заполнять весь диапазон нулевыми годами в ЭТОМ случае раздуло бы график на сотни пустых
+# строк ради одного выброса, а не показало бы реальный провал в истории архива. Порог
+# консервативный (реалистичный "старый диск за много десятилетий", FAQ.md) -- выше него
+# _svg_year_hbar_chart() ниже не пытается угадать, какой конец диапазона выброс, просто не
+# заполняет пропуски (те же годы, что и раньше, без нулевых строк).
+_YEAR_HBAR_MAX_SPAN = 80
+
+
+def _svg_year_hbar_chart(counter: Counter, width=680, bar_h=22, gap=8, color=COLOR_ACCENT) -> str:
+    """Горизонтальные столбики "Медиафайлы по годам" (SESSION-HANDOFF.txt, "большой разбор
+    report.html", пункт B.7) -- та же форма, что "Топ альбомов" (_svg_hbar_chart), но
+    хронологический порядок (не по убыванию значения) и явные нулевые строки для каждого года
+    БЕЗ снимков внутри диапазона архива (см. _YEAR_HBAR_MAX_SPAN про исключение). Раньше
+    вертикальная _svg_bar_chart() просто пропускала отсутствующий год в списке столбцов --
+    неотличимо на глаз от "программа потеряла данные за этот год", хотя снимков за него
+    действительно нет. Замена прежней _svg_bar_chart() -- та же единственная область
+    применения (эта диаграмма и в обычном report.html Sheet2, и в passport.html), горизонтальная
+    форма не нуждается в прореживании подписей (как у вертикальной при большом n) -- у каждого
+    года и так своя строка."""
+    if not counter:
         return ""
+    min_y, max_y = min(counter), max(counter)
+    if max_y - min_y + 1 <= _YEAR_HBAR_MAX_SPAN:
+        items = [(str(y), counter.get(y, 0)) for y in range(min_y, max_y + 1)]
+    else:
+        items = [(str(y), v) for y, v in sorted(counter.items())]
     max_v = max(v for _, v in items) or 1
-    n = len(items)
-    # margin_top 30, не 20 -- освобождает строку под подпись единицы измерения (см. ниже),
-    # не наезжая на числа-подписи над самыми высокими столбцами (SESSION-HANDOFF.txt баг 6:
-    # голое число без "шт."/"файлов" неоднозначно само по себе).
-    margin_left, margin_bottom, margin_top, margin_right = 8, 26, 30, 8
+    margin_left, margin_right = 54, 68
     plot_w = width - margin_left - margin_right
-    plot_h = height - margin_bottom - margin_top
-    gap = plot_w / n
-    bar_w = min(max(gap * 0.6, 4), 64)  # верхний предел -- иначе при n==1 (данные только за
-    # один год) единственный столбец растягивается почти на всю ширину графика (2026-07-21).
-    # 2026-07-26, живая находка пользователя на архиве с 18 разными годами (1973, 2003-2019):
-    # подпись-год ("2005", 4 цифры, ~24-28px при font-size 11) при большом n слипается с
-    # соседними -- MAX_LABELS подобран под plot_w=664 и такую ширину подписи (664/40 ~= 16.6,
-    # округлено). Столбцы рисуются ВСЕ независимо от n (bar_w не опускается ниже 4px до n~170,
-    # далеко за пределами реалистичного архива) -- прореживаются только подписи (и год снизу, и
-    # число сверху -- показывать голое число без года-подписи под ним запутывало бы не меньше).
-    # Первый и последний год -- всегда, остальные через шаг: без этого на 18 годах с шагом 2
-    # ровно последний (самый актуальный, i=17) год мог бы не попасть на подписанные индексы.
-    MAX_LABELS = 16
-    label_step = max(1, math.ceil(n / MAX_LABELS))
-    parts = [f'<text x="{width - margin_right}" y="14" font-size="10" text-anchor="end" '
-             f'fill="{COLOR_TEXT_MUTED}">число файлов</text>']
-    for i, (label, v) in enumerate(items):
-        bar_h = plot_h * (v / max_v)
-        x = margin_left + i * gap + (gap - bar_w) / 2
-        y = margin_top + (plot_h - bar_h)
-        parts.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_w:.1f}" height="{bar_h:.1f}" '
-                      f'fill="{color}" rx="2"/>')
-        if i % label_step == 0 or i == n - 1:
-            parts.append(f'<text x="{x + bar_w / 2:.1f}" y="{height - margin_bottom + 16:.1f}" '
-                          f'font-size="11" text-anchor="middle" fill="{COLOR_TEXT_MUTED}">{html.escape(str(label))}</text>')
-            parts.append(f'<text x="{x + bar_w / 2:.1f}" y="{max(y - 4, 12):.1f}" '
-                          f'font-size="11" text-anchor="middle" fill="{COLOR_TEXT}">{v}</text>')
+    height = len(items) * (bar_h + gap) + gap
+    parts = []
+    y = gap
+    for label, v in items:
+        w = plot_w * (v / max_v) if v else 0.0
+        parts.append(f'<text x="{margin_left - 8}" y="{y + bar_h * 0.68:.1f}" font-size="12" '
+                      f'text-anchor="end" fill="{COLOR_TEXT}">{label}</text>')
+        if w:
+            parts.append(f'<rect x="{margin_left}" y="{y:.1f}" width="{w:.1f}" height="{bar_h}" '
+                          f'fill="{color}" rx="3"/>')
+        parts.append(f'<text x="{margin_left + w + 6:.1f}" y="{y + bar_h * 0.68:.1f}" font-size="12" '
+                      f'fill="{COLOR_TEXT_MUTED}">{_n_files(v)}</text>')
+        y += bar_h + gap
     return (f'<svg viewBox="0 0 {width} {height}" width="100%" height="{height}" role="img" '
             f'aria-label="Медиафайлы по годам">' + "".join(parts) + "</svg>")
 
@@ -858,7 +999,7 @@ body {{
   font-family: "Segoe UI", -apple-system, Roboto, Arial, sans-serif; line-height: 1.5;
 }}
 .sheet {{ max-width: 780px; margin: 0 auto; padding: 28px 20px 12px; }}
-.card {{ background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px; margin-bottom: 16px; }}
+.card {{ background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px; margin-bottom: 16px; overflow-wrap: anywhere; }}
 h1 {{ color: var(--accent); font-size: 28px; margin: 0 0 6px; }}
 h2 {{ color: var(--accent); font-size: 19px; margin: 0 0 12px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }}
 p {{ margin: 8px 0; }}
@@ -892,13 +1033,11 @@ p {{ margin: 8px 0; }}
 .grid-2 .chart-block, .grid-3 .chart-block {{ gap: 14px; }}
 .grid-2 .legend, .grid-3 .legend {{ min-width: 0; }}
 @media (max-width: 640px) {{ .grid-2 {{ grid-template-columns: 1fr; }} }}
-.city-list {{ display: flex; flex-wrap: wrap; gap: 6px 10px; padding: 0; margin: 0; list-style: none; }}
-.city-list li {{ background: var(--bg); border: 1px solid var(--line); border-radius: 999px; padding: 3px 12px; font-size: 14px; }}
 .checklist {{ list-style: none; padding: 0; margin: 0; }}
 .checklist li {{ padding: 10px 0; border-bottom: 1px solid var(--line); }}
 .checklist li:last-child {{ border-bottom: none; }}
 .checklist .title {{ font-weight: 600; }}
-.checklist .detail {{ color: var(--muted); font-size: 14px; margin-top: 2px; }}
+.checklist .detail {{ color: var(--muted); font-size: 14px; margin-top: 2px; overflow-wrap: anywhere; }}
 /* "Показать ещё N" -- <details> без JS, показывает все находки категории (не топ-N с
    отсылкой к CSV, решение пользователя 2026-07-20) без простыни на весь экран сразу. */
 .checklist li.expand {{ padding: 0; }}
@@ -923,6 +1062,47 @@ p {{ margin: 8px 0; }}
 .trust-list {{ list-style: none; padding: 0; margin: 0 0 20px; font-size: 14px; color: var(--text); }}
 .trust-list li {{ padding: 2px 0; }}
 .trust-list li::before {{ content: "✓  "; color: var(--accent); font-weight: 700; }}
+/* [4] Паспорт архива -- "проблем нет" так же заметно, как "проблема есть" (design-сессия
+   2026-07-31), в отличие от .checklist/.trust-list выше, которые вообще не рендерятся при
+   пустой категории -- здесь ВСЕГДА один пункт на каждую проверку, .ok/.attn просто разные
+   маркеры/цвет одного и того же списка. */
+.integrity-list {{ list-style: none; padding: 0; margin: 0; }}
+.integrity-list li {{ padding: 8px 0; border-bottom: 1px solid var(--line); }}
+.integrity-list li:last-child {{ border-bottom: none; }}
+.integrity-list li.ok::before {{ content: "✓  "; color: var(--accent); font-weight: 700; }}
+.integrity-list li.attn::before {{ content: "⚠  "; color: var(--accent2); font-weight: 700; }}
+/* Дерево структуры архива (SESSION-HANDOFF.txt, "большой разбор report.html", пункт A;
+   речь пользователя 2026-08-02, задача 2 -- "без поворотных уголков смотрится непонятно",
+   сделать как на лендинге). Старый вариант ставил border-left на весь вложенный <ul>
+   одной непрерывной высоты -- линия не останавливалась у последнего элемента списка, ничто
+   не отличало "├" (есть ещё соседи ниже) от "└" (последний, ветка кончилась). Новый вариант --
+   тот же приём, что уже на лендинге (index.html/assets/site.css, "Соединительные линии
+   дерева", Design.md): line на КАЖДОМ <li> (не на <ul>), :last-child укорачивает её до
+   середины строки -- это и даёт настоящий "└". Иконка папки -- inline-SVG через CSS mask
+   (та же техника, что и остальные line-иконки сайта, Design.md 4.5), не эмодзи. */
+.tree, .tree ul {{ list-style: none; margin: 0; padding: 0; line-height: 1.85; }}
+.tree ul {{ padding-left: 1.35rem; margin-left: .4rem; }}
+.tree li {{ position: relative; margin: 0; }}
+.tree-name {{ font-weight: 600; }}
+.tree > li > .tree-name {{ color: var(--accent); }}
+.tree-stat {{ color: var(--muted); font-size: 13px; margin-left: 8px; }}
+.tree ul li {{ padding-left: 1.15rem; }}
+.tree ul li::before {{
+  content: ""; position: absolute; left: 0; top: 0; width: 0; height: 100%;
+  border-left: 1px solid var(--line);
+}}
+.tree ul li:last-child::before {{ height: 1em; }}
+.tree ul li::after {{
+  content: ""; position: absolute; left: 0; top: 1em; width: .9rem; height: 0;
+  border-top: 1px solid var(--line);
+}}
+.tree-ico {{
+  display: inline-block; width: .9rem; height: .78rem; margin-right: .35rem;
+  vertical-align: -0.1em; background-color: var(--muted);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M2 5a2 2 0 0 1 2-2h4.5l1.7 2H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5Z'/%3E%3C/svg%3E") center/contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M2 5a2 2 0 0 1 2-2h4.5l1.7 2H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5Z'/%3E%3C/svg%3E") center/contain no-repeat;
+}}
+.tree > li > .tree-ico {{ background-color: var(--accent); }}
 /* Ctrl+C-пакет: баннер прерывания -- самая первая строка отчёта (крупнее trust-banner,
    ochre-акцент вместо зелёного -- та же логика, что у "ОШИБКА" в консоли: не пугающий
    красный, но заметно отличается от обычного нейтрального тона отчёта). */
@@ -1034,7 +1214,7 @@ def _render_sheet1(model: dict, level: str = "target") -> str:
 
     if model["bytes_saved"]:
         stats.append(f'<div class="stat"><div class="value">{_fmt_bytes(model["bytes_saved"])}</div>'
-                      f'<div class="label">сэкономлено на точных повторах</div></div>')
+                      f'<div class="label">сэкономлено на дублях</div></div>')
 
     if is_scan:
         heading, subtitle = "Что нашлось на этом диске", (
@@ -1065,7 +1245,7 @@ def _render_sheet1(model: dict, level: str = "target") -> str:
         place_str = f" ({html.escape(place)})" if place else ""
         # REVIEW-HANDOFF.md, Раунд 40: путь уже вычислен (build_model_from_rows()), но раньше
         # никогда не рендерился -- у пользователя не было способа быстро найти именно этот
-        # файл. Тот же способ отображения, что у near-dup/точных повторов (папка + имя, не
+        # файл. Тот же способ отображения, что у near-dup/дублей (папка + имя, не
         # сырой путь целиком). level=="analyze" (build_model_from_analyze_stats()) кладёт сюда
         # origin_display (путь в ИСТОЧНИКЕ, ByDate/Albums там не бывает) -- folder тогда пусто,
         # деградирует до одного имени файла, не ошибка.
@@ -1073,7 +1253,11 @@ def _render_sheet1(model: dict, level: str = "target") -> str:
         if oldest_path:
             name = html.escape(_win_basename(oldest_path))
             folder = _friendly_target_dir(oldest_path)
-            file_str = f' — {html.escape(folder)}\\{name}' if folder else f' — {name}'
+            file_text = f'{html.escape(folder)}\\{name}' if folder else name
+            # Пункт B.8: file://-ссылка прямо на файл (не на папку), открывает его напрямую --
+            # oldest_path сам абсолютный (level=="target", реальный dest в TARGET), не friendly-
+            # усечённая folder-строка выше (та только для отображения).
+            file_str = f' — {_file_link_or_text(file_text, oldest_path)}'
         parts.append(f'<p><b>Самый старый файл:</b> {date_str}{place_str}{file_str}</p>')
 
     if model["year_months"]:
@@ -1083,11 +1267,9 @@ def _render_sheet1(model: dict, level: str = "target") -> str:
         busiest_y, busiest_n = years.most_common(1)[0]
         parts.append(f'<p><b>Самый насыщенный год:</b> {busiest_y} — {busiest_n} файлов</p>')
 
-    cities = model["cities"]
-    if cities:
-        top_cities = [c for c, _ in cities.most_common(TOP_N)]
-        city_items = "".join(f"<li>{html.escape(c)}</li>" for c in top_cities)
-        parts.append(f'<p><b>География:</b></p><ul class="city-list">{city_items}</ul>')
+    # Пункт D ("большой разбор report.html", SESSION-HANDOFF.txt): блок географии убран из
+    # шапки -- переехал на Лист 2 отдельной диаграммой (_geo_hbar()), город-теги без счётчика
+    # здесь дублировали то же самое менее информативно.
 
     if model["video_duration_seconds"]:
         parts.append(f'<p><b>Видео в архиве:</b> суммарно '
@@ -1098,19 +1280,24 @@ def _render_sheet1(model: dict, level: str = "target") -> str:
     return "".join(parts)
 
 
-def _render_trust_block(level: str) -> str:
+def _render_trust_block(level: str, unreadable_count: int = 0) -> str:
     """4.1/4.3 (PROMPT_report_marketing.md): баннер доверия -- самая частая рекомендация всех
     шести источников маркетингового ТЗ, полностью отсутствовала в HTML (фраза была только в
     консоли, photosort_win.py:6484/6209). Одна строка, НЕ карточка целиком (раздел 4.1 явно
     просит не раздувать плотный первый экран) + компактный чек-лист из уже существующих фактов
     рядом с ней (раздел 4.3, perplexity-источник) -- задача снять тревогу за первые секунды
     просмотра, не сообщить что-то новое. В самом начале ЛЮБОГО отчёта (все level), включая
-    заглушку (см. generate_placeholder_report())."""
+    заглушку (см. generate_placeholder_report()).
+
+    unreadable_count (пункт B.1, "большой разбор report.html", SESSION-HANDOFF.txt): пункт про
+    ошибки чтения раньше выводился безусловно -- на чистом архиве без единого нечитаемого
+    файла звучал как ответ на вопрос, которого никто не задавал ("а что, были ошибки?")."""
     items = [
         "Файлы не удалялись.",
         "Оригиналы сохранены на своих местах.",
-        "Ошибки чтения показаны отдельно, не смешаны с остальным.",
     ]
+    if unreadable_count:
+        items.append("Ошибки чтения показаны отдельно, не смешаны с остальным.")
     if level != "target":
         items.append("Реальных изменений на диске нет — это предпросмотр.")
     li = "".join(f"<li>{html.escape(t)}</li>" for t in items)
@@ -1167,8 +1354,8 @@ def _render_this_run(run_stats: dict, level: str = "target") -> str:
         "Показывает, что произошло бы, если бы это была настоящая сборка — реальных "
         "изменений на диске нет, ничего не скопировано."
         if preview else
-        "Только то, что сделал именно этот запуск программы — весь остальной отчёт ниже "
-        "про архив целиком, за всё время."
+        "Только то, что сделал именно этот запуск программы. Чтобы проверить весь архив "
+        "целиком — используйте «Паспорт архива» отдельно (см. совет в конце отчёта)."
     )
     # "новых файлов", не "фото и видео" -- RAW теперь тоже входит в n_new_total (см. выше).
     added_label = "новых файлов было бы добавлено" if preview else "новых файлов добавлено"
@@ -1219,6 +1406,16 @@ def _render_this_run(run_stats: dict, level: str = "target") -> str:
         found_label = "нашлось бы на источнике" if preview else "найдено на источнике"
         stats_html.append(f'<div class="stat"><div class="value">{processed_total}</div>'
                            f'<div class="label">{found_label}</div></div>')
+    # Живой репорт пользователя (2026-08-01): сколько реально заняло время -- duration_seconds
+    # считается в photosort_win.py:_run_impl() (run_start уже существовал для тайминг-логов
+    # Фазы 0, просто раньше не доживал до stats). Не "было бы" в preview -- сканирование/анализ
+    # в [2]/--dry-run РЕАЛЬНО заняли это время (в отличие от копирования/дедупа выше, которые
+    # в dry-run гипотетические) -- меняется только существительное (проверка/сборка), не модальность.
+    duration_seconds = run_stats.get("duration_seconds", 0)
+    if duration_seconds:
+        duration_label = "заняла проверка" if preview else "заняла сборка"
+        stats_html.append(f'<div class="stat"><div class="value">{_fmt_run_duration(duration_seconds)}</div>'
+                           f'<div class="label">{duration_label}</div></div>')
 
     parts = [
         '<div class="card">', f"<h2>{html.escape(heading)}</h2>",
@@ -1249,16 +1446,42 @@ def _render_this_run(run_stats: dict, level: str = "target") -> str:
     parts.append('<div class="stat-row">')
     parts += stats_html + ["</div>"]
 
+    # SESSION-HANDOFF.txt, пакет "боевой прогон D:\", задача 2: диаграмма без пояснения не
+    # давала понять, что физически легло в архив, а что нет (напр. "Спорные" копируются в
+    # _Unsorted, а "Дубли" -- вообще нет, но оба не входят в счётчик "Итоговый архив") --
+    # статус теперь виден прямо в подписи легенды, не только в отдельном тексте карточки.
+    new_label = "Новые файлы — были бы в архиве" if preview else "Новые файлы — в архиве"
+    dup_label = ("Дубли — не копировались бы, уже есть в архиве" if preview else
+                 "Дубли — не копировались, уже есть в архиве")
+    near_dup_label = ("Похожие кадры — были бы в архиве (сохранены рядом)" if preview else
+                       "Похожие кадры — в архиве (сохранены рядом)")
+    unreadable_label = ("Не прочитано — не было бы скопировано (ошибка чтения)" if preview else
+                         "Не прочитано — не скопировано (ошибка чтения)")
+    disputed_label = ("Спорные — были бы сохранены отдельно, не в архиве (_Unsorted)" if preview else
+                       "Спорные — сохранены отдельно, не в архиве (_Unsorted)")
     segments = [
-        ("Новые файлы", max(n_new_total - n_near_dup, 0), CATEGORY_PALETTE[0]),
-        ("Точные повторы", n_skipped, CATEGORY_PALETTE[1]),
-        ("Похожие кадры сохранены", n_near_dup, CATEGORY_PALETTE[2]),
-        ("Не прочитано", n_unreadable, CATEGORY_PALETTE[3]),
-        ("Спорные", n_disputed, CATEGORY_PALETTE[4]),
+        (new_label, max(n_new_total - n_near_dup, 0), CATEGORY_PALETTE[0]),
+        (dup_label, n_skipped, CATEGORY_PALETTE[1]),
+        (near_dup_label, n_near_dup, CATEGORY_PALETTE[2]),
+        (unreadable_label, n_unreadable, CATEGORY_PALETTE[3]),
+        (disputed_label, n_disputed, CATEGORY_PALETTE[4]),
     ]
     svg, legend = _svg_pie(segments)
     if svg:
         parts.append(f'<div class="chart-block">{svg}<div class="legend">{legend}</div></div>')
+        # Итоговая строка с явным двоичным итогом -- легло физически на диск (новые, включая
+        # near-dup, которые уже входят в n_new_total, см. photosort_win.py:5713 + спорные,
+        # физически копируемые в _Unsorted) против не скопировано вообще (дубли + нечитаемое).
+        landed = n_new_total + n_disputed
+        not_copied = n_skipped + n_unreadable
+        if landed or not_copied:
+            landed_verb = "легло бы физически" if preview else "легло физически"
+            not_copied_verb = "не было бы скопировано" if preview else "не скопировано"
+            parts.append(
+                f'<p class="muted">Итого: {_n_files(landed)} {landed_verb} '
+                f'(новые + похожие + спорные), {_n_files(not_copied)} {not_copied_verb} '
+                f'(дубли + не прочитано).</p>'
+            )
 
     # 2026-07-26, по просьбе пользователя: разбивка по типу файла для каждой категории этой
     # диаграммы, не только для "Новых файлов" выше (у которой уже есть своя подпись в тайле).
@@ -1270,7 +1493,7 @@ def _render_this_run(run_stats: dict, level: str = "target") -> str:
             "raw": run_stats.get("skipped_present_raw", 0),
             "video": run_stats.get("skipped_present_video", 0),
             "other": run_stats.get("skipped_present_other", 0),
-        }), "Точные повторы"),
+        }), "Дубли"),
         _type_breakdown_caption(Counter({
             "image": run_stats.get("near_dup_image", 0),
             "video": run_stats.get("near_dup_video", 0),
@@ -1290,6 +1513,17 @@ def _render_this_run(run_stats: dict, level: str = "target") -> str:
     ) if c]
     if breakdown_captions:
         parts.append('<p class="muted">' + '<br>'.join(html.escape(c) for c in breakdown_captions) + '</p>')
+    if n_disputed:
+        # Пункт B.6 ("большой разбор report.html", SESSION-HANDOFF.txt): "Спорные — N файлов"
+        # раньше оставалось голым числом в легенде диаграммы -- ни разу не объяснялось, ПОЧЕМУ
+        # файл спорный и что он не потерян. Общие категории причин (не по каждому файлу --
+        # детали по каждому уже даёт чек-лист "Новое в этом пополнении" ниже, если он есть,
+        # см. _dispute_checklist_item()), одна фраза-объяснение на всю карточку.
+        parts.append(
+            '<p class="muted">Спорные — маленькие/похожие на иконку изображения, '
+            'анимированные GIF, файлы с повреждёнными данными или нечитаемыми метаданными. '
+            'Они не потеряны — лежат в _Unsorted для проверки вручную.</p>'
+        )
 
     # Куда И откуда -- album_merge_events это пары (альбом, prefix), prefix -- реальный путь
     # от корня SOURCE до места, откуда пришли файлы (см. photosort_win.py:find_album()/
@@ -1304,7 +1538,35 @@ def _render_this_run(run_stats: dict, level: str = "target") -> str:
         parts.append(f'<p><b>{merge_heading}</b></p>')
         for album in sorted(by_album)[:TOP_N]:
             sources = "; ".join(html.escape(p) for p in sorted(by_album[album]))
-            parts.append(f'<p class="muted">«{html.escape(album)}» ← {sources}</p>')
+            # Пункт B.4 ("большой разбор report.html", SESSION-HANDOFF.txt): "куда" -- путь от
+            # корня архива ("Albums\дедушка"), не голое имя альбома -- однозначно отличимо от
+            # "откуда" (полный путь от корня SOURCE, уже показан справа, не трогаем).
+            parts.append(f'<p class="muted">«Albums\\{html.escape(album)}» ← {sources}</p>')
+
+    # Пункт B.2 ("большой разбор report.html", SESSION-HANDOFF.txt): список запароленных
+    # архивов с полным путём -- раньше был только счётчик (см. print_analyze_report()/
+    # build_final_summary() в консоли), путь реально уже есть в walker.archive_logs.
+    encrypted = run_stats.get("encrypted_archives") or []
+    if encrypted:
+        parts.append('<p><b>Архивы, защищённые паролем, — не распакованы:</b></p>')
+        paths = "; ".join(_file_link_or_text(html.escape(p), p) for p in sorted(encrypted)[:TOP_N])
+        more = (f" и ещё {len(encrypted) - TOP_N}"
+                if len(encrypted) > TOP_N else "")
+        parts.append(f'<p class="muted">{paths}{more}. Программа не подбирает пароли -- '
+                      'распакуйте вручную и запустите сборку ещё раз, чтобы попало и содержимое.</p>')
+
+    # Живой репорт пользователя (2026-08-01): классическая DVD-Video-структура (VIDEO_TS/*.vob)
+    # не распознаётся программой как медиа вообще (см. SESSION-HANDOFF.txt, отложенная идея про
+    # полноценную поддержку) -- не молчим про это, тот же паттерн, что и у запароленных архивов
+    # чуть выше.
+    dvd_folders = run_stats.get("dvd_folders") or []
+    if dvd_folders:
+        parts.append('<p><b>DVD-видео (VIDEO_TS) — не скопировано:</b></p>')
+        dvd_paths = "; ".join(_file_link_or_text(html.escape(p), p) for p in sorted(set(dvd_folders))[:TOP_N])
+        dvd_more = (f" и ещё {len(set(dvd_folders)) - TOP_N}"
+                    if len(set(dvd_folders)) > TOP_N else "")
+        parts.append(f'<p class="muted">{dvd_paths}{dvd_more}. Формат DVD-Video сейчас не '
+                      'поддерживается -- при желании скопируйте видео в архив вручную.</p>')
 
     # "Альбом умер" -- источник целиком совпал с уже существующим содержимым архива: столько
     # файлов встретилось (source_album_seen), сколько реально дописалось (source_album_appended,
@@ -1355,9 +1617,136 @@ def _find_year_gap(years: Counter):
     return best_year
 
 
+def _split_home_and_foreign(cities: Counter) -> tuple:
+    """Пункт D ("большой разбор report.html", SESSION-HANDOFF.txt): place_for_gps()
+    (photosort_win.py) отдаёт "Город" для домашней страны (cfg.home_country) и "Город, CC"
+    (ISO alpha-2) для остального мира -- код страны нигде дальше по конвейеру отдельно не
+    хранится (ни в appended.csv, ни в модели отчёта), поэтому разбирается здесь по наличию
+    ", " -- самый дешёвый путь, без изменения схемы CSV/photosort_win.py. Хрупкость: если
+    когда-либо у названия города в данных reverse_geocoder появится собственная запятая,
+    разбор сломается -- маловероятно (стандартные англоязычные топонимы geocoder'а), но
+    затронутые записи в этом случае просто уйдут в "домашние" (не наоборот, безопаснее).
+
+    Возвращает (home_cities: Counter[город -> N], foreign_countries: Counter[страна -> N])
+    -- страна уже переведена на русский (_country_name_ru()), несколько городов одной страны
+    суммируются в одну запись."""
+    home, foreign = Counter(), Counter()
+    for place, n in cities.items():
+        if ", " in place:
+            _city, cc = place.rsplit(", ", 1)
+            foreign[_country_name_ru(cc)] += n
+        else:
+            home[place] += n
+    return home, foreign
+
+
+def _geo_hbar(cities: Counter, width: int = 680) -> str:
+    """Горизонтальные столбики "География" (пункт D) -- заменяет прежнюю круговую диаграмму
+    (Sheet2 обычного report.html и Паспорт архива, общий хелпер для обеих, тот же принцип,
+    что и у _svg_year_hbar_chart()). Без "прочих": домашние города и зарубежные страны --
+    два отдельных, самостоятельно подписанных списка (топ-N каждый), не общая диаграмма с
+    одним смешанным "остальное"-сектором, как было у круговой версии."""
+    home, foreign = _split_home_and_foreign(cities)
+    if not home and not foreign:
+        return ""
+    parts = []
+    if home:
+        items = [(city, n, _n_files(n)) for city, n in home.most_common(TOP_N)]
+        parts.append('<p class="muted"><b>По вашим местам</b></p>'
+                      + _svg_hbar_chart(items, width=width, aria_label="География — свои места"))
+    if foreign:
+        items = [(country, n, _n_files(n)) for country, n in foreign.most_common(TOP_N)]
+        parts.append('<p class="muted"><b>Остальной мир</b></p>'
+                      + _svg_hbar_chart(items, width=width, color=COLOR_ACCENT_SECONDARY,
+                                        aria_label="География — остальной мир"))
+    return "".join(parts)
+
+
+_MIN_DISTINCT_CAMERAS = 3  # пункт E: "одного-двух пунктов" из ТЗ -- меньше 3 разных камер не
+# складывается в осмысленный "топ" (нечего ранжировать), диаграмма не рендерится совсем.
+
+
+def _top_cameras_chart(cameras: Counter, width: int = 680) -> str:
+    """Пункт E ("большой разбор report.html", SESSION-HANDOFF.txt): "Топ камер/устройств
+    съёмки" -- горизонтальные столбики (не pie: проценты считались бы от файлов-с-известной-
+    камерой, не от всего архива, а многие архивы почти сплошь без EXIF-камеры -- вводящее в
+    заблуждение "100%" на диаграмме, где на самом деле известна камера у трети файлов). Файлы
+    без определённой камеры -- не искусственная категория "неизвестно", просто не в
+    диаграмме."""
+    if len(cameras) < _MIN_DISTINCT_CAMERAS:
+        return ""
+    items = [(cam, n, _n_files(n)) for cam, n in cameras.most_common(TOP_N)]
+    return _svg_hbar_chart(items, width=width, aria_label="Топ камер/устройств съёмки")
+
+
+def _render_geo_card(cities: Counter) -> str:
+    """[4] Паспорт архива (2026-07-31): "География" как отдельная карточка, не часть grid-3
+    _render_sheet2() -- паспорт не строит остальные диаграммы того листа (тип медиа/объём/
+    качество и т.д.), только целостность+сводка+года, географии там пока не было вовсе."""
+    hbar = _geo_hbar(cities)
+    if not hbar:
+        return ""
+    return f'<div class="card"><h2>География</h2>{hbar}</div>'
+
+
+# SESSION-HANDOFF.txt, "большой разбор report.html", пункт A (дерево структуры архива) --
+# нужен и для [4] Паспорт архива (`generate_passport_report()`, реальная структура TARGET),
+# и для analyze/analyze-quick/analyze-full (`generate_report_from_analyze_stats()`,
+# предсказание БУДУЩЕЙ структуры SOURCE) -- оба получают Counter'ы с одинаковой формой ключей
+# (photosort_win.py:run_analyze(), AnalyzeStats.tree_folder_counts/tree_folder_bytes,
+# "Albums/Свадьба", "ByDate/2024/2024-07 [PhotoArchive]", "RAW", "_Unsorted", ...), эта пара
+# функций строит из них рендер, ничего не зная про TARGET/SOURCE. dry-run ([2]/CLI --dry-run)
+# сознательно НЕ подключён -- отдельный код-путь (run_for_source()/decide(), не
+# run_analyze()), нужна отдельная сессия по проводке статистики, не решение "заодно".
+_TREE_TOP_ORDER = ["Albums", "ByDate", "RAW", "_Unsorted"]
+
+
+def _build_archive_tree(tree_folder_counts: Counter, tree_folder_bytes: Counter) -> dict:
+    """Плоский Counter (ключ — "/"-путь бакета) -> вложенный dict для рендера. own — (n, bytes)
+    ИМЕННО этого узла БЕЗ вложенных (дословно из ТЗ) — суммировать по поддереву решили не
+    делать (см. дизайн-обсуждение с пользователем), узел без собственных файлов, но с
+    непустыми children — обычная промежуточная папка (сам "ByDate", год "2024" и т.д.)."""
+    root = {"own": (0, 0), "children": {}}
+    for key, n in tree_folder_counts.items():
+        node = root
+        for part in key.split("/"):
+            node = node["children"].setdefault(part, {"own": (0, 0), "children": {}})
+        node["own"] = (n, tree_folder_bytes.get(key, 0))
+    return root
+
+
+def _render_tree_children(children: dict, order: list = None) -> str:
+    if not children:
+        return ""
+    names = list(order) if order else []
+    names += sorted(n for n in children if n not in names)
+    names = [n for n in names if n in children]
+    items = []
+    for name in names:
+        node = children[name]
+        own_n, own_bytes = node["own"]
+        stat = (f'<span class="tree-stat">{_n_files(own_n)}, {_fmt_bytes(own_bytes)}</span>'
+                if own_n else "")
+        nested = _render_tree_children(node["children"])
+        items.append(f'<li><span class="tree-ico"></span>'
+                      f'<span class="tree-name">{html.escape(name)}</span>{stat}'
+                      f'{f"<ul>{nested}</ul>" if nested else ""}</li>')
+    return "".join(items)
+
+
+def _render_archive_tree_card(tree_folder_counts: Counter, tree_folder_bytes: Counter) -> str:
+    if not tree_folder_counts:
+        return ""
+    root = _build_archive_tree(tree_folder_counts, tree_folder_bytes)
+    body = _render_tree_children(root["children"], order=_TREE_TOP_ORDER)
+    if not body:
+        return ""
+    return f'<div class="card"><h2>Структура архива</h2><ul class="tree">{body}</ul></div>'
+
+
 def _render_sheet2(model: dict) -> str:
     parts = ['<div class="card">', "<h2>Медиафайлы по годам</h2>"]
-    years_svg = _svg_bar_chart(model["years"])
+    years_svg = _svg_year_hbar_chart(model["years"])
     if years_svg:
         parts.append(years_svg)
     else:
@@ -1374,14 +1763,14 @@ def _render_sheet2(model: dict) -> str:
         )
     parts.append("</div>")
 
-    # 2026-07-26, по просьбе пользователя: "Точные повторы" на диаграмме "Итог решений
+    # 2026-07-26, по просьбе пользователя: "Дубли" на диаграмме "Итог решений
     # программы" не показывали разбивку по типу файла -- см. model["skipped_present_by_type"]
     # (build_model_from_rows(), классификация matched_with тем же _media_kind(), что и "Тип
     # медиа"/"Объём по категориям" выше). Подпись только ненулевых категорий, "" если считать
     # нечего (analyze-уровень: build_model_from_analyze_stats() не строит эту разбивку вообще,
     # .get() выше по функции даёт пустой Counter).
     dup_type_caption = _type_breakdown_caption(
-        model.get("skipped_present_by_type", Counter()), "Точные повторы")
+        model.get("skipped_present_by_type", Counter()), "Дубли")
 
     pie_charts = [
         ("Тип медиа", [
@@ -1404,7 +1793,7 @@ def _render_sheet2(model: dict) -> str:
         ], _fmt_bytes, ""),
         ("Итог решений программы", [
             ("Новые файлы", model["decisions"]["appended"], CATEGORY_PALETTE[0]),
-            ("Точные повторы", model["decisions"]["skipped_present"], CATEGORY_PALETTE[1]),
+            ("Дубли", model["decisions"]["skipped_present"], CATEGORY_PALETTE[1]),
             ("Похожие кадры сохранены", model["decisions"]["near_dup"], CATEGORY_PALETTE[2]),
             ("Не прочитано", model["decisions"]["unreadable"], CATEGORY_PALETTE[3]),
             ("Спорные", model["decisions"]["disputed"], CATEGORY_PALETTE[4]),
@@ -1429,18 +1818,6 @@ def _render_sheet2(model: dict) -> str:
             ("Низкая уверенность", model["quality_flags"].get("low_confidence_photo", 0), CATEGORY_PALETTE[3]),
         ], _n_files, ""),
     ]
-
-    # География -- топ-5 мест + "остальные" одним сектором (иначе десяток тонких клиньев не
-    # читается); те же места уже показаны как теги-плашки в "Ваш архив", здесь -- с числами и
-    # долями, не просто список имён.
-    if model["cities"]:
-        top_cities = model["cities"].most_common(5)
-        rest = sum(model["cities"].values()) - sum(v for _, v in top_cities)
-        geo_segments = [(name, v, CATEGORY_PALETTE[i % len(CATEGORY_PALETTE)])
-                        for i, (name, v) in enumerate(top_cities)]
-        if rest > 0:
-            geo_segments.append(("Остальные места", rest, COLOR_LINE))
-        pie_charts.append(("География", geo_segments, _n_files, ""))
 
     # Раскладка по типу подачи, не просто "рядом чтобы компактно" (решение пользователя
     # 2026-07-20): круговые диаграммы -- у всех подпись сбоку (circle+legend, одна визуальная
@@ -1476,6 +1853,20 @@ def _render_sheet2(model: dict) -> str:
             f'{hbar}</div>'
         )
 
+    # Пункт D ("большой разбор report.html", SESSION-HANDOFF.txt): круговая диаграмма
+    # географии заменена на горизонтальные столбики (_geo_hbar()) -- та же полноширинная
+    # карточка, что и "Топ альбомов" выше (hbar-графику нужна настоящая ширина, не колонка
+    # grid-3).
+    geo_hbar = _geo_hbar(model["cities"])
+    if geo_hbar:
+        parts.append(f'<div class="card"><h2>География</h2>{geo_hbar}</div>')
+
+    # Пункт E: освободившийся слот на Листе 2 (см. коммент у "География" выше) -- "Топ камер/
+    # устройств съёмки".
+    cameras_hbar = _top_cameras_chart(model.get("cameras", Counter()))
+    if cameras_hbar:
+        parts.append(f'<div class="card"><h2>Топ камер/устройств съёмки</h2>{cameras_hbar}</div>')
+
     return "".join(parts)
 
 
@@ -1485,13 +1876,43 @@ def _folder_label(path: str) -> str:
     return _win_basename(path) or path or "корень источника"
 
 
-def _dispute_checklist_item(group: tuple) -> tuple:
+_ABS_WIN_PATH_RE = re.compile(r"^[A-Za-z]:\\")
+
+
+def _file_link_or_text(display_html: str, path: str) -> str:
+    """Пункты B.8/B.9 ("большой разбор report.html", SESSION-HANDOFF.txt): file://-ссылка на
+    реальный абсолютный Windows-путь -- тот же паттерн, что уже есть у "Открыть папку с
+    архивом" в _render_cta_block(). Работает только когда path реально абсолютный (диск+буква,
+    ":\\") -- level=="analyze" кладёт сюда origin_display (путь В ИСТОЧНИКЕ, но БЕЗ корня
+    SOURCE, см. SourceItem.origin_display) -- ссылка туда вела бы в никуда, лучше оставить
+    обычным текстом, чем показать нерабочую ссылку."""
+    if not path or not _ABS_WIN_PATH_RE.match(path):
+        return display_html
+    href = "file:///" + path.replace("\\", "/")
+    return f'<a href="{html.escape(href)}" target="_blank" rel="noopener">{display_html}</a>'
+
+
+def _unsorted_link(target_path: str = None) -> str:
+    """Пункт B.5 ("большой разбор report.html", SESSION-HANDOFF.txt): адрес спорных файлов
+    ВСЕГДА один и тот же (_Unsorted, не варьируется) -- безусловная file://-ссылка на неё, тот
+    же паттерн, что и "Открыть папку с архивом" в _render_cta_block(). target_path=None
+    (analyze-уровень -- нет реального TARGET) -- откатывается на голый текст, как раньше."""
+    if not target_path:
+        return "_Unsorted"
+    href = "file:///" + os.path.join(target_path, "_Unsorted").replace("\\", "/")
+    return f'<a href="{html.escape(href)}" target="_blank" rel="noopener">_Unsorted</a>'
+
+
+def _dispute_checklist_item(group: tuple, target_path: str = None) -> tuple:
     folder, items = group
     labels = [f"{html.escape(name)} ({html.escape(_dispute_reason_label(reason))})"
               for name, reason in items[:5]]
     more = f" и ещё {len(items) - 5} {_plural(len(items) - 5, 'файл', 'файла', 'файлов')}" if len(items) > 5 else ""
-    folder_line = f"Папка: {html.escape(_folder_label(folder))}." if folder else ""
-    action_line = f"Лежат в _Unsorted: {', '.join(labels)}{more}."
+    # Пункт B.9: folder -- уже абсолютный путь-источник (_win_dirname(row["source"]), см.
+    # _cluster_disputes()), _folder_label() -- только display-текст (базовое имя).
+    folder_line = (f"Папка: {_file_link_or_text(html.escape(_folder_label(folder)), folder)}."
+                   if folder else "")
+    action_line = f"Лежат в {_unsorted_link(target_path)}: {', '.join(labels)}{more}."
     detail = f"{folder_line}<br>{action_line}" if folder_line else action_line
     return f"{_n_files(len(items))} не удалось однозначно распознать", detail
 
@@ -1507,10 +1928,29 @@ def _dates_review_checklist_item(group: tuple) -> tuple:
     labels = [f"{html.escape(name)} ({html.escape(_DATE_TIER_LABELS.get(tier, tier))})"
               for name, tier in items[:5]]
     more = f" и ещё {len(items) - 5} {_plural(len(items) - 5, 'файл', 'файла', 'файлов')}" if len(items) > 5 else ""
-    folder_line = f"Папка: {html.escape(folder)}." if folder else ""
+    # folder -- абсолютная папка в TARGET (_cluster_dates_review()); friendly-текст для показа
+    # строится тем же _friendly_target_dir(), что и у near-dup -- фиктивное имя файла на конце,
+    # функция всё равно отбрасывает последний сегмент (см. её докстринг).
+    friendly = _friendly_target_dir(folder + "\\x") if folder else ""
+    folder_line = f"Папка: {_file_link_or_text(html.escape(friendly), folder)}." if friendly else ""
     action_line = f"Стоит перепроверить при желании: {', '.join(labels)}{more}."
     detail = f"{folder_line}<br>{action_line}" if folder_line else action_line
     return f"{_n_files(len(items))} получили дату приблизительно", detail
+
+
+def _undated_checklist_item(group: tuple) -> tuple:
+    """Задача 5: тот же паттерн, что _dates_review_checklist_item() -- превью на 5 файлов +
+    folder_line (кликабельная ссылка на саму папку под ByDate/0000-undated/, по решению
+    пользователя -- та же ссылка, что уже даёт Tier B/C, здесь раньше не было вообще).
+    group -- уже отфильтрован до ByDate/0000-undated/ (см. _cluster_undated())."""
+    folder, items = group
+    names = [html.escape(n) for n in items[:5]]
+    more = f" и ещё {len(items) - 5} {_plural(len(items) - 5, 'файл', 'файла', 'файлов')}" if len(items) > 5 else ""
+    friendly = _friendly_target_dir(folder + "\\x") if folder else ""
+    folder_line = f"Папка: {_file_link_or_text(html.escape(friendly), folder)}." if friendly else ""
+    action_line = f"Стоит проставить дату вручную при желании: {', '.join(names)}{more}."
+    detail = f"{folder_line}<br>{action_line}" if folder_line else action_line
+    return f"{_n_files(len(items))} вообще без даты", detail
 
 
 def _friendly_target_dir(dest: str) -> str:
@@ -1535,7 +1975,14 @@ def _li(title: str, detail: str) -> str:
     return f'<li><div class="title">{html.escape(title)}</div><div class="detail">{detail}</div></li>'
 
 
-def _cluster_checklist_item(cluster: list) -> tuple:
+def _cluster_checklist_item(cluster: list, verify_link: str = None) -> tuple:
+    """verify_link (задача 6, SESSION-HANDOFF.txt, пакет "боевой прогон D:\\"): страница
+    "Полная сверка" (см. generate_dedup_verification_page()/_render_near_dup_verification_
+    section()) -- при len(dirs)>1 (разные папки, до этой задачи расползался на построчный
+    список путей одного файла на строку, live-примеры на боевом прогоне дали разнобой с
+    компактной однопапочной веткой ниже) теперь ссылка на полный список вместо построчного
+    повтора здесь. None (level!="target", страница не строится вовсе, см. generate_report())
+    -- откатывается на старый построчный список, ссылаться некуда."""
     names = [_win_basename(p) for p in cluster[:5]]
     more = f" и ещё {len(cluster) - 5}" if len(cluster) > 5 else ""
     dirs = {_win_dirname(p) for p in cluster}
@@ -1545,28 +1992,51 @@ def _cluster_checklist_item(cluster: list) -> tuple:
     # путь при каждом имени.
     if len(dirs) == 1:
         folder = _friendly_target_dir(cluster[0])
-        folder_line = f"Папка: {html.escape(folder)}." if folder else ""
+        # Пункт B.9 ("большой разбор report.html", SESSION-HANDOFF.txt): file://-ссылка на
+        # папку -- _win_dirname(cluster[0]), не friendly-строку выше (та только для показа).
+        # REVIEW-HANDOFF.md, Раунд 45 [БЛОКЕР]: раньше здесь был os.path.dirname() -- на
+        # ubuntu-latest (os.path==posixpath, не понимает "\\") тот отдаёт "" для Windows-пути
+        # целиком, ссылка молча пропадала, не считая пустую строку по всему проекту (кроме
+        # этого места) -- _win_dirname() уже используется двумя строками выше в этой же функции.
+        folder_line = (f"Папка: {_file_link_or_text(html.escape(folder), _win_dirname(cluster[0]))}."
+                        if folder else "")
         files = ", ".join(html.escape(n) for n in names)
+        action_line = "Стоит вручную выбрать лучший: " + files + more
+        # Папка и список файлов -- две разные мысли (где искать / что сравнить), раздельные
+        # строки читаются, склеенные в одну через точку -- нет.
+        detail = f"{folder_line}<br>{action_line}" if folder_line else action_line
+    elif verify_link:
+        detail = (
+            "Кадры лежат в разных папках. Полный список — в «Полной сверке»: "
+            f'<a href="{html.escape(verify_link)}" target="_blank" rel="noopener">'
+            "полная сверка похожих серий →</a>."
+        )
     else:
-        folder_line = ""
+        # Разные папки, полной сверки нет (level!="target") -- ссылка на каждый файл
+        # индивидуально (не на общую папку, её нет), тот же принцип file://, что и "Самый
+        # старый файл" (B.8).
         files = ", ".join(
-            html.escape((_friendly_target_dir(p) + "\\" if _friendly_target_dir(p) else "") + n)
+            _file_link_or_text(
+                html.escape((_friendly_target_dir(p) + "\\" if _friendly_target_dir(p) else "") + n), p)
             for p, n in zip(cluster[:5], names, strict=True)
         )
-    action_line = "Стоит вручную выбрать лучший: " + files + more
-    # Папка и список файлов -- две разные мысли (где искать / что сравнить), раздельные
-    # строки читаются, склеенные в одну через точку -- нет.
-    detail = f"{folder_line}<br>{action_line}" if folder_line else action_line
+        detail = "Стоит вручную выбрать лучший: " + files + more
     return f"Похожая серия из {len(cluster)} кадров", detail
 
 
-def _build_checklist_items(fields: dict) -> list:
+def _build_checklist_items(fields: dict, target_path: str = None, verify_link: str = None) -> list:
     """Строит список готовых <li>...</li> Листа 3 из полей _build_checklist_fields() --
     вынесено отдельно от рендера 2026-07-20, чтобы вызывать на "новом" и "старом"
     подмножестве раздельно (см. _generate_from_model()). Каждая категория с несколькими
     находками (сейчас только near-dup-серии) сворачивается независимо от других -- превью
     CHECKLIST_PREVIEW_N + <details> на оставшееся, БЕЗ отсылки к CSV (пользователь отчёт
-    открывает вместо логов -- решение пользователя 2026-07-20)."""
+    открывает вместо логов -- решение пользователя 2026-07-20).
+
+    target_path (пункт B.5): доходит до _dispute_checklist_item()/_unsorted_link() -- None
+    (analyze-уровень, нет реального TARGET) откатывается на голый текст "_Unsorted".
+
+    verify_link (задача 6): доходит до _cluster_checklist_item() -- None (level!="target",
+    страница "Полная сверка" не строится) откатывается на старый построчный список путей."""
     items = []
 
     clusters = fields["near_dup_clusters"]
@@ -1580,7 +2050,7 @@ def _build_checklist_items(fields: dict) -> list:
             "Все кадры уже сохранены, ничего не сломается, если оставить как есть — "
             "разбор ниже просто для удобства, не для того, чтобы что-то доделать.",
         ))
-        cluster_lis = [_li(*_cluster_checklist_item(c)) for c in clusters]
+        cluster_lis = [_li(*_cluster_checklist_item(c, verify_link)) for c in clusters]
         items.extend(cluster_lis[:CHECKLIST_PREVIEW_N])
         rest = cluster_lis[CHECKLIST_PREVIEW_N:]
         if rest:
@@ -1596,7 +2066,7 @@ def _build_checklist_items(fields: dict) -> list:
         if dispute_groups:
             # Раунд 32, задача 2 (REVIEW-HANDOFF.md): имя файла + причина спора, не только
             # число на папку -- тот же <details>/"Показать ещё" паттерн, что near-dup выше.
-            dispute_lis = [_li(*_dispute_checklist_item(g)) for g in dispute_groups]
+            dispute_lis = [_li(*_dispute_checklist_item(g, target_path)) for g in dispute_groups]
             items.extend(dispute_lis[:CHECKLIST_PREVIEW_N])
             rest = dispute_lis[CHECKLIST_PREVIEW_N:]
             if rest:
@@ -1613,14 +2083,28 @@ def _build_checklist_items(fields: dict) -> list:
             folders = fields["disputes_by_folder"].most_common(TOP_N)
             folder_detail = "; ".join(f"{html.escape(_folder_label(f))} ({n})" for f, n in folders)
             # "где искать" и "какие папки-источники" -- две разные мысли, отдельные строки.
-            detail = "Лежат в _Unsorted."
+            detail = f"Лежат в {_unsorted_link(target_path)}."
             if folder_detail:
                 detail += f"<br>Сгруппированы по исходной папке: {folder_detail}."
             items.append(_li(f"{_n_files(fields['disputes_total'])} не удалось однозначно распознать", detail))
 
     if fields["dates_review_bc_total"]:
-        review_groups = fields.get("dates_review_detail", [])
-        if review_groups:
+        # 2026-08-02: dates_review_detail -- None означает "detail вообще недоступен"
+        # (analyze-уровень, build_model_from_analyze_stats не отслеживает source/dest на
+        # файл поштучно) -- отличается от [] ("detail доступен, но ПОСЛЕ фильтра до
+        # ByDate-файлов ничего не осталось", см. _cluster_dates_review()) -- тот же паттерн,
+        # что уже применён к undated_detail/Tier D ниже.
+        review_groups = fields.get("dates_review_detail")
+        if review_groups is None:
+            # analyze-уровень (build_model_from_analyze_stats) не отслеживает source/dest на
+            # файл -- только итоговое число, тот же асимметричный охват, что у disputes выше.
+            folders = fields["dates_review_by_folder"].most_common(TOP_N)
+            folder_detail = "; ".join(f"{html.escape(_folder_label(f))} ({n})" for f, n in folders)
+            detail = "Стоит перепроверить при желании."
+            if folder_detail:
+                detail += f"<br>Папки-источники: {folder_detail}."
+            items.append(_li(f"{_n_files(fields['dates_review_bc_total'])} получили дату приблизительно", detail))
+        elif review_groups:
             # 2026-07-26: имя файла + уровень достоверности, не только счётчик по папке --
             # тот же <details>/"Показать ещё" паттерн, что disputes/near-dup выше.
             review_lis = [_li(*_dates_review_checklist_item(g)) for g in review_groups]
@@ -1633,37 +2117,42 @@ def _build_checklist_items(fields: dict) -> list:
                     f'<li class="expand"><details><summary>{html.escape(label)}</summary>'
                     f'<ul class="checklist nested">{"".join(rest)}</ul></details></li>'
                 )
-        else:
-            # analyze-уровень (build_model_from_analyze_stats) не отслеживает source/dest на
-            # файл -- только итоговое число, тот же асимметричный охват, что у disputes выше.
-            folders = fields["dates_review_by_folder"].most_common(TOP_N)
-            folder_detail = "; ".join(f"{html.escape(_folder_label(f))} ({n})" for f, n in folders)
-            detail = "Стоит перепроверить при желании."
-            if folder_detail:
-                detail += f"<br>Папки-источники: {folder_detail}."
-            items.append(_li(f"{_n_files(fields['dates_review_bc_total'])} получили дату приблизительно", detail))
+        # review_groups == [] -- все Tier B/C файлы лежат в Albums/, точность даты не влияет
+        # на их место -- по тому же решению пользователя, что и у Tier D, пункт не рендерится
+        # вообще, ни в каком виде.
 
     if fields["undated_total"]:
         # Tier D -- дата отсутствует вообще (ни EXIF, ни имя файла, ни соседи по папке), не
         # путать с Tier B/C выше ("дата есть, но приблизительная") -- разные находки.
-        # 2026-07-26: путь+имя на каждый файл, не просто число -- их всегда мало (Tier D --
-        # редкий случай), сворачивание "и ещё N" здесь не нужно. analyze-уровень не
-        # отслеживает undated_media поштучно (AnalyzeStats только агрегат) -- .get()
-        # деградирует до старого текста без списка, не падает.
-        undated_rows = fields.get("undated_media", [])
-        names = []
-        for row in undated_rows:
-            dest = row.get("dest", "")
-            if not dest:
-                continue
-            name = html.escape(_win_basename(dest))
-            folder = _friendly_target_dir(dest)
-            names.append(f"{html.escape(folder)}\\{name}" if folder else name)
-        detail = ("Дата не определилась ни по EXIF, ни по имени файла, ни по соседям в папке — "
-                   "стоит проставить вручную при желании.")
-        if names:
-            detail += "<br>Где искать: " + ", ".join(names) + "."
-        items.append(_li(f"{_n_files(fields['undated_total'])} вообще без даты", detail))
+        # Задача 5 (SESSION-HANDOFF.txt, пакет "боевой прогон D:\\"): undated_detail -- None
+        # означает "detail вообще недоступен" (analyze-уровень, build_model_from_analyze_stats
+        # не отслеживает undated_media поштучно) -- отличается от [] ("detail доступен, но
+        # ПОСЛЕ фильтра до ByDate/0000-undated/ ничего не осталось", см. _cluster_undated()) --
+        # разное поведение: [] -- пункт вообще не рендерится (Albums/ не показываем никогда),
+        # None -- откат на старый общий текст, единственный доступный сигнал на этом уровне.
+        undated_groups = fields.get("undated_detail")
+        if undated_groups is None:
+            items.append(_li(
+                f"{_n_files(fields['undated_total'])} вообще без даты",
+                "Дата не определилась ни по EXIF, ни по имени файла, ни по соседям в папке — "
+                "стоит проставить вручную при желании.",
+            ))
+        elif undated_groups:
+            # Группировка по папке + превью на 5 файлов + "Показать ещё N папок" -- тот же
+            # <details>-паттерн, что Tier B/C выше (живой репорт пользователя: 274 файла
+            # сплошным абзацем через запятую без группировки читались нечитаемо).
+            undated_lis = [_li(*_undated_checklist_item(g)) for g in undated_groups]
+            items.extend(undated_lis[:CHECKLIST_PREVIEW_N])
+            rest = undated_lis[CHECKLIST_PREVIEW_N:]
+            if rest:
+                n = len(rest)
+                label = f"Показать ещё {n} {_plural(n, 'папку', 'папки', 'папок')}"
+                items.append(
+                    f'<li class="expand"><details><summary>{html.escape(label)}</summary>'
+                    f'<ul class="checklist nested">{"".join(rest)}</ul></details></li>'
+                )
+        # undated_groups == [] -- все Tier D файлы лежат в Albums/, дата не влияет на их
+        # место -- по решению пользователя пункт не рендерится вообще, ни в каком виде.
 
     small = fields["quality_flags"].get("small_image", 0)
     low_conf = fields["quality_flags"].get("low_confidence_photo", 0)
@@ -1694,19 +2183,29 @@ def _render_checklist_card(heading: str, items: list, intro: str = "") -> str:
 
 
 def _exact_dup_checklist_item(group: tuple) -> tuple:
-    folder, total, items = group
+    """group -- (folder, [(matched, origin, [dup_source, ...]), ...]), та же форма, что
+    _cluster_exact_dup_full() (пункт B.3, "большой разбор report.html", SESSION-HANDOFF.txt):
+    раньше превью-карточка не показывала origin ("откуда сам файл-эталон в архиве"), только
+    имя + счётчик -- этого не хватало по прямому замечанию ТЗ ("этой карточке такого сегодня
+    не хватает"). Список источников-дублей здесь по-прежнему компактным счётчиком (×N), не
+    построчно -- построчный список для этого и существует отдельная "Полная сверка дублей"
+    (_render_dedup_verification_page(), см. ссылку ниже по карточке)."""
+    folder, items = group
+    total = sum(len(sources) for _, _, sources in items)
 
-    def _label(matched, count):
+    def _label(matched, origin, sources):
         name = html.escape(_win_basename(matched))
-        return f"{name} (×{count})" if count > 1 else name
+        count = f" (×{len(sources)})" if len(sources) > 1 else ""
+        origin_part = f" — скопировано из {html.escape(origin)}" if origin else ""
+        return f"{name}{count}{origin_part}"
 
-    labels = [_label(m, c) for m, c in items[:5]]
+    labels = [_label(*it) for it in items[:5]]
     more = f" и ещё {len(items) - 5} {_plural(len(items) - 5, 'файл', 'файла', 'файлов')}" if len(items) > 5 else ""
-    files = ", ".join(labels)
+    files = "<br>".join(labels)
     folder_line = f"Папка: {html.escape(folder)}." if folder else ""
-    action_line = f"Уже в архиве: {files}{more}."
+    action_line = f"Уже в архиве:<br>{files}{more}."
     detail = f"{folder_line}<br>{action_line}" if folder_line else action_line
-    return f"{_n_files(total)} — точные повторы файлов из этой папки", detail
+    return f"{_n_files(total)} — дубли файлов из этой папки", detail
 
 
 EXACT_DUP_PREVIEW_N = 2  # тот же порядок превью, что CHECKLIST_PREVIEW_N.
@@ -1717,7 +2216,7 @@ def _build_exact_dup_items(fields: dict) -> list:
     """REVIEW-HANDOFF.md, Раунд 31: паттерн прогрессивного раскрытия -- буквально тот же
     приём, что _build_checklist_items() использует для near_dup_clusters, но отдельная
     функция: тон здесь другой (см. _render_exact_dup_examples()) и категория живёт вне Листа 3
-    (не "стоит проверить" -- действие не требуется вообще, см. докстринг _cluster_exact_dup())."""
+    (не "стоит проверить" -- действие не требуется вообще, см. докстринг _cluster_exact_dup_full())."""
     groups = fields.get("exact_dup_groups", [])
     if not groups:
         return []
@@ -1739,13 +2238,14 @@ def _render_exact_dup_examples(fields: dict, heading: str, intro: str = "",
     """Отдельная от _render_recommendations() карточка -- та же механика
     (_render_checklist_card, <details>/"Показать ещё"), но НЕ в "Что стоит проверить": тон
     здесь "ничего делать не нужно, показано для тех, кто хочет убедиться сам", не "стоит
-    проверить/исправить". fields -- checklist_new/checklist_before/model, любой dict с ключом
-    "exact_dup_groups" (см. _build_checklist_fields()).
+    проверить/исправить". fields -- checklist_new/model (REVIEW-HANDOFF.md, Раунд 44:
+    checklist_before как параметр убран 2026-07-31 вместе с кумулятивным "Ваш архив" -- любой
+    оставшийся dict с ключом "exact_dup_groups", см. _build_checklist_fields()).
 
     verify_link (2026-07-26): ссылка на отдельную страницу "Полная сверка дублей" (см.
     generate_dedup_verification_page()) -- сразу ПОД этой же карточкой, не в хвосте всей
     страницы отчёта (живая находка пользователя: раньше ссылка была в конце body, физически
-    оторвана от карточки "Точные повторы — примеры", к которой относится по смыслу -- "почему
+    оторвана от карточки "Дубли — примеры", к которой относится по смыслу -- "почему
     это примеры, если рядом полная информация" читалось необъяснимо без видимой связи)."""
     if fields is None:
         return ""
@@ -1753,12 +2253,46 @@ def _render_exact_dup_examples(fields: dict, heading: str, intro: str = "",
     if card and verify_link:
         card += (
             '<p class="muted">Показаны только первые несколько — '
-            f'<a href="{html.escape(verify_link)}">полная сверка построчно, по каждому файлу →</a>.</p>'
+            f'<a href="{html.escape(verify_link)}" target="_blank" rel="noopener">полная сверка построчно, по каждому файлу →</a>.</p>'
         )
     return card
 
 
 DEDUP_VERIFICATION_FILENAME = "dedup_verification.html"
+
+
+def _render_near_dup_verification_section(clusters: list) -> str:
+    """Задача 6 (SESSION-HANDOFF.txt, пакет "боевой прогон D:\\"): случай "разные папки" в
+    самом отчёте (_cluster_checklist_item()) больше не расписывает построчный список путей на
+    месте -- ссылается сюда, на полный, не обрезанный по топ-N список каждой серии. Та же
+    карточка-на-группу форма, что и exact-dup секция выше на этой же странице.
+
+    REVIEW-HANDOFF.md, Раунд 52 (придирка 2): только кластеры, реально лежащие в разных
+    папках (len(dirs)>1, та же проверка, что уже определяет ветку в _cluster_checklist_item())
+    -- однопапочные кластеры уже показаны полностью прямо в основном отчёте (компактная ветка
+    той же функции), дублировать их здесь ещё раз не нужно, страница обещает именно "разные
+    папки" (см. CHANGELOG.md/её же докстринг у _render_dedup_verification_page())."""
+    clusters = [c for c in clusters if len({_win_dirname(p) for p in c}) > 1]
+    if not clusters:
+        return ""
+    cards = []
+    for cluster in clusters:
+        names = [_win_basename(p) for p in cluster]
+        rows = "<br>".join(
+            html.escape((_friendly_target_dir(p) + "\\" if _friendly_target_dir(p) else "") + n)
+            for p, n in zip(cluster, names, strict=True)
+        )
+        cards.append(
+            f'<div class="card"><h2>Похожая серия из {len(cluster)} кадров</h2>'
+            f'<div class="detail">{rows}</div></div>'
+        )
+    n = len(clusters)
+    header = (
+        '<div class="card"><h1>Полная сверка похожих серий</h1>'
+        f'<p class="subtitle">{n} {_plural(n, "серия", "серии", "серий")} похожих кадров — '
+        'полный список файлов каждой серии, без сокращения.</p></div>'
+    )
+    return header + "".join(cards)
 
 
 def _render_dedup_verification_page(data: dict) -> str:
@@ -1768,53 +2302,72 @@ def _render_dedup_verification_page(data: dict) -> str:
     находки (отдельная карточка на папку, тот же .card/h2, что и везде в отчёте) -- по
     прямой просьбе пользователя не гнать всё сплошным потоком.
 
-    Возвращает "" если группировать нечего (нет точных повторов вообще) -- вызывающая
+    2026-08-02, задача 6: страница расширена второй секцией -- похожие серии (near-dup) в
+    разных папках, та же цель "полный список без обрезки", что и у дублей ниже.
+
+    Возвращает "" если показывать нечего (нет ни дублей, ни похожих серий) -- вызывающая
     сторона (generate_dedup_verification_page()) тогда не пишет файл и не даёт на него
     ссылку из основного отчёта."""
     groups = _cluster_exact_dup_full(data)
-    if not groups:
+    near_dup_clusters = _cluster_near_dup(data.get("near_dup_edges", []))
+    # Раунд 52 (придирка 2): та же многопапочная фильтрация, что теперь применяет
+    # _render_near_dup_verification_section() -- иначе гейт "есть что показать" мог бы
+    # считать страницу непустой из-за однопапочных кластеров, которые сама секция потом всё
+    # равно отфильтрует, и странице неоткуда взять контент, кроме "назад к отчёту".
+    near_dup_multi_folder = [c for c in near_dup_clusters if len({_win_dirname(p) for p in c}) > 1]
+    if not groups and not near_dup_multi_folder:
         return ""
-    cards = []
-    for folder, items in groups:
-        rows = []
-        for matched, origin, sources in items:
-            name = html.escape(_win_basename(matched))
-            origin_line = f" — скопировано из {html.escape(origin)}" if origin else ""
-            n = len(sources)
-            dup_word = _plural(n, "дубль", "дубля", "дублей")
-            verb = "отклонён" if n == 1 else "отклонены"
-            dup_list = ", ".join(html.escape(s) for s in sources)
-            rows.append(
-                f'<li><div class="title">{name}</div>'
-                f'<div class="detail">В архиве{origin_line}.<br>'
-                f'{n} {dup_word} {verb}: {dup_list}.</div></li>'
+    parts = []
+    if groups:
+        cards = []
+        for folder, items in groups:
+            rows = []
+            for matched, origin, sources in items:
+                name = html.escape(_win_basename(matched))
+                origin_line = f" — скопировано из {html.escape(origin)}" if origin else ""
+                n = len(sources)
+                dup_word = _plural(n, "дубль", "дубля", "дублей")
+                verb = "отклонён" if n == 1 else "отклонены"
+                # Пункт B.3 ("большой разбор report.html", SESSION-HANDOFF.txt): каждый
+                # путь-дубль с новой строки, визуально отделены -- раньше был один сплошной
+                # comma-separated список, на большом числе дублей (типично для целиком
+                # задублированной папки) превращался в нечитаемую простыню.
+                dup_list = "<br>".join(html.escape(s) for s in sources)
+                rows.append(
+                    f'<li><div class="title">{name}</div>'
+                    f'<div class="detail">В архиве{origin_line}.<br>'
+                    f'{n} {dup_word} {verb}:<br>{dup_list}</div></li>'
+                )
+            cards.append(
+                f'<div class="card"><h2>{html.escape(folder or "Корень архива")}</h2>'
+                f'<ul class="checklist">{"".join(rows)}</ul></div>'
             )
-        cards.append(
-            f'<div class="card"><h2>{html.escape(folder or "Корень архива")}</h2>'
-            f'<ul class="checklist">{"".join(rows)}</ul></div>'
+        total_files = sum(len(items) for _, items in groups)
+        total_dups = sum(len(sources) for _, items in groups for _, _, sources in items)
+        header = (
+            '<div class="card">'
+            '<h1>Полная сверка дублей</h1>'
+            f'<p class="subtitle">{_n_files(total_files)} в архиве имеют хотя бы один дубль '
+            f'в источнике — {_n_files(total_dups)} отклонено как дубли и не попало в '
+            'архив вторично. Список сгруппирован по папкам архива; внутри каждой папки — '
+            'файл в архиве, откуда он скопирован, и какие файлы источника оказались его '
+            'дублями.</p>'
+            # Тот же принцип честности, что уже применяется к _render_found_archive_block()
+            # (photosort_win.py:_finalize_target_report -- "данные взяты из служебных файлов,
+            # не из повторной проверки диска"): страница строится из CSV-логов, не сканирует
+            # файловую систему заново, поэтому явно называет источник этой достоверности.
+            '<p class="muted">Построено из служебных файлов логов архива ('
+            '<code>__служебные_файлы\\logs</code>), которые не удаляются между прогонами — '
+            'при следующем пополнении архива эта страница перегенерируется и пополнится, а не '
+            'потеряет уже показанное здесь.</p>'
+            '</div>'
         )
-    total_files = sum(len(items) for _, items in groups)
-    total_dups = sum(len(sources) for _, items in groups for _, _, sources in items)
-    header = (
-        '<div class="card">'
-        '<h1>Полная сверка точных повторов</h1>'
-        f'<p class="subtitle">{_n_files(total_files)} в архиве имеют хотя бы один точный '
-        f'повтор в источнике — {_n_files(total_dups)} отклонено как дубли и не попало в '
-        'архив вторично. Список сгруппирован по папкам архива; внутри каждой папки — '
-        'файл в архиве, откуда он скопирован, и какие файлы источника оказались его '
-        'дублями.</p>'
-        # Тот же принцип честности, что уже применяется к _render_found_archive_block()
-        # (photosort_win.py:_finalize_target_report -- "данные взяты из служебных файлов,
-        # не из повторной проверки диска"): страница строится из CSV-логов, не сканирует
-        # файловую систему заново, поэтому явно называет источник этой достоверности.
-        '<p class="muted">Построено из служебных файлов логов архива ('
-        '<code>__служебные_файлы\\logs</code>), которые не удаляются между прогонами — '
-        'при следующем пополнении архива эта страница перегенерируется и пополнится, а не '
-        'потеряет уже показанное здесь.</p>'
-        '<p class="muted"><a href="report.html">← назад к отчёту</a></p>'
-        '</div>'
-    )
-    return header + "".join(cards)
+        parts.append(header)
+        parts += cards
+    parts.append(_render_near_dup_verification_section(near_dup_clusters))
+    parts.append('<div class="card"><p class="muted">'
+                  '<a href="report.html" target="_blank" rel="noopener">← назад к отчёту</a></p></div>')
+    return "".join(parts)
 
 
 def generate_dedup_verification_page(data: dict, report_out_path: str,
@@ -1823,9 +2376,9 @@ def generate_dedup_verification_page(data: dict, report_out_path: str,
     полная построчная сверка "какой файл в архиве откуда, какие файлы источника были его
     дублями" (см. _cluster_exact_dup_full()), для пользователя, который не принимает
     описание алгоритма и хочет проверить дедуп сам в файловой системе (2026-07-26,
-    обсуждение с пользователем). Возвращает имя файла (относительный href для ссылки из
-    основного отчёта) или None, если точных повторов нет вообще -- тогда ничего не пишется
-    и ссылка не появляется."""
+    обсуждение с пользователем), плюс (2026-08-02) полный список похожих серий в разных
+    папках. Возвращает имя файла (относительный href для ссылки из основного отчёта) или
+    None, если показывать нечего вообще -- тогда ничего не пишется и ссылка не появляется."""
     body = _render_dedup_verification_page(data)
     if not body:
         return None
@@ -1849,16 +2402,26 @@ def _render_sheet3_single(model: dict, level: str) -> str:
     return _render_checklist_card("Что стоит проверить", items)
 
 
-def _render_recommendations(fields: dict, heading: str, intro: str = "") -> str:
-    """checklist_new/checklist_before (2026-07-20, второй заход -- по прямой просьбе
-    пользователя физически разнести Лист 3 на две части отчёта, а не просто пометить
-    заголовками): рекомендации по ЭТОМУ прогону идут сразу после "Пополнение архива" (часть 1
-    отчёта), рекомендации, накопившиеся раньше -- в конце, после "Ваш архив"/диаграмм (часть
-    2) -- см. _generate_from_model(). None -- соответствующая половина не сформирована
-    (например, level=="workdir", туда run_start не передаётся вовсе)."""
+def _render_recommendations(fields: dict, heading: str, intro: str = "", target_path: str = None,
+                             verify_link: str = None) -> str:
+    """checklist_new -- рекомендации по ЭТОМУ прогону, сразу после "Пополнение архива" (см.
+    _generate_from_model()). 2026-07-31: раньше был парный вызов для checklist_before
+    ("накопилось до этого пополнения", кумулятивная история) -- убран вместе с "Ваш архив"
+    (см. _generate_from_model()), функция сама не изменилась, только второй вызов исчез.
+    None -- рекомендации не сформированы (например, level=="workdir", туда run_start не
+    передаётся вовсе).
+
+    intro (пункт B.5, "большой разбор report.html", SESSION-HANDOFF.txt) -- по умолчанию
+    вызывающий код (_generate_from_model()) строит "сохранены ВСЕ N файлов, включая M
+    спорных", когда disputes_total>0 -- явно не намекает, что со спорными что-то не так/
+    потеряно, сами файлы просто внизу списком с причиной (см. _dispute_checklist_item()).
+
+    verify_link (задача 6): доходит до _build_checklist_items() -- ссылка на "Полную сверку"
+    для похожих серий в разных папках, None если страница не строится (level!="target")."""
     if fields is None:
         return ""
-    return _render_checklist_card(heading, _build_checklist_items(fields), intro=intro)
+    return _render_checklist_card(heading, _build_checklist_items(fields, target_path, verify_link),
+                                   intro=intro)
 
 
 def _render_found_archive_block(root: str, nested_paths: list, program_name: str) -> str:
@@ -1905,7 +2468,7 @@ def _render_found_archive_block(root: str, nested_paths: list, program_name: str
         f'<p class="muted">{caveat_stale}</p>'
         '</div>'
         + _render_sheet1(model) + _render_sheet2(model)
-        + _render_exact_dup_examples(model, "Точные повторы — примеры", intro=EXACT_DUP_INTRO)
+        + _render_exact_dup_examples(model, "Дубли — примеры", intro=EXACT_DUP_INTRO)
         + _render_checklist_card("Что стоит проверить в этом архиве", items)
     )
 
@@ -1934,7 +2497,7 @@ def build_model_from_analyze_stats(stats) -> dict:
     через build_model_from_rows. Форма результата — ТА ЖЕ, что у build_model_from_rows,
     чтобы _render_sheet1/2/3 не знали, откуда пришли данные (раздел 3 ТЗ). Категории, для
     которых AnalyzeStats физически не считает нужных чисел (байты по альбомам, разбивка
-    "разногласий"/приблизительных дат по папкам, гео) — пустые Counter/None, соответствующая
+    "разногласий"/приблизительных дат по папкам) — пустые Counter/None, соответствующая
     плашка/график скрывается графически (раздел 0, "пустая категория")."""
     counts = Counter({"image": stats.n_images, "raw": stats.n_raw, "video": stats.n_videos})
 
@@ -1968,7 +2531,13 @@ def build_model_from_analyze_stats(stats) -> dict:
         "total_media": stats.n_images + stats.n_videos + stats.n_raw,
         "years": Counter(stats.dates_by_year),
         "year_months": Counter(stats.dates_by_year_month),
-        "cities": Counter(),  # analyze не резолвит GPS -> место (place_for_gps не вызывается)
+        # 2026-07-31: analyze/analyze-quick/analyze-full теперь тоже резолвят GPS -> место
+        # (photosort_win.py:run_analyze(), тот же кэш place_for_gps(), что и у реальной сборки)
+        # -- пусто здесь означает "в этом скане не нашлось GPS-тегов", не "не считалось вовсе".
+        "cities": Counter(stats.cities),
+        # Пункт E ("большой разбор report.html", SESSION-HANDOFF.txt): та же логика, что
+        # cities выше -- rec.camera уже читается той же exiftool-пачкой, что и GPS/дата.
+        "cameras": Counter(stats.cameras),
         "oldest": oldest,
         "bytes_saved": 0,  # нет постатейного байтового учёта точных дублей в analyze
         "exact_dupes": stats.n_exact_dupes,
@@ -1992,12 +2561,22 @@ def build_model_from_analyze_stats(stats) -> dict:
         # перезаписывает WORKDIR\report.html, "один слот, не персистентно per-источник",
         # см. photosort_win.py:_main()) -- честно ограничиться тем, что реально измеримо.
         "archives_found": stats.n_archives_found,
+        # Пункт B.2 ("большой разбор report.html", SESSION-HANDOFF.txt): полные пути
+        # запароленных архивов, не только счётчик выше.
+        "encrypted_archive_paths": list(stats.encrypted_archive_paths),
         # REVIEW-HANDOFF.md, Раунд 36: секция "Рекомендации" (_render_analyze_recommendations)
         # -- нужен только факт "на источнике уже есть собранный архив", уже посчитан
-        # unconditionally в run_analyze() (classify_found_archives(), тот же список, что
-        # питает found_archives-параметр generate_report_from_analyze_stats() для отдельного
-        # блока "На этом диске найден архив").
+        # unconditionally в run_analyze() (classify_found_archives()) -- 2026-07-31, пункт I:
+        # раньше тот же список питал found_archives-параметр generate_report_from_analyze_stats()
+        # для отдельного блока "На этом диске найден архив", теперь этот блок для analyze не
+        # рендерится вообще (см. photosort_win.py:_finalize_analyze_report()) -- поле здесь
+        # используется только для рекомендации ниже.
         "found_archive_count": len(stats.found_archive_top_level),
+        # 2026-07-31, пункт I: (root_path, n_files) -- реально исключено из ЭТОЙ статистики
+        # (SourceWalker.excluded_found_archives) -- пусто, если cfg.
+        # include_found_archives_in_analyze включён явно (тогда используется found_archive_count
+        # выше, старая формулировка).
+        "excluded_found_archives": list(stats.excluded_found_archives),
     }
 
 
@@ -2026,7 +2605,26 @@ def _render_analyze_recommendations(model: dict) -> str:
             "и его перед реальной сборкой.",
         ))
 
-    if model.get("found_archive_count", 0):
+    # 2026-07-31, пункт I: excluded_found_archives -- по умолчанию (cfg.
+    # include_found_archives_in_analyze не включён явно) содержимое найденного архива
+    # исключается из этой статистики, старая формулировка ("дублирования не будет") тогда
+    # вводила бы в заблуждение -- эта статистика его вообще не видела. Взаимоисключающе с
+    # found_archive_count ниже -- одно и то же событие, разное объяснение в зависимости от
+    # того, что реально произошло с этим содержимым.
+    excluded = model.get("excluded_found_archives") or []
+    if excluded:
+        n_files = sum(n for _, n in excluded)
+        if len(excluded) == 1:
+            where = f" ({html.escape(excluded[0][0])})"
+        else:
+            where = f" в {len(excluded)} {_plural(len(excluded), 'месте', 'местах', 'местах')}"
+        items.append(_li(
+            f"На источнике уже есть собранный архив{where} — исключён из этой статистики",
+            f"{_n_files(n_files)} не учтены в числах этого анализа, чтобы не искажать картину "
+            "по тому, что реально анализируется. Чтобы проверить сам этот архив — "
+            "используйте «Паспорт архива» отдельно.",
+        ))
+    elif model.get("found_archive_count", 0):
         items.append(_li(
             "На этом источнике уже есть собранный архив",
             "Новые файлы просто добавятся к уже собранному архиву — дублирования не будет.",
@@ -2046,6 +2644,17 @@ def _render_analyze_recommendations(model: dict) -> str:
         items.append(_li(
             f"У {_n_files(approx)} дата определена приблизительно",
             "При сборке они всё равно попадут в архив.",
+        ))
+
+    # Пункт B.2: полные пути запароленных архивов, не только счётчик.
+    encrypted = model.get("encrypted_archive_paths") or []
+    if encrypted:
+        paths = "; ".join(_file_link_or_text(html.escape(p), p) for p in sorted(encrypted)[:TOP_N])
+        more = f" и ещё {len(encrypted) - TOP_N}" if len(encrypted) > TOP_N else ""
+        items.append(_li(
+            f"{len(encrypted)} {_plural(len(encrypted), 'архив защищён', 'архива защищены', 'архивов защищены')} паролем",
+            f"{paths}{more}. Программа не подбирает пароли — распакуйте вручную перед сборкой, "
+            "чтобы попало и содержимое.",
         ))
 
     return _render_checklist_card("Рекомендации", items)
@@ -2080,7 +2689,7 @@ def _render_cta_block(level: str, target_path: str = None, model: dict = None) -
             # Windows-путь, тот же случай, что и у _win_dirname/_parse_bydate_segment выше,
             # этот модуль импортируется под pytest и на не-Windows раннере).
             href = "file:///" + target_path.replace("\\", "/")
-            parts.append(f'<p><a href="{html.escape(href)}">Открыть папку с архивом</a> '
+            parts.append(f'<p><a href="{html.escape(href)}" target="_blank" rel="noopener">Открыть папку с архивом</a> '
                           f'— {html.escape(target_path)}</p>')
         parts.append('<p class="muted">Хотите проверить ещё один диск или флешку — запустите '
                       'программу снова с новым источником.</p>')
@@ -2088,6 +2697,15 @@ def _render_cta_block(level: str, target_path: str = None, model: dict = None) -
             '<p><b>Совет:</b> теперь, когда архив собран, стоит сделать его резервную копию '
             'на другом диске или в облаке — так воспоминания не будут зависеть от одного '
             'носителя.</p>'
+        )
+        # 2026-07-31, по прямой просьбе пользователя: этот отчёт теперь показывает только
+        # результат текущего прогона (см. _generate_from_model()/_render_this_run()) -- полная
+        # проверка архива целиком (дубли/даты/спорные с нуля, не из истории CSV-логов) --
+        # отдельное явное действие, не побочный эффект каждого обычного прогона.
+        parts.append(
+            '<p class="muted">Хотите проверить архив целиком (не только этот прогон) — '
+            'например, если что-то в нём переносили или удаляли руками — запустите отдельно '
+            '«Паспорт архива» из главного меню программы.</p>'
         )
         # REVIEW-HANDOFF.md, Раунд 32, задача 6: отчёт советует бэкапить НОВЫЙ архив, но ни
         # слова о судьбе старых носителей, ради разбора которых всё затевалось -- пользователь
@@ -2139,7 +2757,7 @@ def _render_cta_block(level: str, target_path: str = None, model: dict = None) -
 
 def _generate_from_model(model: dict, out_path: str, level: str, program_name: str,
                           run_stats: dict = None, checklist_new: dict = None,
-                          checklist_before: dict = None, found_archives: tuple = None,
+                          found_archives: tuple = None,
                           target_path: str = None, interrupted: bool = False,
                           full_workdir: bool = False, verify_link: str = None) -> None:
     # level=="workdir" (CLI --dry-run/интерактивный [2], решение пользователя 2026-07-20,
@@ -2149,48 +2767,53 @@ def _generate_from_model(model: dict, out_path: str, level: str, program_name: s
     # персистентные CSV TARGET по-настоящему (RunLogs, не CollectingRunLogs), но БЕЗ
     # реального копирования файла (place_file() пропущен) -- повторные --dry-run на один
     # TARGET накапливают в этих CSV фантомные "appended"-строки, которые никогда не станут
-    # архивом. checklist_before (если вообще посчитан -- см. generate_report()) СОЗНАТЕЛЬНО
-    # не рендерится по той же причине; checklist_new (если run_start передан) уже
-    # отфильтрован по времени -- используем его, а не полную (потенциально засорённую) model.
+    # архивом. checklist_new (если run_start передан) уже отфильтрован по времени --
+    # используем его, а не полную (потенциально засорённую) model. REVIEW-HANDOFF.md, Раунд
+    # 44: до 2026-07-31 здесь же упоминался checklist_before -- параметр убран вместе с
+    # кумулятивным "Ваш архив" (729a2de), _split_rows_by_time() больше не вычисляет и не
+    # возвращает "раньше"-половину вовсе, упоминать как несостоявшуюся альтернативу уже нечего.
     #
     # REVIEW-HANDOFF.md, Раунд 38: интерактивный [2] на уже существующем Target -- другой
     # случай, безопасный (suppress_logs=True там всегда, никаких фантомных записей своей же
     # истории быть не может). full_workdir=True (см. photosort_win.py:_bare_launch_run_dryrun) --
     # явный сигнал вызывающего кода "я смёржил настоящую историю Target с гипотетическими
-    # строками этого прогона и посчитал run_start" -- отдельный флаг, не переиспользование
-    # checklist_before is not None, чтобы CLI --dry-run (который тоже передаёт run_start,
-    # но с потенциально засорённой СВОЕЙ ЖЕ историей) не попал сюда неявно.
+    # строками этого прогона и посчитал run_start" -- отдельный флаг, снаружи неотличимый от
+    # обычного checklist_new (оба -- тот же тип/форма), поэтому не выводится неявно из его
+    # значения, а передаётся явным параметром.
     if level == "workdir" and not full_workdir:
         fields = checklist_new if checklist_new is not None else model
         body = _render_this_run(run_stats, level) + _render_sheet3_single(fields, level)
-    # Часть 1 -- "Пополнение архива" (только этот запуск) + рекомендации ПО НЕМУ сразу следом;
-    # часть 2 -- "Ваш архив" (история целиком) + диаграммы + рекомендации, накопившиеся до
-    # этого пополнения, в конце. Решение пользователя 2026-07-20 (второй заход): держать
-    # рекомендации физически рядом с той половиной отчёта, к которой они относятся, а не
-    # одним общим блоком в хвосте -- иначе про "это только что произошедшее" читателю
-    # приходится вспоминать уже после того, как рассказ ушёл в архив целиком.
-    elif checklist_new is None and checklist_before is None:
+    # level=="analyze" (никогда не передаёт run_start, checklist_new всегда None здесь) --
+    # единственный оставшийся потребитель полной кумулятивной картины (Sheet1/Sheet2, "Что
+    # нашлось на этом диске") -- это ОДНОразовый скан SOURCE, не история архива, "паспорт"
+    # (см. ниже) её не заменяет.
+    elif checklist_new is None:
         body = (_render_this_run(run_stats, level) + _render_sheet1(model, level) + _render_sheet2(model)
-                + _render_exact_dup_examples(model, "Точные повторы — примеры", intro=EXACT_DUP_INTRO,
+                + _render_exact_dup_examples(model, "Дубли — примеры", intro=EXACT_DUP_INTRO,
                                               verify_link=verify_link if level == "target" else None)
                 + _render_sheet3_single(model, level))
     else:
-        # verify_link -- только у "этого пополнения" (2026-07-26): страница целиком покрывает
-        # архив, но у карточки "Накопилось раньше" ссылка читалась бы как дубль/расхождение
-        # ("почему опять эта же ссылка"), пользователь уже видел её выше на этой же странице.
+        # 2026-07-31, по прямой просьбе пользователя: level=="target" (и full_workdir=True --
+        # превью [2] на уже существующем Target, тот же код-путь) больше НЕ показывает
+        # кумулятивную "Ваш архив"/диаграммы/"накопилось раньше" -- отчёт теперь только про
+        # ЭТОТ прогон. Полная картина архива целиком -- отдельное явное действие ([4] Паспорт
+        # архива), не побочный эффект каждого обычного отчёта (см. _render_cta_block()).
+        new_intro = ""
+        if checklist_new and checklist_new.get("disputes_total"):
+            n_total = checklist_new.get("total_new", 0)
+            n_disp = checklist_new["disputes_total"]
+            new_intro = (
+                f"Сохранены ВСЕ {_n_files(n_total)}, включая {n_disp} "
+                f"{_plural(n_disp, 'спорный', 'спорных', 'спорных')} — ничего не потеряно."
+            )
         body = (
             _render_this_run(run_stats, level)
-            + _render_recommendations(checklist_new, "Новое в этом пополнении")
+            + _render_recommendations(checklist_new, "Новое в этом пополнении", intro=new_intro,
+                                       target_path=target_path,
+                                       verify_link=verify_link if level == "target" else None)
             + _render_exact_dup_examples(
-                checklist_new, "Точные повторы этого пополнения — примеры", intro=EXACT_DUP_INTRO,
+                checklist_new, "Дубли этого пополнения — примеры", intro=EXACT_DUP_INTRO,
                 verify_link=verify_link if level == "target" else None)
-            + _render_sheet1(model) + _render_sheet2(model)
-            + _render_recommendations(
-                checklist_before, "Накопилось до этого пополнения",
-                intro="Было в архиве уже до этого пополнения — не появилось из-за него, просто ещё не разобрано.",
-            )
-            + _render_exact_dup_examples(
-                checklist_before, "Точные повторы, накопленные раньше — примеры", intro=EXACT_DUP_INTRO)
         )
     if found_archives:
         top_level, nested = found_archives
@@ -2208,7 +2831,7 @@ def _generate_from_model(model: dict, out_path: str, level: str, program_name: s
     # начале ЛЮБОГО отчёта (все уровни), не только report.generate_report()/generate_report_
     # from_analyze_stats() по отдельности -- один общий хук здесь проще, чем дублировать вызов
     # в обоих публичных входах.
-    body = _render_trust_block(level) + body
+    body = _render_trust_block(level, model.get("decisions", {}).get("unreadable", 0)) + body
     # Ctrl+C-пакет: баннер прерывания -- ПЕРЕД баннером доверия (самая первая строка отчёта
     # целиком, по прямой просьбе пользователя), не после него.
     if interrupted:
@@ -2231,20 +2854,19 @@ def generate_report(data: dict, out_path: str, level: str = "target",
     этого параметра).
 
     run_start: момент начала ЭТОГО вызова ("%Y-%m-%d %H:%M:%S", тот же формат, что
-    RunLogs._ts() -- см. _split_rows_by_time()) -- делит Лист 3 на "новое в этом
-    пополнении"/"накопилось раньше". None -- Лист 3 не делится (один список, как раньше).
-    level=="workdir" без full_workdir=True -- используется ТОЛЬКО "новое" (см.
-    _generate_from_model()), "раньше" вычисляется, но сознательно не рендерится (CLI --dry-run
-    пишет реальные CSV TARGET без реального копирования файла -- история там может быть
-    засорена фантомными записями прошлых --dry-run, см. _generate_from_model()).
+    RunLogs._ts() -- см. _split_rows_by_time()) -- фильтрует Лист 3/чек-лист "Новое в этом
+    пополнении" до записей именно этого запуска. None -- Лист 3 не делится (один список, как
+    раньше).
 
-    full_workdir (REVIEW-HANDOFF.md, Раунд 38): level=="workdir" И data уже содержит
-    смёржженную реальную историю Target (parse_target_logs) с гипотетическими строками этого
-    прогона (photosort_win.py:_bare_launch_run_dryrun, интерактивный [2] на непустом Target,
-    suppress_logs=True гарантирует отсутствие фантомных записей ЭТОГО режима в самой истории)
-    -- показывает полноценные "Ваш архив"/диаграммы вместо урезанного чек-листа, требует
-    run_start (иначе no-op, см. _generate_from_model()). CLI --dry-run это НЕ передаёт --
-    там та же засорённость историей, от которой предостерегает предыдущий абзац.
+    2026-07-31, по прямой просьбе пользователя: кумулятивная "Ваш архив"/диаграммы/"накопилось
+    до этого пополнения" (история архива целиком) больше не рендерится ни для level=="target",
+    ни для full_workdir=True -- отчёт после обычного прогона теперь только про сам этот прогон,
+    полная картина архива -- отдельное действие [4] Паспорт архива (см. run_passport()),
+    упомянутое в _render_cta_block(). full_workdir (REVIEW-HANDOFF.md, Раунд 38) по-прежнему
+    отличает [2] на непустом Target (смёрженная реальная история + гипотетические строки этого
+    прогона, photosort_win.py:_bare_launch_run_dryrun) от CLI --dry-run (которому мержить
+    нечего, checklist_new без него не строится вовсе) -- разница теперь только в ЭТОМ, не в
+    объёме показанного.
 
     target_path (4.7, PROMPT_report_marketing.md): абсолютный путь TARGET -- используется
     только при level=="target", для ссылки "Открыть папку с архивом" в CTA-блоке в конце
@@ -2255,17 +2877,16 @@ def generate_report(data: dict, out_path: str, level: str = "target",
     в этом случае неполные (только то, что успело записаться в CSV до прерывания) -- баннер
     в начале отчёта (_render_interrupted_banner()) делает это явным, не молчаливым."""
     model = build_model_from_rows(data)
-    checklist_new = checklist_before = None
+    checklist_new = None
     if run_start:
-        data_new, data_before = _split_rows_by_time(data, run_start)
+        data_new = _split_rows_by_time(data, run_start)
         checklist_new = _build_checklist_fields(data_new)
-        checklist_before = _build_checklist_fields(data_before)
     # 2026-07-26: только level=="target" -- реальный архив на диске, единственный случай,
     # где "полная сверка дублей" (путь+имя каждого файла) вообще что-то значит для
     # пользователя (workdir/analyze -- in-memory прогон, файлы ещё не скопированы).
     verify_link = generate_dedup_verification_page(data, out_path, program_name) if level == "target" else None
     _generate_from_model(model, out_path, level, program_name, run_stats=run_stats,
-                          checklist_new=checklist_new, checklist_before=checklist_before,
+                          checklist_new=checklist_new,
                           target_path=target_path, interrupted=interrupted,
                           full_workdir=full_workdir, verify_link=verify_link)
 
@@ -2279,3 +2900,446 @@ def generate_report_from_analyze_stats(stats, out_path: str, level: str = "analy
     рендерится вообще (ничего не найдено, либо старые вызовы без этого параметра)."""
     model = build_model_from_analyze_stats(stats)
     _generate_from_model(model, out_path, level, program_name, found_archives=found_archives)
+
+
+# ============================================================================
+# 7. Паспорт архива ([4], photosort_win.py:run_passport())
+# ============================================================================
+
+
+def _addition_date_range(target_path: str) -> tuple:
+    """Пункт B.10 ("большой разбор report.html", SESSION-HANDOFF.txt): дата первого и
+    последнего АВТОМАТИЧЕСКОГО пополнения -- по timestamp-колонке appended.csv (формат
+    RunLogs._ts(), "%Y-%m-%d %H:%M:%S" -- лексикографическая сортировка совпадает с
+    хронологической, парсить в datetime не нужно). В отличие от остального паспорта (числа
+    "проверены заново" самим self_scan-обходом TARGET) -- это ЕДИНСТВЕННОЕ поле, которое
+    честно берётся из истории логов, не может быть перепроверено self_scan'ом (сам факт "когда
+    именно программа что-то добавила" в содержимом файлов не записан). Возвращает (first, last)
+    ("%Y-%m-%d") или (None, None), если appended.csv нет/пуст (архив собран до этой колонки,
+    либо ротация унесла всю историю)."""
+    logs_dir = os.path.join(target_path, "__служебные_файлы", "logs")
+    rows = parse_target_logs(logs_dir).get("appended", [])
+    timestamps = sorted(r["timestamp"] for r in rows if r.get("timestamp"))
+    if not timestamps:
+        return None, None
+    return timestamps[0][:10], timestamps[-1][:10]
+
+
+def _render_passport_summary(stats, target_path: str = None) -> str:
+    parts = ['<div class="card">', '<h1>Архив сейчас</h1>']
+    where = html.escape(target_path) if target_path else "архива"
+    parts.append(f'<p class="subtitle">Полная проверка {where} заново, с нуля — не из истории '
+                 'прошлых прогонов программы.</p>')
+    stat_items = [f'<div class="stat"><div class="value">{stats.total_files}</div>'
+                  f'<div class="label">файлов в архиве</div></div>']
+    if stats.total_bytes:
+        stat_items.append(f'<div class="stat"><div class="value">{_fmt_bytes(stats.total_bytes)}</div>'
+                           f'<div class="label">занимает архив</div></div>')
+    if stats.n_albums_detected:
+        n = stats.n_albums_detected
+        stat_items.append(f'<div class="stat"><div class="value">{n}</div>'
+                           f'<div class="label">{_plural(n, "альбом", "альбома", "альбомов")}</div></div>')
+    years = stats.dates_by_year
+    if years:
+        span = max(years) - min(years) + 1
+        stat_items.append(f'<div class="stat"><div class="value">{span}</div>'
+                           f'<div class="label">{_plural(span, "год", "года", "лет")} истории</div></div>')
+    parts.append('<div class="stat-row">' + "".join(stat_items) + '</div>')
+    breakdown = _type_breakdown_caption(
+        Counter({"image": stats.n_images, "raw": stats.n_raw, "video": stats.n_videos}))
+    if breakdown:
+        parts.append(f'<p class="muted">{html.escape(breakdown)}</p>')
+    if stats.oldest_date is not None:
+        d = stats.oldest_date
+        date_str = f"{d.day:02d}.{d.month:02d}.{d.year}" if d.day else f"{d.year}"
+        # stats.oldest_display -- SourceItem.origin_display, всегда posix-style ("/", см.
+        # SourceWalker._walk_dir()), даже когда паспорт сканирует TARGET -- реальный Windows-
+        # путь с настоящими Albums/ByDate-маркерами. _win_basename()/_friendly_target_dir()
+        # написаны под dest-пути реальной сборки ("\\" явно, см. их же докстринги) -- без
+        # нормализации разделителя маркер не находится, вся строка "Albums/Папка/файл.jpg"
+        # ошибочно показывается как одно "имя файла" без папки (живая находка при первом
+        # реальном прогоне [4] на Windows, 2026-07-31).
+        oldest_win_path = (stats.oldest_display or "").replace("/", "\\")
+        name = html.escape(_win_basename(oldest_win_path))
+        folder = _friendly_target_dir(oldest_win_path)
+        file_text = f'{html.escape(folder)}\\{name}' if folder else name
+        # Пункт B.8: oldest_win_path здесь -- путь ОТНОСИТЕЛЬНО TARGET (см. коммент выше),
+        # не абсолютный сам по себе (в отличие от Sheet1) -- нужен target_path, чтобы собрать
+        # реальный абсолютный путь для file://-ссылки.
+        abs_path = os.path.join(target_path, oldest_win_path) if target_path and oldest_win_path else None
+        file_str = f' — {_file_link_or_text(file_text, abs_path)}' if (file_text) else ""
+        parts.append(f'<p><b>Самый старый файл:</b> {date_str}{file_str}</p>')
+    if target_path:
+        first, last = _addition_date_range(target_path)
+        if first:
+            # Речь пользователя, 2026-08-02 (задача 6): старая формулировка "Автоматических
+            # пополнений программой: {span}" не объясняла, ЧТО значит {span} (диапазон дат?
+            # число пополнений?) -- переформулировано явно как диапазон дат, с честной
+            # оговоркой источника (см. докстринг _addition_date_range() -- ЕДИНСТВЕННОЕ поле
+            # паспорта, не перепроверяемое собственным self_scan-сканированием).
+            when = f'с {first} по {last}' if first != last else f'{first}'
+            parts.append(
+                f'<p class="muted">Программа пополняла этот архив {when} — по записям в '
+                'журналах прошлых запусков (эту дату нельзя установить повторным '
+                'сканированием, только по истории программы).</p>'
+            )
+    parts.append('</div>')
+    return "".join(parts)
+
+
+def _passport_check(n: int, ok_text: str, attn_text) -> str:
+    """Один пункт "Целостности архива" -- в отличие от остального report.html (пустая
+    категория скрывается целиком), здесь ПРОБЛЕМ НЕТ показывается так же явно, как проблема
+    ЕСТЬ (SESSION-HANDOFF.txt, design-сессия 2026-07-31, прямое решение пользователя) --
+    паспорт существует именно для того, чтобы ответить "всё цело?", молчание не отвечает на
+    этот вопрос. attn_text -- callable(n) -> str, т.к. текст обычно склоняется по числу."""
+    if n:
+        return f'<li class="attn">{html.escape(attn_text(n))}</li>'
+    return f'<li class="ok">{html.escape(ok_text)}</li>'
+
+
+_DEEP_ALBUM_MIN_SUBPATH = 3  # Живое обсуждение с пользователем (2026-08-01): "вложенность
+# больше 2" -- число ПОДпапок внутри альбома (Albums/Альбом/A/B -- уже 2, не триггерит;
+# Albums/Альбом/A/B/C -- 3, триггерит), не общая глубина пути от Albums.
+
+
+def _deep_nested_albums(tree_folder_counts: Counter) -> list:
+    """Ключи tree_folder_counts (см. run_analyze()/AnalyzeStats.tree_folder_counts) --
+    "Albums/<альбом>/<sub1>/<sub2>/...", subpath -- та же вложенность, что find_album()
+    возвращает для реального размещения (подпапки самого альбома, dump-сегменты уже
+    схлопнуты). Возвращает [(альбом, макс_глубина), ...] для альбомов с глубиной >=
+    _DEEP_ALBUM_MIN_SUBPATH -- максимум по всем бакетам альбома (один альбом может иметь
+    несколько разных по глубине подпапок), отсортировано по убыванию глубины.
+
+    REVIEW-HANDOFF.md, Раунд 46, замечание 1: RAW-файлы в tree_folder_counts всегда
+    уплощены до отдельного бакета "RAW" независимо от реальной глубины пути (тот же
+    осознанный компромисс карточки "Структура архива", run_analyze()) -- если глубокая
+    подпапка альбома существует ТОЛЬКО за счёт RAW-файлов без JPEG-партнёра на той же
+    глубине, этот альбом здесь не найдётся (ложноотрицательный результат для 8-го пункта
+    "Целостности"). Узкий случай, дешёвого закрытия без дублирования RAW-логики размещения
+    нет -- решение то же, что уже принято для дерева-диаграммы: сознательно не покрывать."""
+    max_depth = {}
+    for key in tree_folder_counts:
+        parts = key.split("/")
+        if len(parts) < 2 or parts[0] != "Albums":
+            continue
+        album = parts[1]
+        depth = len(parts) - 2
+        if depth > max_depth.get(album, 0):
+            max_depth[album] = depth
+    deep = [(album, d) for album, d in max_depth.items() if d >= _DEEP_ALBUM_MIN_SUBPATH]
+    deep.sort(key=lambda t: -t[1])
+    return deep
+
+
+PASSPORT_VERIFICATION_FILENAME = "passport_verification.html"
+
+
+def _passport_normalize_dest(p: str) -> str:
+    """AnalyzeStats.near_dup_edges/exact_dup_edges хранят item.origin_display -- всегда
+    posix-style ("/"), даже когда паспорт сканирует TARGET (тот же класс находки, что уже
+    исправлен для oldest_display в _render_passport_summary(): без нормализации
+    _win_dirname()/_friendly_target_dir() не находят маркер ByDate/Albums вообще, вся строка
+    ошибочно читается как один "файл без папки")."""
+    return (p or "").replace("/", "\\")
+
+
+def _passport_file_link(win_rel_path: str, target_path: str) -> str:
+    """win_rel_path -- уже нормализован (_passport_normalize_dest), относительно TARGET.
+    Склеивает с target_path для настоящей file://-ссылки -- тот же приём, что уже применяет
+    _render_passport_summary() для oldest_display."""
+    name = html.escape(_win_basename(win_rel_path))
+    folder = _friendly_target_dir(win_rel_path)
+    text = f'{html.escape(folder)}\\{name}' if folder else name
+    abs_path = os.path.join(target_path, win_rel_path) if target_path and win_rel_path else None
+    return _file_link_or_text(text, abs_path)
+
+
+def _cluster_passport_edges(edges: list) -> list:
+    """Те же рёбра (dest/matched_dest), что и у обычного _cluster_near_dup() -- сам union-find
+    не знает и не заботится, near-dup это или точный дубль, переиспользуется как есть, только
+    с нормализованными (см. _passport_normalize_dest()) путями."""
+    normalized = [
+        {"dest": _passport_normalize_dest(e.get("dest")),
+         "matched_dest": _passport_normalize_dest(e.get("matched_dest"))}
+        for e in edges
+    ]
+    return _cluster_near_dup(normalized)
+
+
+def _render_passport_dup_li(clusters: list, target_path: str, noun: tuple, note: str,
+                             verify_link: str = None) -> str:
+    """Один <li class="attn"> для секции "Целостность архива" -- превью первых
+    CHECKLIST_PREVIEW_N групп (папка + файлы, та же форма, что _cluster_checklist_item()
+    обычного отчёта), "и ещё N" на остальное, ссылка на "Полную сверку" (см.
+    generate_passport_verification_page()), если хотя бы одна группа лежит в разных папках.
+    noun -- (один, немного, много) для склонения "дубль"/"похожий кадр"."""
+    # REVIEW-HANDOFF.md, Раунд 57 [ЗАМЕЧАНИЕ]: n -- число РЕАЛЬНО лишних (удаляемых) копий, не
+    # общее число файлов во всех кластерах -- каждый кластер всегда содержит один "оригинал",
+    # который никто не собирается удалять (T файлов в G группах -> T-G лишних копий), та же
+    # семантика, что и у stats.n_exact_dupes/n_near_dupes до коммита af50df1. Пример: 1 файл +
+    # 1 ручная копия того же файла в другой папке -> один кластер из 2 файлов -> 2-1=1 лишняя
+    # копия ("1 дубль"), не 2 (раньше эта функция считала T, не T-G, завышая число ровно на
+    # количество групп).
+    total = sum(len(c) for c in clusters)
+    lines = [_passport_cluster_line(c, target_path) for c in clusters[:CHECKLIST_PREVIEW_N]]
+    more_n = len(clusters) - CHECKLIST_PREVIEW_N
+    more = f" (и ещё {more_n} {_plural(more_n, 'группу', 'группы', 'групп')})" if more_n > 0 else ""
+    detail = "<br>".join(lines) + more
+    multi_folder = any(len({_win_dirname(p) for p in c}) > 1 for c in clusters)
+    if multi_folder and verify_link:
+        detail += (f'<br><a href="{html.escape(verify_link)}" target="_blank" rel="noopener">'
+                   "полная сверка →</a>")
+    n = total - len(clusters)
+    return (f'<li class="attn">{n} {_plural(n, *noun)} {note}<br>{detail}</li>')
+
+
+def _passport_cluster_line(cluster: list, target_path: str) -> str:
+    """Одна строка превью группы: папка (если все файлы в одной) + сами файлы, каждый --
+    кликабельная file://-ссылка (см. _passport_file_link())."""
+    dirs = {_win_dirname(p) for p in cluster}
+    files_html = ", ".join(_passport_file_link(p, target_path) for p in cluster)
+    if len(dirs) == 1:
+        folder = _friendly_target_dir(cluster[0])
+        folder_prefix = f"{html.escape(folder)}: " if folder else ""
+    else:
+        folder_prefix = "разные папки: "
+    return folder_prefix + files_html
+
+
+def _render_passport_integrity(stats, target_path: str = None, verify_link: str = None) -> str:
+    exact_clusters = _cluster_passport_edges(stats.exact_dup_edges)
+    near_clusters = _cluster_passport_edges(stats.near_dup_edges)
+    if exact_clusters:
+        exact_li = _render_passport_dup_li(
+            exact_clusters, target_path, ("дубль", "дубля", "дублей"),
+            "внутри архива — один и тот же файл сохранён более одного раза. Не удаляйте "
+            "лишние копии вручную: вытащите папку(и) с дублями в отдельное место и "
+            "назначьте её источником (SOURCE) для обычной процедуры добавления — программа "
+            "сама отличит уже архивированное; либо пересоберите архив целиком, указав сам "
+            "архив источником для нового архива (дольше, но надёжнее для больших расхождений).",
+            verify_link)
+    else:
+        exact_li = '<li class="ok">Дублей внутри архива нет.</li>'
+    if near_clusters:
+        near_li = _render_passport_dup_li(
+            near_clusters, target_path, ("похожий кадр", "похожих кадра", "похожих кадров"),
+            "сохранено рядом с оригиналом — обычно не ошибка, стоит проверить вручную, если "
+            "важна экономия места.",
+            verify_link)
+    else:
+        near_li = '<li class="ok">Похожих кадров/возможных кропов не найдено.</li>'
+    items = [
+        exact_li,
+        near_li,
+        _passport_check(
+            stats.n_broken_or_zero, "Повреждённых или пустых файлов нет.",
+            lambda n: f"{n} {_plural(n, 'файл повреждён или пуст', 'файла повреждены или пусты', 'файлов повреждены или пусты')} "
+                      "(0 байт)."),
+        _passport_check(
+            stats.n_signature_mismatch, "У всех файлов расширение совпадает с содержимым.",
+            lambda n: f"У {n} {_plural(n, 'файла', 'файлов', 'файлов')} расширение не совпадает с "
+                      "реальным содержимым — признак повреждения или подмены файла."),
+        _passport_check(
+            stats.n_archives_found, "Посторонних архивов (zip/rar) внутри не осталось.",
+            lambda n: f"Внутри архива {'найден' if n == 1 else 'найдено'} {n} "
+                      f"{_plural(n, 'архив', 'архива', 'архивов')} (zip/rar) — стоит разобрать "
+                      "и удалить, иначе он не защищён общей проверкой этой программы."),
+        _passport_check(
+            stats.n_dump_items, "Все файлы лежат внутри признанных альбомов/дат.",
+            lambda n: f"{n} {_plural(n, 'файл лежит', 'файла лежат', 'файлов лежат')} не внутри "
+                      "конкретного альбома или папки по дате — похоже на файлы, добавленные или "
+                      "перенесённые вручную, в обход программы."),
+    ]
+    # Речь пользователя, 2026-08-02 (задача 3): старая версия просто складывала tier C+D в
+    # одно число, не объясняя, что оно значит -- по RULES.md (блок UNDATED) точность даты
+    # решает, в какую подпапку попадёт файл, ТОЛЬКО внутри ByDate; в Albums дата ни на что не
+    # влияет (место определяет структура исходных папок), перепроверять её там бессмысленно.
+    # Тот же принцип, что уже применён к report.py's _cluster_dates_review()/_cluster_undated()
+    # для обычного пополнения (2026-08-02, прямое замечание пользователя) -- здесь используем
+    # stats.n_tier_cd_bydate (AnalyzeStats, тот же фильтр "не Albums", посчитан заодно с
+    # tier_counts в run_analyze()) вместо сырой суммы, чтобы ok/attn-статус самой проверки
+    # тоже отражал только действительно значимую часть, не общий счёт.
+    n_approx_or_missing = stats.tier_counts.get("C", 0) + stats.tier_counts.get("D", 0)
+    n_actionable = stats.n_tier_cd_bydate
+    n_in_albums = max(n_approx_or_missing - n_actionable, 0)
+    albums_note = (
+        f" Ещё {_n_files(n_in_albums)} с такой же неточной или отсутствующей датой лежат в "
+        "Albums — там дата ни на что не влияет (место файла определяет структура исходных "
+        "папок, не дата съёмки), действие не требуется."
+    ) if n_in_albums else ""
+    ok_text = ("Все файлы в ByDate имеют точную дату съёмки." + albums_note if n_in_albums else
+               "У всех файлов есть точная или приблизительная дата съёмки.")
+    items.append(_passport_check(
+        n_actionable, ok_text,
+        lambda n: (
+            f"У {n} {_plural(n, 'файла', 'файлов', 'файлов')} в ByDate дата определена лишь "
+            "приблизительно или не определена вовсе — точность даты решает, в какую подпапку "
+            f"попадёт файл, стоит перепроверить при желании.{albums_note}"
+        )))
+    # Живое обсуждение с пользователем (2026-08-01): альбом с глубокой вложенностью подпапок
+    # часто означает, что реальный отдельный альбом "спрятан" внутри более общего родителя
+    # (find_album() взял верхний непустой сегмент, а не тот, что пользователь интуитивно
+    # считает альбомом) -- стоит подсказать перенести такие подпапки на верхний уровень.
+    deep_albums = _deep_nested_albums(stats.tree_folder_counts)
+    if deep_albums:
+        names = ", ".join(f"«{html.escape(a)}» ({d} {_plural(d, 'подпапка', 'подпапки', 'подпапок')})"
+                           for a, d in deep_albums[:TOP_N])
+        n = len(deep_albums)
+        # REVIEW-HANDOFF.md, Раунд 46, замечание 2: при >TOP_N число расходилось со списком без
+        # оговорки -- тот же паттерн "и ещё N", что уже использует B.2 (запароленные архивы).
+        more = f" и ещё {n - TOP_N}" if n > TOP_N else ""
+        items.append(
+            f'<li class="attn">{n} {_plural(n, "альбом имеет", "альбома имеют", "альбомов имеют")} '
+            f'глубокую вложенность подпапок: {names}{more} — стоит перенести глубокие подпапки на '
+            f'верхний уровень, чтобы они стали отдельными альбомами.</li>'
+        )
+    else:
+        items.append('<li class="ok">Глубоко вложенных альбомов нет.</li>')
+    return (
+        '<div class="card"><h1>Целостность архива</h1>'
+        '<p class="subtitle">Каждый пункт проверен заново, прямо сейчас — не как отчёт о том, '
+        'что программа когда-то сделала, а как факт о текущем состоянии.</p>'
+        f'<ul class="integrity-list">{"".join(items)}</ul></div>'
+    )
+
+
+def _render_passport_dup_group_card(heading: str, clusters: list, target_path: str) -> str:
+    """Одна карточка на группу (та же форма, что уже использует
+    _render_near_dup_verification_section() для обычного пополнения) -- полный список файлов
+    без обрезки по CHECKLIST_PREVIEW_N, каждый файл кликабельная file://-ссылка."""
+    cards = []
+    for c in clusters:
+        rows = "<br>".join(_passport_file_link(p, target_path) for p in c)
+        cards.append(
+            f'<div class="card"><h2>{heading} из {len(c)} файлов</h2>'
+            f'<div class="detail">{rows}</div></div>'
+        )
+    return "".join(cards)
+
+
+def _render_passport_verification_page(exact_multi: list, near_multi: list, target_path: str) -> str:
+    """Тело страницы "Полная сверка" паспорта -- те же две секции (точные дубли + похожие
+    серии), что и у обычного пополнения (_render_dedup_verification_page()), но построена из
+    exact_dup_edges/near_dup_edges self_scan'а, не из CSV-логов прошлых прогонов -- паспорт
+    вообще не пишет CSV (read-only). Только группы, реально лежащие в разных папках (тот же
+    фильтр, что и у обычного пополнения, Раунд 52 (придирка 2)) -- однопапочные уже полностью
+    показаны в самой "Целостности архива" (превью там не обрезает файлы внутри одной папки)."""
+    if not exact_multi and not near_multi:
+        return ""
+    parts = ['<div class="card"><h1>Полная сверка — Паспорт архива</h1>'
+             '<p class="subtitle">Полный список файлов каждой группы, без сокращения — '
+             'построено этим же сканированием архива, не из истории прошлых прогонов.</p></div>']
+    parts.append(_render_passport_dup_group_card("Точные дубли", exact_multi, target_path))
+    parts.append(_render_passport_dup_group_card("Похожая серия", near_multi, target_path))
+    parts.append('<div class="card"><p class="muted">'
+                  '<a href="passport.html" target="_blank" rel="noopener">← назад к паспорту</a></p></div>')
+    return "".join(parts)
+
+
+def generate_passport_verification_page(stats, out_path: str, target_path: str = None,
+                                         program_name: str = "PhotoArchive") -> str:
+    """Пишет файл-сосед out_path (PASSPORT_VERIFICATION_FILENAME) -- полная построчная сверка
+    дублей/похожих серий, найденных внутри архива этим сканированием. Возвращает имя файла
+    (относительный href для ссылки из паспорта) или None, если показывать нечего (только
+    однопапочные группы или групп нет вовсе) -- тогда ничего не пишется, ссылка не появляется,
+    та же семантика, что у generate_dedup_verification_page() обычного пополнения."""
+    exact_clusters = _cluster_passport_edges(stats.exact_dup_edges)
+    near_clusters = _cluster_passport_edges(stats.near_dup_edges)
+    exact_multi = [c for c in exact_clusters if len({_win_dirname(p) for p in c}) > 1]
+    near_multi = [c for c in near_clusters if len({_win_dirname(p) for p in c}) > 1]
+    body = _render_passport_verification_page(exact_multi, near_multi, target_path)
+    if not body:
+        return None
+    verify_out_path = os.path.join(os.path.dirname(out_path), PASSPORT_VERIFICATION_FILENAME)
+    _write(verify_out_path, _page_shell(f"{program_name} — полная сверка паспорта", body))
+    return PASSPORT_VERIFICATION_FILENAME
+
+
+def _render_passport_charts(stats) -> str:
+    """Задача 1, речь пользователя 2026-08-02: раньше отчёт о пополнении показывал "часть 2"
+    (Sheet1/Sheet2) -- кумулятивные диаграммы всего архива, убранные из обычного report.html
+    2026-07-31 в пользу отдельного действия ("Паспорт архива", см. _generate_from_model()).
+    Паспорт до этой правки не наследовал ни одну диаграмму Sheet2 -- переносим уместное:
+    "Тип медиа" (уже есть текстовой подписью в _render_passport_summary(), здесь диаграммой),
+    "Итог проверки" (self_scan-аналог "Итога решений программы" Sheet2 -- сколько файлов
+    архива уникальны/дублируются/повреждены при сверке САМОГО С СОБОЙ), "Надёжность дат" (уже
+    есть как чек-лист-пункт в "Целостности", диаграмма даёт распределение по всем 4 уровням
+    разом, не только по актуальному для ByDate срезу). Переиспользует
+    build_model_from_analyze_stats() -- та же модель, что уже питает Sheet1/Sheet2 для
+    CLI-режима analyze, никакой отдельной агрегации.
+
+    НЕ перенесены: "Объём по категориям" (байты по типу медиа), "Топ альбомов" (байты по
+    альбому), "Качество кадров" (small_image/low_confidence-флаги) -- AnalyzeStats физически
+    не считает эти величины для analyze-режимов (см. те же пустые поля в
+    build_model_from_analyze_stats()), перенести можно только заведя отдельную задачу по
+    проводке новой статистики в run_analyze()."""
+    model = build_model_from_analyze_stats(stats)
+    pie_charts = [
+        ("Тип медиа", [
+            ("Фото", model["counts"]["image"], CATEGORY_PALETTE[0]),
+            ("Видео", model["counts"]["video"], CATEGORY_PALETTE[1]),
+            ("RAW", model["counts"]["raw"], CATEGORY_PALETTE[2]),
+        ]),
+        ("Итог проверки", [
+            ("Уникальные", model["decisions"]["appended"], CATEGORY_PALETTE[0]),
+            ("Точные дубли", model["decisions"]["skipped_present"], CATEGORY_PALETTE[1]),
+            ("Похожие кадры", model["decisions"]["near_dup"], CATEGORY_PALETTE[2]),
+            ("Повреждены/пусты", model["decisions"]["unreadable"], CATEGORY_PALETTE[3]),
+        ]),
+        ("Надёжность дат", [
+            ("Точная (EXIF)", model["tier_counts"].get("A", 0), CATEGORY_PALETTE[0]),
+            ("Высокая", model["tier_counts"].get("B", 0), CATEGORY_PALETTE[1]),
+            ("Оценочная", model["tier_counts"].get("C", 0), CATEGORY_PALETTE[2]),
+            ("Низкая", model["tier_counts"].get("D", 0), CATEGORY_PALETTE[3]),
+        ]),
+    ]
+    pie_cells = []
+    for title, segments in pie_charts:
+        svg, legend = _svg_pie(segments)
+        if not svg:
+            continue
+        pie_cells.append(
+            f'<div class="card"><h2>{html.escape(title)}</h2>'
+            f'<div class="chart-block">{svg}<div class="legend">{legend}</div></div></div>'
+        )
+    parts = [f'<div class="grid-3">{"".join(pie_cells)}</div>'] if pie_cells else []
+    cameras_hbar = _top_cameras_chart(model.get("cameras", Counter()))
+    if cameras_hbar:
+        parts.append(f'<div class="card"><h2>Топ камер/устройств съёмки</h2>{cameras_hbar}</div>')
+    return "".join(parts)
+
+
+def generate_passport_report(stats, out_path: str, target_path: str = None,
+                              program_name: str = "PhotoArchive") -> None:
+    """[4] Паспорт архива (photosort_win.py:run_passport()) -- отдельный формат "с нуля", НЕ
+    наследует _generate_from_model()/Sheet1-3 (SESSION-HANDOFF.txt, design-сессия 2026-07-31):
+    паспорт не про "что сделал этот прогон" (нечего делать, read-only), а про "насколько цел
+    архив прямо сейчас" -- явное "проблем нет" так же заметно, как "проблем 201", в отличие от
+    остального report.html, где пустая категория скрывается целиком.
+
+    stats -- AnalyzeStats из run_passport() (source=TARGET, mode="analyze") -- та же форма,
+    что уже питает generate_report_from_analyze_stats(), здесь просто другой рендер поверх тех
+    же данных, без found_archives/checklist-инфраструктуры обычного отчёта (архивы, найденные
+    ВНУТРИ TARGET, у паспорта — сами по себе строка целостности, см.
+    _render_passport_integrity(), не отдельная "часть 2")."""
+    body = _render_trust_block("target", stats.n_broken_or_zero)
+    body += _render_passport_summary(stats, target_path)
+    # Задачи 4/5, речь пользователя 2026-08-02: страница "Полная сверка" пишется ДО основного
+    # тела (тот же порядок, что уже использует _finalize_target_report() для обычного
+    # пополнения, photosort_win.py) -- verify_link должен быть уже готов к моменту рендера
+    # "Целостности архива" ниже, не задним числом.
+    verify_link = generate_passport_verification_page(stats, out_path, target_path, program_name)
+    body += _render_passport_integrity(stats, target_path, verify_link)
+    if stats.dates_by_year:
+        svg = _svg_year_hbar_chart(Counter(stats.dates_by_year))
+        if svg:
+            body += f'<div class="card"><h2>Медиафайлы по годам</h2>{svg}</div>'
+    body += _render_passport_charts(stats)
+    # 2026-07-31: раньше "География" пропадала для архива целиком вместе с убранным Sheet2 --
+    # place_for_gps() данные считались (place-колонка в appended.csv), но нигде не
+    # показывались; run_analyze() теперь резолвит GPS -> место сам (см. AnalyzeStats.cities),
+    # паспорт получает диаграмму без похода в историю CSV-логов, тем же принципом "с нуля".
+    body += _render_geo_card(stats.cities)
+    body += _render_archive_tree_card(stats.tree_folder_counts, stats.tree_folder_bytes)
+    _write(out_path, _page_shell(f"{program_name} — паспорт архива", body))

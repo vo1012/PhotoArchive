@@ -104,6 +104,27 @@ class TestResolveDate:
         assert dt == datetime(2019, 1, 1)
         assert (tier, confidence, evidence, precision) == ("B", "medium", "folder_name_year", "year")
 
+    def test_use_folder_name_date_false_skips_folder_year_falls_to_mtime(self):
+        # Живой репорт пользователя (2026-08-01, "Паспорт архива"): use_folder_name_date=False
+        # -- run_passport()'s self_scan=True использует его, потому что на TARGET сама папка
+        # "2019 [PhotoArchive]" -- это разметка, которую программа сгенерировала на прошлом
+        # прогоне (Tier C/D), а не независимое доказательство. Без сигнала из имени папки файл
+        # должен упасть дальше по цепочке (mtime), а не остаться без даты вовсе.
+        ctx = m.DateContext()
+        mtime = datetime(2019, 6, 1).timestamp()
+        dt, tier, confidence, evidence, precision = m.resolve_date(
+            ctx, "Поездка 2019/no_date_in_name.jpg", mtime=mtime, use_folder_name_date=False)
+        assert dt == datetime.fromtimestamp(mtime)
+        assert (tier, confidence, evidence, precision) == ("C", "low", "mtime", "day")
+
+    def test_use_folder_name_date_true_is_still_the_default(self):
+        # Regression guard: existing call sites (real SOURCE-side build/analyze) must keep
+        # reading the folder-year signal unless they opt out explicitly.
+        ctx = m.DateContext()
+        dt, tier, confidence, evidence, precision = m.resolve_date(
+            ctx, "Поездка 2019/no_date_in_name.jpg", mtime=1000.0)
+        assert (tier, evidence, precision) == ("B", "folder_name_year", "year")
+
     def test_folder_cluster_inference_from_earlier_sibling(self):
         ctx = m.DateContext()
         exif_dt = datetime(2022, 5, 1, 10, 0, 0)

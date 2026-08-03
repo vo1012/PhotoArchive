@@ -12,6 +12,7 @@ behavior) -- these last three were previously only verifiable by hand on a real 
 import csv
 import os
 import random
+from datetime import datetime
 import shutil
 import subprocess
 import sys
@@ -54,7 +55,7 @@ def check(cond, label):
         FAILURES.append(label)
 
 
-def image(path, w, h, exif=False, dt="2019:07:15 12:00:00"):
+def image(path, w, h, exif=False, dt="2019:07:15 12:00:00", make="Canon", model="Canon EOS 80D"):
     from PIL import Image
     os.makedirs(os.path.dirname(path), exist_ok=True)
     im = Image.new("RGB", (w, h))
@@ -75,7 +76,7 @@ def image(path, w, h, exif=False, dt="2019:07:15 12:00:00"):
         try:
             r = subprocess.run(
                 ["exiftool", "-charset", "filename=utf8", "-overwrite_original",
-                 f"-DateTimeOriginal={dt}", "-Make=Canon", "-Model=Canon EOS 80D",
+                 f"-DateTimeOriginal={dt}", f"-Make={make}", f"-Model={model}",
                  "-@", argfile_path],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
             )
@@ -786,9 +787,12 @@ def test_analyze_closing_cta_mentions_archives_found():
 
 
 def test_oldest_file_line_shows_folder_and_name():
-    print("\n=== REVIEW-HANDOFF.md, Раунд 40: «Самый старый файл» в report.html показывает "
-          "папку+имя (путь в АРХИВЕ, не origin_display источника) -- через реальный "
-          "archive-пайплайн, не build_model_from_rows() напрямую с вручную собранным data ===")
+    print("\n=== REVIEW-HANDOFF.md, Раунд 40: «Самый старый файл» показывает папку+имя (путь в "
+          "АРХИВЕ, не origin_display источника) -- через реальный archive-пайплайн + [4] "
+          "Паспорт архива, не build_model_from_rows()/generate_passport_report() напрямую с "
+          "вручную собранным data. 2026-07-31: это поле переехало из обычного report.html "
+          "(Sheet1, убран вместе с кумулятивным «Ваш архив») в passport.html -- тест сверяет "
+          "паспорт, не report.html, где этой строки больше нет ни для одного архива ===")
     src = os.path.join(WORK, "src_oldest_file_path")
     image(os.path.join(src, "Отпуск 2015", "oldest_photo.jpg"), 1600, 1200, exif=True,
           dt="2015:07:01 09:00:00")
@@ -799,8 +803,19 @@ def test_oldest_file_line_shows_folder_and_name():
     r = run_photosort(src, tgt)
     check(r.returncode == 0, "oldest-file-path: archive run exits 0")
 
-    report_path = os.path.join(tgt, "__служебные_файлы", "report.html")
-    check(os.path.isfile(report_path), "oldest-file-path: report.html generated")
+    code = (
+        "import sys; sys.path.insert(0, %r)\n"
+        "for s in (sys.stdout, sys.stderr):\n"
+        "    s.reconfigure(encoding='utf-8', errors='replace')\n"
+        "import photosort_win as m\n"
+        "m._bare_launch_run_passport(%r, log=print)\n"
+    ) % (ROOT, tgt)
+    r2 = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         encoding="utf-8", errors="replace")
+    check(r2.returncode == 0, f"oldest-file-path: passport run exits 0 (stderr={r2.stderr[-500:]})")
+
+    report_path = os.path.join(tgt, "__служебные_файлы", "passport.html")
+    check(os.path.isfile(report_path), "oldest-file-path: passport.html generated")
     if os.path.isfile(report_path):
         with open(report_path, encoding="utf-8") as f:
             html_out = f.read()
@@ -811,6 +826,7 @@ def test_oldest_file_line_shows_folder_and_name():
               "oldest-file-path: the archive folder (Albums\\...) is shown alongside the name")
         check("newer_photo.jpg" not in html_out,
               "oldest-file-path: only the actually-oldest file is named, not the newer one")
+        os.remove(report_path)
 
 
 def test_analyze_report_recommendations_section():
@@ -842,11 +858,15 @@ def test_analyze_report_recommendations_section():
         os.remove(report_path)
 
 
-def test_workdir_dryrun_shows_full_target_history_when_target_exists():
-    print("\n=== REVIEW-HANDOFF.md, Раунд 38: интерактивный [2] «Пробный прогон» на уже "
-          "существующем Target читает полную историю Target (не только гипотетические "
-          "строки этого прогона) и показывает полноценные «Ваш архив»/диаграммы вместо "
-          "урезанного чек-листа -- через реальный _bare_launch_run_dryrun(), не "
+def test_workdir_dryrun_on_existing_target_omits_old_history():
+    print("\n=== REVIEW-HANDOFF.md, Раунд 38 + SESSION-HANDOFF.txt 2026-07-31: интерактивный "
+          "[2] «Пробный прогон» на уже существующем Target по-прежнему мёржит реальную "
+          "историю Target с гипотетическими строками этого прогона (full_workdir=True, "
+          "отличает его от обычного «Что стоит проверить»-only рендера) -- но кумулятивная "
+          "«Ваш архив»/диаграммы по ЭТОЙ истории больше НЕ рендерится (убрана по прямой "
+          "просьбе пользователя вместе с тем же разделом у настоящей сборки): старый файл, "
+          "реально уже лежащий в Target с прошлого прогона, не должен утекать в отчёт этого "
+          "прогона -- через реальный _bare_launch_run_dryrun(), не "
           "report.generate_report() напрямую с вручную собранным data ===")
     src = os.path.join(WORK, "src_workdir_full_history")
     tgt = os.path.join(WORK, "target_workdir_full_history")
@@ -877,18 +897,216 @@ def test_workdir_dryrun_shows_full_target_history_when_target_exists():
     if os.path.isfile(report_path):
         with open(report_path, encoding="utf-8") as f:
             html_out = f.read()
-        check("Ваш архив" in html_out,
-              "workdir-full-history: full 'Ваш архив' section rendered (live fix), not the "
-              "old narrow 'Что стоит проверить'-only render")
-        check("2019" in html_out,
-              "workdir-full-history: real archive history (2019 photo, already on TARGET "
-              "from the first real run) is part of the model, not just this dry run's own "
-              "hypothetical addition")
+        check("Ваш архив" not in html_out,
+              "workdir-full-history: cumulative 'Ваш архив' section is gone (2026-07-31) even "
+              "though full_workdir=True still merges real Target history internally")
+        # "Новое в этом пополнении"-заголовок здесь намеренно НЕ проверяется -- оба файла в
+        # этом фикстуре чистые (нет near-dup/disputed/unreadable ни у одного), чек-лист-карточка
+        # пуста и не рендерится вообще (_render_checklist_card() возвращает "" без items) --
+        # прямой пример покрыт отдельным unit-тестом с намеренно "грязными" данными, см.
+        # tests/test_report.py::test_generate_report_workdir_full_workdir_differs_from_default_minimal.
+        #
+        # "2019" САМО ПО СЕБЕ -- не годный маркер утечки: first.jpg (2019, из первого реального
+        # прогона) сидит и в SOURCE (фикстур его не убирал), поэтому этот повторный [2]-прогон
+        # ЗАКОННО находит его как точный повтор уже заархивированного файла и показывает папку
+        # совпадения ("ByDate\2019\...") в карточке "Дубли этого пополнения — примеры" -- это
+        # результат ИМЕННО этого прогона, не утёкшая история (живая находка первого запуска
+        # этого теста на реальных bin/, 2026-07-31 -- переписан заново до этого ни разу не
+        # исполнялся, см. CLAUDE.md "Самопроверка нетривиальных изменений"). Настоящий маркер
+        # кумулятивной истории -- заголовок Sheet2 ("Медиафайлы по годам"), который рендерится
+        # только вместе с убранным Sheet1/2, не с чек-листом "Новое в этом пополнении".
+        check("Медиафайлы по годам" not in html_out,
+              "workdir-full-history: cumulative Sheet2 ('Медиафайлы по годам', history-wide "
+              "years chart) no longer leaks into this run's preview")
         os.remove(report_path)
 
     dryrun_csv = os.path.join(ROOT, "dryrun_report.csv")
     if os.path.isfile(dryrun_csv):
         os.remove(dryrun_csv)
+
+
+def test_passport_report_on_real_archive():
+    print("\n=== SESSION-HANDOFF.txt, design-сессия 2026-07-31: [4] Паспорт архива -- "
+          "run_passport()/_bare_launch_run_passport() через реальный пайплайн (build a real "
+          "archive first, then run the passport against IT, not synthetic AnalyzeStats) ===")
+    src = os.path.join(WORK, "src_passport")
+    tgt = os.path.join(WORK, "target_passport")
+    image(os.path.join(src, "Отпуск", "a.jpg"), 1600, 1200, exif=True, dt="2022:04:04 10:00:00")
+    image(os.path.join(src, "Отпуск", "b.jpg"), 1600, 1200, exif=True, dt="2023:05:05 11:00:00")
+    r = run_photosort(src, tgt)
+    check(r.returncode == 0, "passport: initial real archive build exits 0")
+
+    code = (
+        "import sys; sys.path.insert(0, %r)\n"
+        "for s in (sys.stdout, sys.stderr):\n"
+        "    s.reconfigure(encoding='utf-8', errors='replace')\n"
+        "import photosort_win as m\n"
+        "path = m._bare_launch_run_passport(%r, log=print)\n"
+        "print('REPORT_PATH:', path)\n"
+    ) % (ROOT, tgt)
+    r2 = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         encoding="utf-8", errors="replace")
+    check(r2.returncode == 0, f"passport: unit script exits 0 (stderr={r2.stderr[-800:]})")
+
+    report_path = os.path.join(tgt, "__служебные_файлы", "passport.html")
+    check(f"REPORT_PATH: {report_path}" in r2.stdout,
+          f"passport: _bare_launch_run_passport() returns the real report path "
+          f"(stdout tail={r2.stdout[-300:]!r})")
+    check(os.path.isfile(report_path), "passport: passport.html written to TARGET\\__служебные_файлы\\")
+    if os.path.isfile(report_path):
+        with open(report_path, encoding="utf-8") as f:
+            html_out = f.read()
+        check("Целостность архива" in html_out, "passport: integrity section is rendered")
+        check("Дублей внутри архива нет." in html_out,
+              "passport: two genuinely distinct photos -> no exact-dup finding, shown explicitly")
+        check("Повреждённых или пустых файлов нет." in html_out,
+              "passport: clean archive -> 'no problem' line shown, not silently omitted")
+        check('class="attn"' not in html_out,
+              "passport: clean archive has zero 'attn' (problem-found) items")
+        check("2" in html_out.split("Целостность архива")[0],
+              "passport: total file count (2) appears in the 'Архив сейчас' summary")
+        os.remove(report_path)
+
+
+def test_passport_reuses_archive_hash_cache():
+    print("\n=== Задача 7 (SESSION-HANDOFF.txt, пакет \"боевой прогон D:\\\\\"): паспорт архива "
+          "должен переиспользовать archive_cache (TARGET\\__служебные_файлы\\archive_cache.db, "
+          "речь пользователя 2026-08-02), не пересчитывать SHA-256+pHash с нуля для каждого "
+          "файла -- через реальный пайплайн (реальная сборка сеет кэш через "
+          "_seed_archive_cache(), реальный паспорт должен найти и использовать эти же записи) ===")
+    src = os.path.join(WORK, "src_passport_cache")
+    tgt = os.path.join(WORK, "target_passport_cache")
+    a_path = os.path.join(src, "Отпуск", "a.jpg")
+    b_path = os.path.join(src, "Отпуск", "b.jpg")
+    image(a_path, 1600, 1200, exif=True, dt="2022:04:04 10:00:00")
+    image(b_path, 1600, 1200, exif=True, dt="2023:05:05 11:00:00")
+    r = run_photosort(src, tgt)
+    check(r.returncode == 0, "passport-cache: initial real archive build exits 0")
+
+    dest_a = os.path.join(tgt, "Albums", "Отпуск", "a.jpg")
+    dest_b = os.path.join(tgt, "Albums", "Отпуск", "b.jpg")
+    check(os.path.isfile(dest_a) and os.path.isfile(dest_b),
+          "passport-cache: precondition -- both files actually landed in the real archive")
+
+    # Речь пользователя, 2026-08-02 (задача 2): archive_cache теперь живёт ВНУТРИ архива, рядом
+    # с его логами (TARGET\__служебные_файлы\archive_cache.db, см. archive_cache_db_path()),
+    # не в work.db рядом с photosort_win.py -- та же копия .exe или другая, не важно, кэш
+    # переживает переезд .exe, потому что живёт при самом архиве. _seed_archive_cache() уже
+    # должен был заполнить его для только что размещённых файлов ДО запуска паспорта.
+    cache_db = os.path.join(tgt, "__служебные_файлы", "archive_cache.db")
+    check(os.path.isfile(cache_db), "passport-cache: archive_cache.db exists inside TARGET")
+
+    import hashlib
+    import sqlite3
+    real_sha_a = hashlib.sha256(open(dest_a, "rb").read()).hexdigest()
+    real_sha_b = hashlib.sha256(open(dest_b, "rb").read()).hexdigest()
+
+    conn = sqlite3.connect(cache_db)
+    try:
+        row_a = conn.execute("SELECT sha256, phash FROM archive_cache WHERE path=?", (dest_a,)).fetchone()
+        row_b = conn.execute("SELECT sha256, phash FROM archive_cache WHERE path=?", (dest_b,)).fetchone()
+    finally:
+        conn.close()
+    check(row_a is not None and row_b is not None,
+          "passport-cache: real build already seeded archive_cache for both placed files "
+          "(_seed_archive_cache(), precondition for the passport to have anything to reuse)")
+    if row_a and row_b:
+        check(row_a[0] == real_sha_a and row_a[1] is not None,
+              "passport-cache: seeded cache entry for a.jpg has the CORRECT sha256, not a stale/wrong value")
+        check(row_b[0] == real_sha_b and row_b[1] is not None,
+              "passport-cache: seeded cache entry for b.jpg has the CORRECT sha256, not a stale/wrong value")
+
+    code = (
+        "import sys; sys.path.insert(0, %r)\n"
+        "for s in (sys.stdout, sys.stderr):\n"
+        "    s.reconfigure(encoding='utf-8', errors='replace')\n"
+        "import photosort_win as m\n"
+        "path = m._bare_launch_run_passport(%r, log=print)\n"
+        "print('REPORT_PATH:', path)\n"
+    ) % (ROOT, tgt)
+    r2 = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         encoding="utf-8", errors="replace")
+    check(r2.returncode == 0, f"passport-cache: passport run exits 0 (stderr={r2.stderr[-800:]})")
+
+    report_path = os.path.join(tgt, "__служебные_файлы", "passport.html")
+    check(os.path.isfile(report_path), "passport-cache: passport.html written")
+    if os.path.isfile(report_path):
+        with open(report_path, encoding="utf-8") as f:
+            html_out = f.read()
+        # Если бы паспорт при переиспользовании кэша подставил не то поле (перепутанный
+        # порядок кортежа в analyze_batch()/run_analyze()) -- целостность "разъехалась" бы
+        # (ложный точный дубль/битый файл), эти же самые проверки, что и в обычном паспорте
+        # без кэша (test_passport_report_on_real_archive), это бы поймали.
+        check("Дублей внутри архива нет." in html_out,
+              "passport-cache: two genuinely distinct photos still show up as non-duplicate "
+              "after cache reuse (values weren't corrupted/mixed up)")
+        check("Повреждённых или пустых файлов нет." in html_out,
+              "passport-cache: neither file flagged broken after cache reuse "
+              "(cached width/height fed back correctly)")
+        os.remove(report_path)
+
+    # work.db переиспользуется КАЖДЫМ CI-тестом в этом файле (общий WORKDIR/work.db, см.
+    # _app_dir()) -- не удаляем его самого, только собственные fixture-папки WORK ниже
+    # чистятся общей уборкой main() по завершении прогона.
+
+
+def test_passport_self_scan_recognizes_bydate_and_keeps_low_confidence_tier():
+    print("\n=== Живой репорт пользователя (2026-08-01): сравнил report.html и passport.html "
+          "после реальной сборки -- нашёл два бага в run_analyze(self_scan=True): (1) файлы, "
+          "легшие по дате (ByDate), а не в альбом, ошибочно считались 'вне архива, в обход "
+          "программы'; (2) их же Tier C ('дата приблизительна') на паспорте искусственно "
+          "повышался до Tier B, потому что resolve_date() читал год из ИМЕНИ СОБСТВЕННОЙ "
+          "ByDate-папки, которую программа сама сгенерировала на этом же прогоне. Реальный "
+          "пайплайн (build -> passport), не синтетический AnalyzeStats. ===")
+    src = os.path.join(WORK, "src_passport_bydate")
+    tgt = os.path.join(WORK, "target_passport_bydate")
+    # Без EXIF, без даты в имени файла, прямо в корне SOURCE (не в папке-альбоме) -- обычная
+    # сборка положит его в ByDate по mtime (единственный файл в своей папке -- len<3,
+    # mtime_is_copy_artifact() не сработает), Tier C ("оценочная").
+    no_signal_path = os.path.join(src, "randomname.jpg")
+    image(no_signal_path, 1600, 1200, exif=False)
+    old_mtime = datetime(2018, 6, 1).timestamp()
+    os.utime(no_signal_path, (old_mtime, old_mtime))
+    r = run_photosort(src, tgt)
+    check(r.returncode == 0, "passport/bydate: initial real archive build exits 0")
+
+    dates_review = read_csv(os.path.join(tgt, "__служебные_файлы", "logs", "dates_review.csv"))
+    check(len(dates_review) == 1 and dates_review[0]["tier"] == "C",
+          f"passport/bydate: build itself sees Tier C (mtime-based), not Tier A/B "
+          f"(dates_review.csv={dates_review!r})")
+
+    code = (
+        "import sys; sys.path.insert(0, %r)\n"
+        "for s in (sys.stdout, sys.stderr):\n"
+        "    s.reconfigure(encoding='utf-8', errors='replace')\n"
+        "import photosort_win as m\n"
+        "path = m._bare_launch_run_passport(%r, log=print)\n"
+        "print('REPORT_PATH:', path)\n"
+    ) % (ROOT, tgt)
+    r2 = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         encoding="utf-8", errors="replace")
+    check(r2.returncode == 0, f"passport/bydate: unit script exits 0 (stderr={r2.stderr[-800:]})")
+
+    report_path = os.path.join(tgt, "__служебные_файлы", "passport.html")
+    check(os.path.isfile(report_path), "passport/bydate: passport.html written")
+    if os.path.isfile(report_path):
+        with open(report_path, encoding="utf-8") as f:
+            html_out = f.read()
+        # Баг 1: без self_scan-исключения find_album() не находит альбом под ByDate (protected
+        # dump-имя + день-папка безусловно dump-тэгнута) -- файл ошибочно засчитывался как
+        # "лежит не внутри альбома/даты", хотя это ровно то место, куда его положила программа.
+        check("не внутри конкретного альбома или папки по дате" not in html_out,
+              "passport/bydate: a plain ByDate file is NOT flagged as 'outside the program'")
+        # Баг 2: без use_folder_name_date=False паспорт вычитал бы год из имени СОБСТВЕННОЙ
+        # ByDate-папки и повысил бы файл до Tier B -- тот исчез бы из "n_approx_or_missing"
+        # (report.py считает там только Tier C + Tier D, не B). Формулировка обновлена задачей
+        # 3 (речь пользователя, 2026-08-02) -- теперь явно называет ByDate (файл этого теста
+        # физически лежит именно там, не в Albums, поэтому входит в n_tier_cd_bydate).
+        check("У 1 файла в ByDate дата определена лишь приблизительно" in html_out,
+              f"passport/bydate: the genuinely low-confidence file is still counted, not "
+              f"silently promoted by re-reading its own generated folder name "
+              f"(html tail={html_out[html_out.find('Целостность'):][:400]!r})")
+        os.remove(report_path)
 
 
 def test_empty_source_report_suggests_other_location():
@@ -959,7 +1177,11 @@ def test_geo_lookup_works_for_albums_files():
     print("\n=== Живая находка 2026-07-25 (боевой прогон F:\\, весь архив ушёл в Albums\\..., "
           "ни одного города в отчёте): place_for_gps() раньше вызывался только в ByDate-ветке, "
           "Albums-файлы никогда не получали geo-lookup вообще -- через реальный пайплайн, не "
-          "report.build_model_from_rows() напрямую ===")
+          "report.build_model_from_rows() напрямую. 2026-07-31: 'География' переехала из "
+          "обычного report.html (Sheet2, убран вместе с кумулятивным «Ваш архив») в [4] Паспорт "
+          "архива -- run_analyze() теперь сам резолвит GPS -> место (AnalyzeStats.cities), тест "
+          "сверяет passport.html, appended.csv по-прежнему сверяется напрямую (place-колонка -- "
+          "то же место в конвейере, что и раньше, паспорт её не читает) ===")
     src = os.path.join(WORK, "src_geo_albums")
     jpg = os.path.join(src, "Отпуск", "a.jpg")
     image(jpg, 1200, 900, exif=True, dt="2019:07:15 12:00:00")
@@ -996,12 +1218,88 @@ def test_geo_lookup_works_for_albums_files():
               "geo-albums: appended.csv's place column is non-empty for an Albums-routed file "
               "with a GPS tag (live fix, verified end-to-end)")
 
-    report_path = os.path.join(tgt, "__служебные_файлы", "report.html")
-    if os.path.isfile(report_path):
-        with open(report_path, encoding="utf-8") as f:
+    code = (
+        "import sys; sys.path.insert(0, %r)\n"
+        "for s in (sys.stdout, sys.stderr):\n"
+        "    s.reconfigure(encoding='utf-8', errors='replace')\n"
+        "import photosort_win as m\n"
+        "m._bare_launch_run_passport(%r, log=print)\n"
+    ) % (ROOT, tgt)
+    r2 = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         encoding="utf-8", errors="replace")
+    check(r2.returncode == 0, f"geo-albums: passport run exits 0 (stderr={r2.stderr[-500:]})")
+
+    passport_path = os.path.join(tgt, "__служебные_файлы", "passport.html")
+    check(os.path.isfile(passport_path), "geo-albums: passport.html generated")
+    if os.path.isfile(passport_path):
+        with open(passport_path, encoding="utf-8") as f:
             html_out = f.read()
         check("География" in html_out,
-              "geo-albums: report.html renders a География section for an Albums-only archive")
+              "geo-albums: passport.html renders a География section for an Albums-only archive")
+        os.remove(passport_path)
+
+
+def test_top_cameras_chart_in_report():
+    print("\n=== Пункт E ('большой разбор report.html', SESSION-HANDOFF.txt): 'camera' -- "
+          "новая колонка appended.csv (rec.camera/camera_from_tags(), раньше использовался "
+          "только как bool-флаг) + диаграмма 'Топ камер/устройств съёмки' на Листе 2 -- через "
+          "реальный пайплайн (реальный exiftool Make/Model), не model напрямую ===")
+    src = os.path.join(WORK, "src_top_cameras")
+    image(os.path.join(src, "a.jpg"), 1200, 900, exif=True, dt="2019:07:15 12:00:00",
+          make="Canon", model="Canon EOS 80D")
+    image(os.path.join(src, "b.jpg"), 1200, 900, exif=True, dt="2019:07:16 12:00:00",
+          make="Canon", model="Canon EOS 80D")
+    image(os.path.join(src, "c.jpg"), 1200, 900, exif=True, dt="2019:07:17 12:00:00",
+          make="Apple", model="iPhone 14")
+    image(os.path.join(src, "d.jpg"), 1200, 900, exif=True, dt="2019:07:18 12:00:00",
+          make="NIKON CORPORATION", model="NIKON D850")
+    # Без EXIF-камеры вовсе -- скриншот/картинка из интернета, не должен появиться в диаграмме
+    # ни как своя запись, ни как искусственное "неизвестно".
+    image(os.path.join(src, "no_exif.jpg"), 1200, 900, exif=False)
+
+    tgt = os.path.join(WORK, "target_top_cameras")
+    r = run_photosort(src, tgt)
+    check(r.returncode == 0, "top-cameras: run exits 0")
+
+    appended = read_csv(os.path.join(tgt, "__служебные_файлы", "logs", "appended.csv"))
+    by_name = {os.path.basename(row["source"]): row.get("camera", "") for row in appended
+               if row.get("reason") == "appended_new"}
+    check(by_name.get("a.jpg") == "Canon EOS 80D",
+          f"top-cameras: appended.csv's camera column has real EXIF Make/Model "
+          f"(live fix, verified end-to-end; got {by_name!r})")
+    check(by_name.get("no_exif.jpg", None) == "",
+          "top-cameras: file with no EXIF camera gets an empty camera column, not missing/crash")
+
+    # Живая находка при написании этого теста: report.html после [3] (level="target") НЕ
+    # рендерит Sheet2 вообще -- _generate_from_model() показывает Sheet2 (диаграммы) ТОЛЬКО
+    # когда checklist_new is None, что бывает исключительно для level=="analyze" (см. её же
+    # комментарий "единственный оставшийся потребитель полной кумулятивной картины"), с
+    # 2026-07-31 (убрано кумулятивное "Ваш архив"). "Топ камер"/"География" живут на Sheet2,
+    # значит реально видны только через [1] analyze, не через обычную сборку -- отдельный
+    # прогон analyze на тот же SOURCE, report.html пишется в WORKDIR (ROOT), не в TARGET.
+    workdir_report = os.path.join(ROOT, "report.html")
+    if os.path.isfile(workdir_report):
+        os.remove(workdir_report)  # не унести случайно устаревший файл от прошлого теста
+    r2 = run_photosort_mode("analyze", src, tgt + "_analyze")
+    check(r2.returncode == 0, "top-cameras: analyze exits 0")
+    check(os.path.isfile(workdir_report), "top-cameras: analyze writes report.html to WORKDIR")
+    if os.path.isfile(workdir_report):
+        with open(workdir_report, encoding="utf-8") as f:
+            html_out = f.read()
+        check("Топ камер/устройств съёмки" in html_out,
+              "top-cameras: analyze's report.html renders the new chart with 3 distinct real cameras")
+        # camera_from_tags() (photosort_win.py) only dedupes Make+Model when Make is literally
+        # a substring of Model -- "Apple"/"iPhone 14" and "NIKON CORPORATION"/"NIKON D850"
+        # don't match that check, so both halves show up combined (pre-existing behavior of
+        # camera_from_tags(), not something this chart changes -- just surfaces it for the
+        # first time). Assert against what exiftool/camera_from_tags() actually produce.
+        check("Canon EOS 80D" in html_out, "top-cameras: Canon model shown clean (Make is a substring of Model)")
+        check("Apple iPhone 14" in html_out, "top-cameras: Apple model shown as Make+Model (not deduped)")
+        # _svg_hbar_chart() truncates labels over 26 chars (same as "Топ альбомов") -- the full
+        # 28-char "NIKON CORPORATION NIKON D850" gets cut to "NIKON CORPORATION NIKON…", check
+        # a substring that survives truncation, not the full string.
+        check("NIKON CORPORATION NIKON" in html_out, "top-cameras: Nikon model shown as Make+Model (not deduped)")
+        os.remove(workdir_report)
 
 
 def test_exact_dup_examples_in_report():
@@ -1036,7 +1334,7 @@ def test_exact_dup_examples_in_report():
     if os.path.isfile(report_path):
         with open(report_path, encoding="utf-8") as f:
             html_out = f.read()
-        check("Точные повторы" in html_out and "примеры" in html_out,
+        check("Дубли" in html_out and "примеры" in html_out,
               "exact-dup-examples: report.html renders the new examples card heading")
         check("Ничего делать не нужно" in html_out,
               "exact-dup-examples: framed as no-action-needed, not as a checklist item")
@@ -1079,9 +1377,11 @@ def test_dedup_verification_page():
         report_html = f.read()
     check("dedup_verification.html" in report_html and "полная сверка построчно" in report_html,
           "dedup-verification: report.html links to the standalone verification page")
-    # 2026-07-26, живая находка пользователя: ссылка должна быть сразу под карточкой "Точные
-    # повторы — примеры", не оторвана от неё в хвосте страницы -- иначе непонятно, к чему она.
-    card_pos = report_html.index("Точные повторы")
+    # 2026-07-26, живая находка пользователя: ссылка должна быть сразу под карточкой
+    # "Дубли этого пополнения — примеры", не оторвана от неё в хвосте страницы -- иначе
+    # непонятно, к чему она (обычный прогон с run_start рендерит именно этот заголовок, см.
+    # report.py:_generate_from_model()).
+    card_pos = report_html.index("Дубли этого пополнения — примеры")
     link_pos = report_html.index("полная сверка построчно")
     check(card_pos < link_pos < card_pos + 2000,
           "dedup-verification: link sits right under the exact-dup-examples card, not detached "
@@ -1115,7 +1415,7 @@ def test_this_run_stats_broken_down_by_media_type():
     check("в т.ч.: фото — 1 файл, RAW — 1 файл" in html_out,
           "this-run-by-type: new-files tile shows the фото/RAW breakdown "
           "(live fix, verified end-to-end)")
-    check("Точные повторы, в т.ч.: фото — 1 файл, RAW — 1 файл" in html_out,
+    check("Дубли, в т.ч.: фото — 1 файл, RAW — 1 файл" in html_out,
           "this-run-by-type: exact-duplicate pie caption shows the type breakdown too "
           "(live fix, verified end-to-end)")
 
@@ -1540,6 +1840,78 @@ def test_eof_no_traceback():
     check("Traceback" not in r.stdout and "Traceback" not in r.stderr,
           "EOF: produces no traceback")
     check("Ввод прерван" in r.stdout, "EOF: prints a short Russian message")
+
+
+def test_ctrl_c_during_build_still_offers_the_report():
+    print("\n=== 2026-07-28 (живой баг-репорт): Ctrl+C во время [3] голого меню формирует "
+          "report.html корректно (это уже работало), НО main() показывал общую подсказку "
+          "'Нажмите Enter для выхода' и НИКОГДА не открывал браузер -- report_path терялся "
+          "при повторном raise KeyboardInterrupt из _bare_launch_run_build() до main(). "
+          "Фикс: _InterruptedRunReport(KeyboardInterrupt) несёt report_path тем же путём. ===")
+    # Часть 1: main()'s except KeyboardInterrupt as e -- достаёт report_path из исключения и
+    # передаёт в _pause_before_exit(), которая только тогда показывает "...чтобы открыть отчёт
+    # в браузере" вместо голого "для выхода" и реально зовёт _open_report_in_browser().
+    # _open_report_in_browser -- заглушка (не открывать настоящий браузер на CI-раннере),
+    # stdin этого subprocess не подключён -- input() внутри _pause_before_exit() сразу
+    # получает EOFError, что код уже штатно проглатывает (тот же приём, что test_ctrl_c_no_traceback
+    # использует для не-report_path случая).
+    code_main = (
+        "import sys; sys.path.insert(0, %r)\n"
+        "for s in (sys.stdout, sys.stderr):\n"
+        "    s.reconfigure(encoding='utf-8', errors='replace')\n"
+        "import photosort_win as m\n"
+        "opened = []\n"
+        "m._open_report_in_browser = lambda p: opened.append(p)\n"
+        "def _raise(): raise m._InterruptedRunReport('C:\\\\fake\\\\report.html')\n"
+        "m._main = _raise\n"
+        "try:\n"
+        "    m.main()\n"
+        "except SystemExit as se:\n"
+        # main() calls sys.exit(130) internally -- print the 'opened' evidence before
+        # re-raising the SAME exit code, so subprocess.run()'s returncode still reflects it
+        # (this test is the first one needing output AFTER m.main() returns/exits).
+        "    print('opened:', opened)\n"
+        "    raise\n"
+    ) % ROOT
+    r = subprocess.run([sys.executable, "-c", code_main], capture_output=True, text=True,
+                        encoding="utf-8", errors="replace")
+    check(r.returncode == 130, f"ctrl_c_report: exits with code 130 (got {r.returncode})")
+    check("Traceback" not in r.stdout and "Traceback" not in r.stderr,
+          "ctrl_c_report: produces no traceback")
+    check("Прервано" in r.stdout, "ctrl_c_report: prints the short interrupted message")
+    check("открыть отчёт в браузере" in r.stdout,
+          "ctrl_c_report: pause prompt offers to open the report (not the bare 'для выхода' text)")
+    check("opened: ['C:\\\\fake\\\\report.html']" in r.stdout,
+          "ctrl_c_report: _open_report_in_browser() actually called with the report path")
+
+    # Часть 2: _bare_launch_run_build() -- когда run_for_source() возвращает interrupted=True,
+    # должен подняться именно _InterruptedRunReport (с правильным report_path), не голый
+    # KeyboardInterrupt -- иначе часть 1 выше защищает код, который на практике никогда не
+    # выполняется. run_for_source()/_finalize_target_report()/_confirm_build_summary()/
+    # resolve_drive_root_conflict() замоканы -- эта часть теста не про пайплайн обработки
+    # файлов (уже покрыт другими тестами), а именно про то, какое исключение улетает наверх.
+    code_build = (
+        "import sys; sys.path.insert(0, %r)\n"
+        "import photosort_win as m\n"
+        "m._confirm_build_summary = lambda *a, **k: True\n"
+        "m.resolve_drive_root_conflict = lambda sources, target, **k: target\n"
+        "m.run_for_source = lambda *a, **k: m.RunResult(failed=False, interrupted=True, "
+        "processed_count=3, stats={})\n"
+        "m._finalize_target_report = lambda *a, **k: 'C:\\\\fake\\\\report2.html'\n"
+        "try:\n"
+        "    m._bare_launch_run_build(['C:/nope_src'], 'C:/nope_tgt', "
+        "input_fn=lambda *a, **k: 'да', log=lambda *a, **k: None)\n"
+        "    print('NO_EXCEPTION_RAISED')\n"
+        "except m._InterruptedRunReport as e:\n"
+        "    print('raised: _InterruptedRunReport report_path=' + repr(e.report_path))\n"
+        "except BaseException as e:\n"
+        "    print('WRONG_EXCEPTION_TYPE: ' + type(e).__name__)\n"
+    ) % ROOT
+    r2 = subprocess.run([sys.executable, "-c", code_build], capture_output=True, text=True,
+                         encoding="utf-8", errors="replace")
+    check("raised: _InterruptedRunReport report_path='C:\\\\fake\\\\report2.html'" in r2.stdout,
+          f"ctrl_c_report: _bare_launch_run_build() raises _InterruptedRunReport with the real "
+          f"report_path, not a bare KeyboardInterrupt (got stdout: {r2.stdout!r})")
 
 
 def test_near_dup_appended_not_skipped():
@@ -2247,7 +2619,7 @@ def test_log_rotation():
           "5.3в: current appended.csv is a fresh (small) file after rotation")
     with open(appended_path, encoding="utf-8") as f:
         first_line = f.readline().strip()
-    check(first_line == "timestamp,source,dest,reason,flags,date,duration,place",
+    check(first_line == "timestamp,source,dest,reason,flags,date,duration,place,camera",
           "5.3в: rotated-then-reopened appended.csv has its CSV header restored")
 
 
@@ -2277,7 +2649,9 @@ def test_archive_cache_prunes_stale_paths():
         r2 = run_photosort(src, tgt)
         check(r2.returncode == 0, "cache-prune: second run exits 0")
 
-        db_path = os.path.join(ROOT, "work.db")
+        # Речь пользователя, 2026-08-02 (задача 2): archive_cache теперь живёт ВНУТРИ архива
+        # (TARGET\__служебные_файлы\archive_cache.db), не в work.db рядом с .exe.
+        db_path = os.path.join(tgt, "__служебные_файлы", "archive_cache.db")
         import sqlite3
         conn = sqlite3.connect(db_path)
         cached_paths = {row[0] for row in conn.execute("SELECT path FROM archive_cache")}
@@ -2726,6 +3100,7 @@ def test_bare_launch_helpers_unit():
         "print('view_choice:', m.prompt_bare_launch_menu(input_fn=lambda p: '1'))\n"
         "print('dry_run_choice:', m.prompt_bare_launch_menu(input_fn=lambda p: '2'))\n"
         "print('build_choice:', m.prompt_bare_launch_menu(input_fn=lambda p: '3'))\n"
+        "print('passport_choice:', m.prompt_bare_launch_menu(input_fn=lambda p: '4'))\n"
     ) % ROOT
     r2 = subprocess.run([sys.executable, "-c", code2], capture_output=True, text=True,
                          encoding="utf-8", errors="replace", timeout=60)
@@ -2736,6 +3111,45 @@ def test_bare_launch_helpers_unit():
     check("view_choice: view" in r2.stdout, "bare-menu helpers: '1' maps to view")
     check("dry_run_choice: dry_run" in r2.stdout, "bare-menu helpers: '2' maps to dry_run")
     check("build_choice: build" in r2.stdout, "bare-menu helpers: '3' maps to build")
+    check("passport_choice: passport" in r2.stdout,
+          "bare-menu helpers: '4' maps to passport (SESSION-HANDOFF.txt, 2026-07-31)")
+
+    # [4] Паспорт архива -- prompt_passport_target_submenu() only lists drives with an
+    # ALREADY-EXISTING archive (unlike prompt_target_submenu(), which offers every drive as a
+    # build destination) -- on the Linux CI runner enumerate_menu_drives() is always [] (no
+    # drive letters), but a real Windows machine running this same suite (SESSION-HANDOFF.txt
+    # Windows-role checklist) can have real drives with a real __PhotoArchive__ already on one
+    # of them (e.g. a past боевой прогон) -- that's not a bug, just a different, also-valid
+    # menu state, and this test isn't about drive enumeration at all. Monkeypatch
+    # enumerate_menu_drives() to [] so "candidates == [] -> the only menu option is
+    # '[1] Указать свою папку'" holds deterministically on any host, not just incidentally on
+    # CI's driveless runner.
+    code2b = (
+        "import sys; sys.path.insert(0, %r)\n"
+        "for s in (sys.stdout, sys.stderr):\n"
+        "    s.reconfigure(encoding='utf-8', errors='replace')\n"
+        "import photosort_win as m\n"
+        "m.enumerate_menu_drives = lambda: []\n"
+        # candidates == [] -> the ONLY menu option is "[1] Указать свою папку" -- two separate
+        # input_fn() calls (menu number, then the actual path text), an iterator distinguishes
+        # them.
+        "answers = iter(['1', r'D:\\MyArchive'])\n"
+        "custom = m.prompt_passport_target_submenu(\n"
+        "    input_fn=lambda p: next(answers), allow_back=True)\n"
+        "print('custom_path:', custom)\n"
+        "back = m.prompt_passport_target_submenu(input_fn=lambda p: '0', allow_back=True)\n"
+        "print('back_is_sentinel:', back is m._MENU_BACK)\n"
+    ) % ROOT
+    r2b = subprocess.run([sys.executable, "-c", code2b], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=60)
+    check(r2b.returncode == 0,
+          f"bare-menu helpers: passport target-submenu unit script exits 0 (stderr={r2b.stderr[-500:]})")
+    check(r"custom_path: D:\MyArchive" in r2b.stdout,
+          "bare-menu helpers: prompt_passport_target_submenu() 'custom folder' choice returns "
+          "the typed path as-is")
+    check("back_is_sentinel: True" in r2b.stdout,
+          "bare-menu helpers: prompt_passport_target_submenu(allow_back=True) honors '0' the "
+          "same way prompt_target_submenu() does")
 
     # 2026-07-12 back-navigation rewrite: _menu_choice(allow_back=True) accepts "0" as a
     # distinct sentinel (not the number 0, doesn't collide with the normal 1..n_options
@@ -3687,10 +4101,14 @@ ALL_TESTS = [
     test_analyze_closing_cta_mentions_archives_found,
     test_oldest_file_line_shows_folder_and_name,
     test_analyze_report_recommendations_section,
-    test_workdir_dryrun_shows_full_target_history_when_target_exists,
+    test_workdir_dryrun_on_existing_target_omits_old_history,
+    test_passport_report_on_real_archive,
+    test_passport_reuses_archive_hash_cache,
+    test_passport_self_scan_recognizes_bydate_and_keeps_low_confidence_tier,
     test_empty_source_report_suggests_other_location,
     test_raw_without_jpeg_in_album_gets_date_column,
     test_geo_lookup_works_for_albums_files,
+    test_top_cameras_chart_in_report,
     test_exact_dup_examples_in_report,
     test_dedup_verification_page,
     test_this_run_stats_broken_down_by_media_type,
@@ -3705,6 +4123,7 @@ ALL_TESTS = [
     test_check_bundled_tools_detects_broken_frozen_build,
     test_target_nested_warning,
     test_ctrl_c_no_traceback,
+    test_ctrl_c_during_build_still_offers_the_report,
     test_eof_no_traceback,
     test_near_dup_appended_not_skipped,
     test_bare_date_subfolder_not_collapsed_as_dump,

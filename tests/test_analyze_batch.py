@@ -161,3 +161,508 @@ class TestVideoExactDupSkipsPhash:
         decision = m.decide(pool, rec)
         assert decision.decision == "skipped_present"
         assert decision.matched_dest == "existing.mp4"
+
+
+class TestArchiveHashCacheReuse:
+    """Задача 7 (SESSION-HANDOFF.txt, пакет "боевой прогон D:\\"): analyze_batch(cache=...)
+    -- то же (path,size,mtime)-валидное попадание в archive_cache, что уже применяет
+    index_archive() к обычной сборке, теперь доступно и вызывающей стороне run_analyze()
+    (mode="analyze", т.е. "Паспорт архива") -- не пересчитывать sha256/phash/duration с нуля
+    для файла, чьи хеш уже известен и валиден."""
+
+    def test_image_cache_hit_skips_sha256_and_phash(self, tmp_path, monkeypatch):
+        sha_calls, phash_calls = [], []
+        monkeypatch.setattr(m, "sha256_file_with_retry",
+                             lambda p, *a, **kw: (sha_calls.append(p), "real-sha")[1])
+        real_phash = m.image_phash_and_size
+        monkeypatch.setattr(m, "image_phash_and_size",
+                             lambda p: (phash_calls.append(p), real_phash(p))[1])
+
+        img = tmp_path / "a.jpg"
+        _make_jpeg(img)
+        it = _item(img)
+        cache = {str(img): (it.size, it.mtime, "cached-sha", "cached-phash", None, 111, 222, None)}
+
+        recs = m.analyze_batch([it], cache=cache)
+        rec = recs[0]
+
+        assert sha_calls == []  # sha256_file_with_retry never invoked -- cache supplied it
+        assert phash_calls == []  # image_phash_and_size never invoked either
+        assert rec.sha256 == "cached-sha"
+        assert rec.phash == "cached-phash"
+        assert (rec.width, rec.height) == (111, 222)
+
+    def test_image_cache_miss_size_mismatch_recomputes(self, tmp_path, monkeypatch):
+        sha_calls = []
+        monkeypatch.setattr(m, "sha256_file_with_retry",
+                             lambda p, *a, **kw: (sha_calls.append(p), "real-sha")[1])
+
+        img = tmp_path / "a.jpg"
+        _make_jpeg(img)
+        it = _item(img)
+        # size deliberately wrong -- cache entry must be treated as stale, not trusted.
+        cache = {str(img): (it.size + 1, it.mtime, "stale-sha", "stale-phash", None, 1, 1, None)}
+
+        recs = m.analyze_batch([it], cache=cache)
+
+        assert sha_calls == [str(img)]  # real hashing DID run -- cache was correctly rejected
+        assert recs[0].sha256 == "real-sha"
+
+    def test_image_cache_miss_mtime_mismatch_recomputes(self, tmp_path, monkeypatch):
+        sha_calls = []
+        monkeypatch.setattr(m, "sha256_file_with_retry",
+                             lambda p, *a, **kw: (sha_calls.append(p), "real-sha")[1])
+
+        img = tmp_path / "a.jpg"
+        _make_jpeg(img)
+        it = _item(img)
+        cache = {str(img): (it.size, it.mtime + 5.0, "stale-sha", "stale-phash", None, 1, 1, None)}
+
+        recs = m.analyze_batch([it], cache=cache)
+
+        assert sha_calls == [str(img)]
+        assert recs[0].sha256 == "real-sha"
+
+    def test_image_cache_hit_still_correct_with_exact_dup_pool(self, tmp_path):
+        """cache_hit -- phash приходит бесплатно из кэша, поэтому НЕ нулится даже при
+        exact_dup (в отличие от свежепосчитанного пути, см. докстринг analyze_batch()) --
+        decide() всё равно не читает rec.phash в этом случае, значение просто не мешает."""
+        img = tmp_path / "a.jpg"
+        _make_jpeg(img)
+        it = _item(img)
+        cache = {str(img): (it.size, it.mtime, "cached-sha", "cached-phash", None, 800, 600, None)}
+        pool = m.Pool()
+        pool.add(m.PoolEntry(sha256="cached-sha", ftype="image", dest_path="existing.jpg", size=1))
+
+        recs = m.analyze_batch([it], pool=pool, cache=cache)
+        rec = recs[0]
+
+        assert rec.phash == "cached-phash"
+        decision = m.decide(pool, rec)
+        assert decision.decision == "skipped_present"
+
+    def test_video_cache_hit_skips_duration_and_phash(self, tmp_path, monkeypatch):
+        duration_calls, phash_calls = [], []
+        monkeypatch.setattr(m, "video_duration_and_resolution",
+                             lambda p: (duration_calls.append(p), (2.0, 640, 480, 1000))[1])
+        monkeypatch.setattr(m, "video_phash_3frames",
+                             lambda p, d: (phash_calls.append(p), ["x" * 16] * 3)[1])
+        monkeypatch.setattr(m, "sha256_file_with_retry", lambda p, *a, **kw: "real-sha")
+
+        vid = tmp_path / "a.mp4"
+        vid.write_bytes(b"not a real video, duration/phash are stubbed")
+        it = _item(vid, ftype="video")
+        cache = {str(vid): (it.size, it.mtime, "cached-sha", "cached-phash", 9.5, 320, 240, 500)}
+
+        recs = m.analyze_batch([it], cache=cache)
+        rec = recs[0]
+
+        assert duration_calls == []
+        assert phash_calls == []
+        assert (rec.duration, rec.width, rec.height, rec.bitrate) == (9.5, 320, 240, 500)
+        assert rec.phash == "cached-phash"
+
+    def test_raw_cache_hit_reads_width_height_from_cache_too(self, tmp_path, monkeypatch):
+        """Речь пользователя, 2026-08-02: раньше RAW-ветка ИГНОРИРОВАЛА cache_hit для width/
+        height, всегда читая их из tags (exiftool) -- на exif_cache_hit=True (кэш пуст в tags,
+        см. _tag_prefetch_pairs()/_exif_cache_ready()) width/height ошибочно стали бы None,
+        хотя _seed_archive_cache() и раньше писала их для RAW не хуже, чем для image/video
+        (тот же общий индекс cached[5]/cached[6]). Исправлено -- RAW теперь читает
+        width/height из кэша на cache_hit, тем же паттерном, что image/video."""
+        sha_calls = []
+        monkeypatch.setattr(m, "sha256_file_with_retry",
+                             lambda p, *a, **kw: (sha_calls.append(p), "real-sha")[1])
+        raw = tmp_path / "a.cr2"
+        raw.write_bytes(b"fake raw bytes")
+        it = _item(raw, ftype="raw")
+        cache = {str(raw): (it.size, it.mtime, "cached-sha", None, None, 999, 999, None)}
+
+        recs = m.analyze_batch([it], cache=cache)
+        rec = recs[0]
+
+        assert sha_calls == []
+        assert rec.sha256 == "cached-sha"
+        assert (rec.width, rec.height) == (999, 999)  # теперь тоже из кэша, не из tags
+
+    def test_raw_cache_miss_still_reads_width_height_from_tags(self, tmp_path, monkeypatch):
+        """Дополняет тест выше: без cache_hit RAW по-прежнему берёт width/height из EXIF-тегов
+        (реального кэш-попадания нет -- нечего переиспользовать)."""
+        raw = tmp_path / "a.cr2"
+        raw.write_bytes(b"fake raw bytes")
+        it = _item(raw, ftype="raw")
+
+        recs = m.analyze_batch(
+            [it], cache=None,
+            tags_by_path={str(raw): {"ImageWidth": 640, "ImageHeight": 480}})
+        rec = recs[0]
+
+        assert (rec.width, rec.height) == (640, 480)
+
+    def test_no_cache_argument_behaves_exactly_as_before(self, tmp_path, monkeypatch):
+        sha_calls = []
+        monkeypatch.setattr(m, "sha256_file_with_retry",
+                             lambda p, *a, **kw: (sha_calls.append(p), "real-sha")[1])
+        img = tmp_path / "a.jpg"
+        _make_jpeg(img)
+
+        recs = m.analyze_batch([_item(img)])  # cache=None default
+
+        assert sha_calls == [str(img)]
+        assert recs[0].sha256 == "real-sha"
+
+    def test_run_analyze_self_scan_false_does_not_pollute_archive_cache(self, tmp_path):
+        """REVIEW-HANDOFF.md, Раунд 52 [ЗАМЕЧАНИЕ]: archive_hash_cache (эта же задача 7) был
+        задуман только для self_scan=True (Паспорт архива, cfg.source указывает на уже
+        собранный TARGET) -- гейт в run_analyze() проверял только mode=="analyze", не
+        self_scan, поэтому обычный документированный CLI-режим `analyze`
+        (run_analyze_for_source(), self_scan=False по умолчанию -- read-only предпросмотр
+        произвольного SOURCE, TARGET не читается и не пишется, см. README.md) тоже читал и
+        писал archive_cache -- с ключами вида "путь SOURCE-файла", которого в архиве никогда
+        не было и не будет. archive_cache используется реальной сборкой (index_archive()) как
+        источник валидных путей АРХИВА -- чужой ключ там просто мусор в общем на всю машину
+        work.db, не потеря данных, но и не то, что документация обещает про analyze."""
+        source = tmp_path / "NewBatch"
+        source.mkdir()
+        target = tmp_path / "MyArchive"
+        target.mkdir()
+        workdir = tmp_path / "appdir"
+        workdir.mkdir()
+        _make_jpeg(source / "photo1.jpg")
+
+        cfg = m.Config(source=str(source), target=str(target), sample_limit=0, workdir=str(workdir))
+        m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)  # self_scan=False (default)
+
+        conn = m.connect(cfg.index_db)
+        try:
+            rows = conn.execute("SELECT path FROM archive_cache").fetchall()
+        finally:
+            conn.close()
+        assert rows == []
+
+    def test_suppress_logs_dry_run_does_not_write_archive_cache_into_target(self, tmp_path):
+        """REVIEW-HANDOFF.md, Раунд 54, замечание 1: archive_cache (речь пользователя 2026-08-02,
+        задача 2) переехал ВНУТРЬ архива (archive_cache_db_path(cfg.target)) -- до этого писать
+        в него во время "Пробного прогона" (suppress_logs=True) было безобидно (файл был в
+        WORKDIR, не в TARGET). index_archive() (Фаза 1) вызывается БЕЗУСЛОВНО, включая при
+        suppress_logs=True, и открывала это соединение не глядя на suppress_logs -- на уже
+        существующем архиве (обычный сценарий "раз в год добавляю фото") это создавало/писало
+        настоящий файл ВНУТРИ TARGET, нарушая задокументированную гарантию "suppress_logs
+        никогда не пишет в TARGET" (run()'s docstring, _bare_launch_run_dryrun()). Фикс --
+        index_archive() открывает archive_cache только когда `not cfg.suppress_logs`."""
+        source = tmp_path / "NewBatch"
+        source.mkdir()
+        target = tmp_path / "MyArchive"
+        # Уже существующий архив -- ровно то состояние TARGET, с которым столкнётся
+        # пользователь при повторном визите (не первый прогон программы), см. находку.
+        (target / "__служебные_файлы").mkdir(parents=True)
+        albums = target / "Albums"
+        albums.mkdir()
+        _make_jpeg(albums / "existing.jpg")
+        _make_jpeg(source / "newphoto.jpg")
+
+        cache_path = target / "__служебные_файлы" / "archive_cache.db"
+        assert not cache_path.exists()
+
+        result = m.run_for_source(str(source), str(target), dry_run=True, sample_limit=0,
+                                   log=lambda *a, **k: None, suppress_logs=True, shared_pool=None)
+
+        assert not result.failed
+        assert not cache_path.exists()  # ключевая проверка -- TARGET остаётся нетронутым
+
+
+class TestExifCacheReuse:
+    """Речь пользователя, 2026-08-02 ("почему Фаза 1 быстрая, а паспорт медленный -- разве не
+    один алгоритм?"): archive_cache теперь хранит и EXIF-производные поля (дата/источник
+    даты/камера/GPS), не только sha256/pHash -- раньше exiftool звался БЕЗУСЛОВНО на каждый
+    файл в run_analyze(), даже при полном попадании по хешу, потому что этих полей в кэше не
+    было вовсе. cached[8] -- exif_cached (1/0/None), cached[9:14] -- exif_dt (ISO-строка)/
+    exif_dt_source/camera/gps_lat/gps_lon (см. SCHEMA)."""
+
+    def test_exif_cache_hit_populates_fields_without_tags(self, tmp_path):
+        """tags_by_path пуст для этого файла (как будто exiftool вообще не звался, см.
+        _tag_prefetch_pairs()/_exif_cache_ready()) -- analyze_batch() обязан взять
+        дату/камеру/GPS из archive_cache, не оставить их None."""
+        img = tmp_path / "a.jpg"
+        _make_jpeg(img)
+        it = _item(img)
+        cache = {str(img): (
+            it.size, it.mtime, "cached-sha", "cached-phash", None, 800, 600, None,
+            1, "2022-04-04T10:00:00", "DateTimeOriginal", "Canon EOS 80D", 55.75, 37.62,
+        )}
+
+        recs = m.analyze_batch([it], cache=cache, tags_by_path={})  # exiftool skipped upstream
+        rec = recs[0]
+
+        assert rec.exif_dt == m.datetime(2022, 4, 4, 10, 0, 0)
+        assert rec.exif_dt_source == "DateTimeOriginal"
+        assert rec.camera == "Canon EOS 80D"
+        assert (rec.gps_lat, rec.gps_lon) == (55.75, 37.62)
+
+    def test_old_short_cache_row_without_exif_columns_falls_back_to_tags(self, tmp_path):
+        """Обратная совместимость: archive_cache.db, смигрировавший ДО этой правки, имеет
+        строки без exif-колонок вовсе -- 8-элементный кортеж (индексы 0-7), как раньше.
+        len(cached) > 8 должно быть False -- никакого IndexError, честный откат на tags."""
+        img = tmp_path / "a.jpg"
+        _make_jpeg(img)
+        it = _item(img)
+        cache = {str(img): (it.size, it.mtime, "cached-sha", "cached-phash", None, 800, 600, None)}
+
+        recs = m.analyze_batch(
+            [it], cache=cache,
+            tags_by_path={str(img): {"DateTimeOriginal": "2022:04:04 10:00:00",
+                                      "Make": "Canon", "Model": "EOS 80D"}})
+        rec = recs[0]
+
+        assert rec.exif_dt == m.datetime(2022, 4, 4, 10, 0, 0)
+        assert rec.camera == "Canon EOS 80D"
+
+    def test_exif_cache_hit_but_no_exif_at_all_stays_none_not_missing(self, tmp_path):
+        """Кэшированный ответ "у этого файла нет EXIF" (все exif-поля NULL, exif_cached=1) --
+        легитимный кэш-хит, не то же самое, что "не проверяли". rec.exif_dt должен остаться
+        None (а не упасть/переключиться обратно на попытку вызвать exiftool)."""
+        img = tmp_path / "a.jpg"
+        _make_jpeg(img)
+        it = _item(img)
+        cache = {str(img): (
+            it.size, it.mtime, "cached-sha", "cached-phash", None, 800, 600, None,
+            1, None, None, None, None, None,
+        )}
+
+        recs = m.analyze_batch([it], cache=cache, tags_by_path={})
+        rec = recs[0]
+
+        assert rec.exif_dt is None
+        assert rec.camera is None
+
+    def test_run_analyze_second_pass_never_calls_exiftool_when_fully_cached(self, tmp_path):
+        """Интеграционный тест сквозь _walk_with_exif_prefetch()/_exif_cache_ready(): первый
+        паспорт на свежесобранном архиве закономерно зовёт exiftool (кэш ещё пуст на exif),
+        второй -- на НЕИЗМЕНИВШЕМСЯ архиве -- не должен звать exiftool вообще, ни разу.
+        Раньше (до этой правки) второй прогон всё равно звал exiftool безусловно на каждый
+        файл -- ровно находка пользователя ("почему паспорт всегда медленный")."""
+        source = tmp_path / "NewBatch"
+        source.mkdir()
+        target = tmp_path / "MyArchive"
+        target.mkdir()
+        workdir = tmp_path / "appdir"
+        workdir.mkdir()
+        _make_jpeg(source / "photo1.jpg", color=(10, 20, 30))
+        _make_jpeg(source / "photo2.jpg", color=(200, 40, 60))
+
+        cfg = m.Config(source=str(source), target=str(target), dry_run=False, sample_limit=0,
+                        workdir=str(workdir))
+        m.ensure_target_layout(cfg)
+        m._run_impl(cfg, log=lambda *a, **k: None, print_summary=False)
+
+        call_sizes = []
+        real_exiftool_batch = m.exiftool_batch
+
+        def _spy(paths, **kw):
+            call_sizes.append(len(paths))
+            return real_exiftool_batch(paths, **kw)
+
+        m.exiftool_batch = _spy
+        try:
+            cfg2 = m.Config(source=str(target), target=m._NO_TARGET_PLACEHOLDER, sample_limit=0,
+                             workdir=str(workdir))
+            stats = m.run_analyze(cfg2, "analyze", log=lambda *a, **k: None, self_scan=True)
+        finally:
+            m.exiftool_batch = real_exiftool_batch
+
+        assert stats.total_files == 2
+        assert not call_sizes, f"expected exiftool_batch() never called on the warm pass, got {call_sizes}"
+
+
+class TestVideoCacheReuse:
+    """Речь пользователя, 2026-08-03 ("сделать ffmpeg?" -> кэш video-полей по аналогии с EXIF
+    выше): в отличие от exif_dt/camera/gps (которых в archive_cache не было ДО задачи 2026-08-02
+    выше), duration/phash/width/height/bitrate для video были частью SCHEMA archive_cache и
+    писались _seed_archive_cache()/analyze_batch()'s cache_hit-ветками с самого начала этого
+    кэша (задолго до EXIF-расширения) -- video_duration_and_resolution()/video_phash_3frames()
+    уже не звались вовсе на попадании в кэш, никакого отдельного фикса не требовалось. Тесты
+    ниже закрывают именно ЭТУ пустоту в покрытии (существовавшую и до, и после EXIF-задачи) --
+    не регрессия, найденная сейчас, а нулевое явное подтверждение уже работающего поведения."""
+
+    def test_video_cache_hit_never_calls_ffmpeg(self, tmp_path, monkeypatch):
+        vid = tmp_path / "a.mp4"
+        vid.write_bytes(b"not a real video -- cache hit must never touch it")
+        it = _item(vid, ftype="video")
+
+        def _boom(*a, **kw):
+            raise AssertionError("video_duration_and_resolution() should not be called on a cache hit")
+
+        def _boom2(*a, **kw):
+            raise AssertionError("video_phash_3frames() should not be called on a cache hit")
+
+        monkeypatch.setattr(m, "video_duration_and_resolution", _boom)
+        monkeypatch.setattr(m, "video_phash_3frames", _boom2)
+
+        cache = {str(vid): (
+            it.size, it.mtime, "cached-sha", "aaaa|bbbb|cccc", 12.5, 1920, 1080, 4000,
+        )}
+        recs = m.analyze_batch([it], cache=cache, tags_by_path={})
+        rec = recs[0]
+
+        assert rec.duration == 12.5
+        assert (rec.width, rec.height, rec.bitrate) == (1920, 1080, 4000)
+        assert rec.phash == "aaaa|bbbb|cccc"
+        assert rec.is_media is True
+
+    def test_run_analyze_reuses_video_fields_seeded_by_the_build_itself(self, tmp_path, monkeypatch):
+        """Сборка (_run_impl()) сама сеет archive_cache через _seed_archive_cache() сразу после
+        place_file() -- Паспорт на том же архиве СРАЗУ (без второго прохода) не должен звать
+        video_duration_and_resolution()/video_phash_3frames() вовсе, в отличие от EXIF (где
+        именно ЭТО раньше требовало отдельного тёплого прохода, см. тест выше) -- разница
+        подтверждает, что video-кэш никогда не имел этого конкретного пробела."""
+        source = tmp_path / "NewBatch"
+        source.mkdir()
+        target = tmp_path / "MyArchive"
+        target.mkdir()
+        workdir = tmp_path / "appdir"
+        workdir.mkdir()
+        (source / "video1.mp4").write_bytes(b"fake video bytes")
+
+        duration_calls, phash_calls = [], []
+        real_duration = m.video_duration_and_resolution
+        real_phash = m.video_phash_3frames
+
+        def _spy_duration(p):
+            duration_calls.append(p)
+            return (5.0, 1280, 720, 2000)
+
+        def _spy_phash(p, d):
+            phash_calls.append(p)
+            return ["a" * 16, "b" * 16, "c" * 16]
+
+        m.video_duration_and_resolution = _spy_duration
+        m.video_phash_3frames = _spy_phash
+        try:
+            cfg = m.Config(source=str(source), target=str(target), dry_run=False, sample_limit=0,
+                            workdir=str(workdir))
+            m.ensure_target_layout(cfg)
+            m._run_impl(cfg, log=lambda *a, **k: None, print_summary=False)
+            assert len(duration_calls) == 1  # build itself computed it once, as expected
+
+            cfg2 = m.Config(source=str(target), target=m._NO_TARGET_PLACEHOLDER, sample_limit=0,
+                             workdir=str(workdir))
+            duration_calls.clear()
+            phash_calls.clear()
+            stats = m.run_analyze(cfg2, "analyze", log=lambda *a, **k: None, self_scan=True)
+        finally:
+            m.video_duration_and_resolution = real_duration
+            m.video_phash_3frames = real_phash
+
+        assert stats.total_files == 1
+        assert not duration_calls, f"expected no ffprobe call at all, got {duration_calls}"
+        assert not phash_calls, f"expected no ffmpeg call at all, got {phash_calls}"
+
+
+class TestAnalyzeExifPrefetchRespectsSampleLimit:
+    """REVIEW-HANDOFF.md, Раунд 54, замечание 2 + Раунд 55, придирка: _walk_with_exif_prefetch()
+    (батчинг exiftool, 2026-08-02) копил батч ДО _ANALYZE_EXIF_PREFETCH_BATCH_SIZE=200 файлов
+    ПЕРЕД тем, как отдать первый элемент вызывающему циклу run_analyze() -- проверка
+    cfg.sample_limit стоит СНАРУЖИ генератора и физически не могла сработать раньше.
+    "--sample-limit N" (дешёвый тест на малой выборке, в т.ч. на медленном сетевом источнике)
+    реально тратил exiftool на до 200 файлов вместо N, молча. Первый фикс (батч <= sample_limit)
+    оставлял остаточный ×2 (обычный `for`+`break` вызывает next() на один item больше лимита,
+    генератору приходилось набирать ещё один полный батч ради него) -- итоговый фикс:
+    itertools.islice() снаружи, не ручной break -- ровно N item, ровно один батч."""
+
+    def test_exiftool_batch_size_bounded_by_sample_limit(self, tmp_path, monkeypatch):
+        source = tmp_path / "NewBatch"
+        source.mkdir()
+        target = tmp_path / "MyArchive"
+        target.mkdir()
+        workdir = tmp_path / "appdir"
+        workdir.mkdir()
+        for i in range(10):
+            _make_jpeg(source / f"photo{i}.jpg", color=(i * 20, 40, 200))
+
+        call_sizes = []
+        real_exiftool_batch = m.exiftool_batch
+
+        def _spy(paths, **kw):
+            call_sizes.append(len(paths))
+            return real_exiftool_batch(paths, **kw)
+
+        monkeypatch.setattr(m, "exiftool_batch", _spy)  # overrides the autouse stub above
+
+        cfg = m.Config(source=str(source), target=str(target), sample_limit=3, workdir=str(workdir))
+        stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
+
+        assert stats.total_files == 3  # --sample-limit's own documented contract, unaffected
+        # До первого фикса: один вызов на весь прогретый батч (10, весь SOURCE -- меньше чем
+        # _ANALYZE_EXIF_PREFETCH_BATCH_SIZE=200 в этом тесте, но принцип тот же: батч не
+        # ограничивался sample_limit вообще). После первого, но до итогового фикса: [3, 3] --
+        # остаточный ×2 (см. докстринг класса). После итогового фикса -- ровно один батч ровно
+        # нужного размера, ни одного лишнего файла/спавна.
+        assert call_sizes == [cfg.sample_limit], call_sizes
+
+
+class TestAnalyzeShowsObjectEta:
+    """Речь пользователя, 2026-08-02 ("подумай, как сделать информативной интерактив при
+    построении паспорта"): run_analyze() (значит и "Паспорт архива", и CLI analyze/
+    analyze-full) раньше показывал только голый растущий счётчик и скорость -- ту же ETA-
+    machinery, что уже была у Фазы 2 реальной сборки (_quick_media_count_estimate() +
+    object_progress_cb + ProgressReporter(two_line=True)), run_analyze() не использовал вовсе.
+    Проверяем, что она реально подключена -- не только что код не падает."""
+
+    def test_main_bar_gets_two_line_and_total_estimate(self, tmp_path, monkeypatch):
+        source = tmp_path / "NewBatch"
+        source.mkdir()
+        target = tmp_path / "MyArchive"
+        target.mkdir()
+        workdir = tmp_path / "appdir"
+        workdir.mkdir()
+        for i in range(5):
+            _make_jpeg(source / f"photo{i}.jpg", color=(i * 20, 40, 200))
+
+        constructed = []
+        real_pr = m.ProgressReporter
+
+        class _SpyProgressReporter(real_pr):
+            def __init__(self, *a, **kw):
+                constructed.append(kw)
+                super().__init__(*a, **kw)
+
+        monkeypatch.setattr(m, "ProgressReporter", _SpyProgressReporter)
+
+        cfg = m.Config(source=str(source), target=str(target), sample_limit=0, workdir=str(workdir))
+        m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
+
+        # Два ProgressReporter за прогон: предпересчёт ("Оцениваю объём работы", total_estimate
+        # ещё не при делах) и основной бар (must be two_line=True с реальным total_estimate).
+        assert len(constructed) == 2, constructed
+        estimate_kw, main_kw = constructed
+        assert estimate_kw.get("desc") == "Оцениваю объём работы"
+        assert main_kw.get("two_line") is True
+        assert main_kw.get("total_estimate") == 5  # 5 файлов реально лежат в source
+
+    def test_source_walker_gets_object_progress_and_line_callbacks(self, tmp_path, monkeypatch):
+        source = tmp_path / "NewBatch"
+        source.mkdir()
+        target = tmp_path / "MyArchive"
+        target.mkdir()
+        workdir = tmp_path / "appdir"
+        workdir.mkdir()
+        _make_jpeg(source / "a.jpg")
+
+        seen_kwargs = {}
+        real_walker = m.SourceWalker
+
+        class _SpySourceWalker(real_walker):
+            def __init__(self, *a, **kw):
+                seen_kwargs.update(kw)
+                super().__init__(*a, **kw)
+
+        monkeypatch.setattr(m, "SourceWalker", _SpySourceWalker)
+
+        cfg = m.Config(source=str(source), target=str(target), sample_limit=0, workdir=str(workdir))
+        m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
+
+        # До этой правки run_analyze() передавал только progress_cb -- object_line_cb/
+        # transient_op_cb/object_progress_cb не были подключены вовсе (архив внутри SOURCE не
+        # получал ни живой "распаковываю..." строки, ни счётчика "объектов X/Y").
+        assert seen_kwargs.get("object_line_cb") is not None
+        assert seen_kwargs.get("transient_op_cb") is not None
+        assert seen_kwargs.get("object_progress_cb") is not None
