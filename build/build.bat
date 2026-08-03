@@ -53,8 +53,7 @@ if errorlevel 1 (
 copy /Y ..\photoarchive_config.yaml.example dist\ >nul
 copy /Y ..\LICENSE dist\ >nul
 copy /Y ..\NOTICE dist\ >nul
-copy /Y ..\PhotoArchive_buklet.pdf dist\ >nul
-echo photoarchive_config.yaml.example/LICENSE/NOTICE/PhotoArchive_buklet.pdf скопированы в dist\.
+echo photoarchive_config.yaml.example/LICENSE/NOTICE скопированы в dist\.
 
 REM Живая находка 2026-07-15 (dev-репозиторий): dist\photoarchive_config.yaml (БЕЗ .example)
 REM появлялся между пересборками -- сам auto-create в photosort_win.py срабатывает только на

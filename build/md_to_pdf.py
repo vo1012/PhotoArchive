@@ -53,8 +53,7 @@ except ImportError:
 DOCS = ["README.md", "QUICKSTART.md", "FAQ.md", "PhotoArchive_ot_avtora.md",
         "THIRD_PARTY_LICENSES.md"]
 
-OTHER_DIST_FILES = {"LICENSE", "NOTICE", "photoarchive_config.yaml.example",
-                     "PhotoArchive_buklet.pdf"}
+OTHER_DIST_FILES = {"LICENSE", "NOTICE", "photoarchive_config.yaml.example"}
 
 CSS = """
 body { font-family: "Segoe UI", Arial, sans-serif; font-size: 11pt; line-height: 1.5;

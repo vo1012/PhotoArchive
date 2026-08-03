@@ -97,11 +97,7 @@ def main():
         except Exception:
             pass
     edge = md_to_pdf._find_edge()
-    # PhotoArchive_buklet.pdf: letter.md ("Куда дальше") links to it too, and it's a real
-    # sibling file in the repo root alongside these three -- must be in known_names or
-    # _relativize_links leaves the absolute local file:///... URI in place (broken for anyone
-    # who isn't this machine).
-    known_names = {d[:-3] + ".pdf" for d in DOCS} | {"PhotoArchive_buklet.pdf"}
+    known_names = {d[:-3] + ".pdf" for d in DOCS}
     for doc in DOCS:
         src = os.path.join(ROOT, doc)
         pdf_path = convert_one(src, ROOT, edge, known_names)
