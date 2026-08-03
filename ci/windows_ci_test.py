@@ -2066,9 +2066,16 @@ def test_merged_album_marker_file():
     # album gets a visible marker file listing where else its content conceptually came from.
 
     # --- unit-level: find_album() now returns a third value, album_prefix -- the path from
-    # SOURCE root through (and including) the album segment itself, collapsing dump segments
-    # the same way album-name selection already does, and working uniformly for an
-    # archive-derived album (the archive's own filename occupies the boundary segment).
+    # SOURCE root through (and including) the album segment itself, and working uniformly for
+    # an archive-derived album (the archive's own filename occupies the boundary segment).
+    # Updated 2026-08-03 (RULES_VERSION 2026-08-03, "ОТРАВЛЕНИЕ ВЕТКИ" / two-phase traversal,
+    # commit 24f545a): a recognized dump segment ("фотокамера") found BELOW an already-found
+    # album no longer just "collapses" without extending the prefix -- it now poisons the
+    # album outright (find_album returns None/None/None), same as any other dump branch below
+    # an album. The old expectation here ("YandexDisk | YandexDisk") described pre-24f545a
+    # behavior and started failing live CI on windows-latest the moment that commit landed --
+    # caught late because this script's own CI run wasn't checked at push time, only local
+    # pytest (a different, already-updated suite). See RULES.md for the full rule.
     code = (
         "import sys; sys.path.insert(0, %r)\n"
         "sys.stdout.reconfigure(encoding='utf-8', errors='replace')\n"
@@ -2076,7 +2083,7 @@ def test_merged_album_marker_file():
         "album, subpath, prefix = m.find_album('Свадьба_жених/img.jpg', None)\n"
         "print('plain_album:', album, '|', prefix)\n"
         "album2, subpath2, prefix2 = m.find_album('YandexDisk/Фотокамера/img.jpg', None)\n"
-        "print('dump_subfolder_collapsed:', album2, '|', prefix2)\n"
+        "print('dump_subfolder_poisons_album:', album2, '|', prefix2)\n"
         "album3, subpath3, prefix3 = m.find_album('Downloads/archive-2020-07-01/inner/photo.jpg', 1)\n"
         "print('archive_derived:', album3, '|', prefix3, '|', subpath3)\n"
     ) % ROOT
@@ -2085,9 +2092,10 @@ def test_merged_album_marker_file():
     check(r.returncode == 0, f"merged-album-marker: find_album unit script exits 0 (stderr={r.stderr[-500:]})")
     check("plain_album: Свадьба_жених | Свадьба_жених" in r.stdout,
           "merged-album-marker: album_prefix for a plain disk album equals the album name itself")
-    check("dump_subfolder_collapsed: YandexDisk | YandexDisk" in r.stdout,
-          "merged-album-marker: album_prefix stops at the album segment, dump subfolders "
-          "(Фотокамера) don't extend it")
+    check("dump_subfolder_poisons_album: None | None" in r.stdout,
+          "merged-album-marker: a recognized dump segment (Фотокамера) below an already-found "
+          "album poisons it entirely (RULES_VERSION 2026-08-03) -- album/prefix both None, not "
+          "collapsed-but-kept as before")
     check("archive_derived: archive-2020-07-01 | Downloads/archive-2020-07-01 | ['inner']" in r.stdout,
           "merged-album-marker: album_prefix for an archive-derived album includes the disk-side "
           "path through the archive's own filename segment")
@@ -2185,9 +2193,13 @@ def test_archive_file_always_becomes_an_album():
     check(not os.path.isdir(os.path.join(tgt1, "Albums", "archive")),
           "archive-album loose: the generic internal folder name never becomes the album itself")
 
-    # Case 2: the SAME zip, but now sitting inside a real, already-meaningful disk album --
-    # today's good behavior (archive content merges into the enclosing album) must be
-    # unchanged: the archive's own filename must NOT override "Свадьба".
+    # Case 2: the SAME zip, but now sitting inside a real, already-meaningful disk album.
+    # Updated 2026-08-03 ("archive == folder", RULES_VERSION 2026-08-03, commit 24f545a): a
+    # normal-named archive is now ALWAYS a subfolder in its own right underneath the enclosing
+    # album, regardless of file count -- it no longer silently merges its contents straight
+    # into the album's root as before. The old expectation here (content flattened into
+    # 'Свадьба' directly) described pre-24f545a behavior; see CHANGELOG.md [0.3.0] for the
+    # rule change and RULES.md for the full description.
     src2 = os.path.join(WORK, "src_archive_album_nested")
     zpath2 = os.path.join(src2, "Свадьба", "yandex_export.zip")
     os.makedirs(os.path.dirname(zpath2), exist_ok=True)
@@ -2196,12 +2208,13 @@ def test_archive_file_always_becomes_an_album():
     tgt2 = os.path.join(WORK, "target_archive_album_nested")
     r2 = run_photosort(src2, tgt2)
     check(r2.returncode == 0, "archive-album nested: run exits 0")
-    check(os.path.isfile(os.path.join(tgt2, "Albums", "Свадьба", "archive", "photo.jpg")),
-          "archive-album nested: a real enclosing disk-side album still wins over the "
-          "archive's own filename -- zip content merges into 'Свадьба' as before")
+    check(os.path.isfile(os.path.join(tgt2, "Albums", "Свадьба", "yandex_export", "archive",
+                                       "photo.jpg")),
+          "archive-album nested: the archive's own name is ALWAYS its own subfolder under the "
+          "enclosing album (Свадьба\\yandex_export\\...), not merged straight into the album")
     check(not os.path.isdir(os.path.join(tgt2, "Albums", "yandex_export")),
-          "archive-album nested: the archive's own name does not create a separate album "
-          "when a real album already exists on the disk side")
+          "archive-album nested: the archive's own name does not become a competing TOP-LEVEL "
+          "album -- it only ever appears nested under the real disk-side album")
 
 
 def test_bare_digit_date_folder_kept_inside_album_but_not_as_album_name():
