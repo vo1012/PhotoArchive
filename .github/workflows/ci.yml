@@ -126,6 +126,18 @@ jobs:
           path: build/dist/PhotoArchive.zip
           retention-days: 14
 
+      # 2026-08-04: та же документация, что уже упакована ВНУТРИ PhotoArchive.zip выше
+      # (build.bat уже конвертирует её в PDF через md_to_pdf.py на этом же раннере) --
+      # публикуется ЕЩЁ и отдельными файлами релиза, чтобы сайт мог линковать на них
+      # напрямую (releases/latest/download/...), вместо отдельного ручного Windows-шага
+      # (build/gen_doc_pdfs.py, удалён) с независимым от CI источником PDF -- расхождение
+      # между PDF на сайте и PDF в ZIP было устранено именно тем, что источник теперь один.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: PhotoArchive-docs-pdf
+          path: build/dist/*.pdf
+          retention-days: 14
+
   release:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
@@ -144,12 +156,18 @@ jobs:
           name: PhotoArchive-zip
           path: dist
 
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: PhotoArchive-docs-pdf
+          path: dist
+
       - name: Publish release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
         with:
           files: |
             dist/PhotoArchive.exe
             dist/PhotoArchive.zip
+            dist/*.pdf
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1432,6 +1432,17 @@ def _render_this_run(run_stats: dict, level: str = "target") -> str:
             'остановилась, ничего не испортив. Освободите место и запустите ещё раз — '
             'продолжится с того же места.</p>'
         )
+    # 2026-08-04: перенесено из удалённого CLI-режима analyze-full -- предсказание, а не
+    # факт (preview-only, "fits_after_dryrun" кладёт только _bare_launch_run_dryrun(), см.
+    # photosort_win.py), в отличие от stopped_for_space выше (это уже случилось на реальной
+    # сборке). Ключ отсутствует у обычной сборки ([3]/CLI archive) -- там либо хватило места,
+    # либо сработал stopped_for_space/EXIT_INSUFFICIENT_SPACE, отдельный прогноз не нужен.
+    if preview and "fits_after_dryrun" in run_stats and not run_stats["fits_after_dryrun"]:
+        parts.append(
+            '<p><b>Похоже, места не хватит.</b> При таком объёме новых файлов свободное место '
+            'на диске назначения уйдёт в минус (с учётом резерва) — освободите место перед '
+            'реальной сборкой.</p>'
+        )
     listdir_failed = run_stats.get("listdir_failed_count", 0)
     if listdir_failed:
         # REVIEW-HANDOFF.md, Раунд 32, задача 4: прямой сигнал (не просто число для ручной

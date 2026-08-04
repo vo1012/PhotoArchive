@@ -145,24 +145,10 @@ def test_classify_nested_outside_organized_structure_excluded_not_escalated(tmp_
     assert nested == {}
 
 
-def test_classify_analyze_full_adds_target_when_it_has_an_archive(tmp_path):
-    target = tmp_path / "target"
-    (target / "__служебные_файлы").mkdir(parents=True)
-    cfg = _make_cfg(tmp_path, target=str(target))
-    top, nested = m.classify_found_archives([], cfg, "analyze-full")
-    assert top == [os.path.realpath(str(target))]
-
-
-def test_classify_analyze_full_no_duplicate_when_target_already_found(tmp_path):
-    target = tmp_path / "target"
-    (target / "__служебные_файлы").mkdir(parents=True)
-    target_real = os.path.realpath(str(target))
-    cfg = _make_cfg(tmp_path, target=str(target))
-    top, nested = m.classify_found_archives([target_real], cfg, "analyze-full")
-    assert top == [target_real]
-
-
-def test_classify_non_full_mode_never_adds_target(tmp_path):
+def test_classify_never_adds_target(tmp_path):
+    # 2026-08-04: analyze-full (единственный режим, добавлявший TARGET в найденные архивы,
+    # см. классификацию/исключение в classify_found_archives()) удалён целиком -- TARGET
+    # никогда не добавляется, независимо от mode.
     target = tmp_path / "target"
     (target / "__служебные_файлы").mkdir(parents=True)
     cfg = _make_cfg(tmp_path, target=str(target))

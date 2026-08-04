@@ -30,7 +30,7 @@ def test_write_analyze_report_csv_skips_structural_fields(tmp_path):
 
 
 def test_write_analyze_report_csv_keeps_all_scalar_fields():
-    stats = m.AnalyzeStats(mode="analyze-full")
+    stats = m.AnalyzeStats(mode="analyze-quick")
     scalar_fields = {k for k, v in vars(stats).items()
                       if isinstance(v, (int, float, bool, str)) or v is None}
     # sanity: this dataclass does have a healthy number of plain scalar counters -- a test

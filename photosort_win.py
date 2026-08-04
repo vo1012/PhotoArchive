@@ -1611,12 +1611,12 @@ def archive_cache_db_path(archive_root: str) -> str:
 
 
 def _open_archive_cache_conn(archive_root: str) -> sqlite3.Connection:
-    """None, если у archive_root ещё даже нет служебной папки -- например analyze-full
-    сверяется с TARGET, который для первой сборки ещё физически не существует (analyze-режимы
-    read-only, __служебные_файлы здесь заводить рано, см. докстринг у ANALYZE выше). Вызывающая
-    сторона в этом случае просто работает без кэша (тот же эффект, что и archive_hash_cache=False)
-    -- ensure_target_layout() уже создаёт эту папку до реальной сборки (_run_impl()), так что
-    там соединение открывается штатно."""
+    """None, если у archive_root ещё даже нет служебной папки -- например analyze-passport
+    (self-scan, см. run_passport()) запущен на папке, которая архивом ещё не является
+    (analyze-режимы read-only, __служебные_файлы здесь заводить рано, см. докстринг у ANALYZE
+    выше). Вызывающая сторона в этом случае просто работает без кэша (тот же эффект, что и
+    archive_hash_cache=False) -- ensure_target_layout() уже создаёт эту папку до реальной
+    сборки (_run_impl()), так что там соединение открывается штатно."""
     photosort_dir = os.path.join(archive_root, "__служебные_файлы")
     if not os.path.isdir(winlong(photosort_dir)):
         return None
@@ -5221,7 +5221,8 @@ def index_archive(cfg: Config, conn, log=print):
     return total_files, total_bytes
 
 # ============================================================================
-# ANALYZE  (А.2: analyze-quick / analyze / analyze-full)
+# ANALYZE  (А.2: CLI-подкоманда "analyze" -- read-only диагностика источника; внутреннее
+# значение mode остаётся "analyze-quick", см. _CLI_ANALYZE_MODE_MAP)
 # Отдельные РЕЖИМЫ (не флаг DRY_RUN -- у DRY_RUN другой смысл, "что я сделаю при сборке":
 # он проходит ВСЮ Фазу 4/4.5/5 и пишет обычные __служебные_файлы\logs\*.csv в TARGET, просто без физического
 # копирования байт). Analyze-режимы вообще не пишут в TARGET ни файлов, ни логов -- это
@@ -5294,7 +5295,9 @@ class AnalyzeStats:
     # _top_cameras_chart()).
     cameras: Counter = field(default_factory=Counter)
     tier_counts: Counter = field(default_factory=Counter)  # "A"/"B"/"C"/"D" -> count
-    # analyze / analyze-full (полный проход хеширования -- точный/near-дедуп):
+    # mode="analyze" (полный проход хеширования -- точный/near-дедуп; 2026-08-04: достижимо
+    # только через run_passport()'s self_scan=True, у CLI отдельной подкоманды для этого
+    # варианта нет, см. ANALYZE_MODES):
     n_exact_dupes: int = 0
     n_diff_name_same_content: int = 0
     n_near_dupes: int = 0
@@ -5321,10 +5324,6 @@ class AnalyzeStats:
     # уровне AnalyzeStats, т.к. паспорт не использует per-file dest/tier построчно (дешевле
     # одного дополнительного счётчика, чем тащить весь список путей ради паспорта).
     n_tier_cd_bydate: int = 0
-    # analyze-full (+ сверка с TARGET):
-    already_in_archive_count: int = 0
-    target_free_bytes: int = 0
-    fits_on_target: bool = True
     # ROADMAP.md, analyze как "2 части", часть 2 ("на этом диске найден архив PhotoArchive"):
     # top-level -- найденные архивы, НЕ вложенные в другой найденный архив (см.
     # classify_found_archives()); nested -- родитель (top-level путь) -> список путей,
@@ -5415,14 +5414,15 @@ def _walk_with_exif_prefetch(items_iter, tmp_extract_dir: str, batch_size: int, 
 
 
 def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> AnalyzeStats:
-    """mode: analyze-quick (метаданные, без SHA/pHash) | analyze (+ полный проход хеширования,
-    точный+near-дедуп ВНУТРИ источника) | analyze-full (+ индексация существующего TARGET,
-    Фаза 1 -- что уже спасено, что новое, поместится ли новое на TARGET).
+    """mode: analyze-quick (метаданные, без SHA/pHash; CLI-имя подкоманды -- просто "analyze",
+    см. _CLI_ANALYZE_MODE_MAP) | analyze (+ полный проход хеширования, точный+near-дедуп
+    ВНУТРИ источника -- сейчас достижимо только через run_passport()'s self_scan=True, у CLI
+    для этого варианта отдельной подкоманды нет, см. 2026-08-04 у ANALYZE_MODES).
 
     Переиспользует РЕАЛЬНЫЙ конвейер (SourceWalker, analyze_batch, resolve_date, find_album,
-    decide()+Pool, index_archive) вплоть до Фазы 4.5 включительно -- решения о дедупе и дате
-    считаются той же логикой, что и настоящая сборка, только результат никогда не
-    материализуется на диск (Фаза 5 не вызывается вовсе).
+    decide()+Pool) вплоть до Фазы 4.5 включительно -- решения о дедупе и дате считаются той же
+    логикой, что и настоящая сборка, только результат никогда не материализуется на диск
+    (Фаза 5 не вызывается вовсе).
 
     self_scan=True -- run_passport() указывает cfg.source=TARGET (уже собранный архив, не
     "сырой" источник) -- два места ниже (find_album()/dump-счётчик, resolve_date()) получают
@@ -5435,11 +5435,6 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
     album_names = set()
 
     pool = Pool()
-    if mode == "analyze-full":
-        conn = db_reset(cfg.index_db)
-        index_archive(cfg, conn, log=log)
-        pool = build_pool_from_archive_table(conn)
-        conn.close()
 
     # Задача 7 (SESSION-HANDOFF.txt, пакет "боевой прогон D:\\"): mode=="analyze" с
     # self_scan=True -- это и есть "Паспорт архива" (run_passport()), cfg.source указывает на
@@ -5483,9 +5478,8 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
             archive_cache[row[0]] = row[1:]
 
     progress_desc = {
-        "analyze-quick": "analyze-quick — метаданные источника",
-        "analyze": "analyze — метаданные + хеширование источника",
-        "analyze-full": "analyze-full — метаданные + хеширование + сверка с TARGET",
+        "analyze-quick": "analyze — метаданные источника",
+        "analyze": "analyze (Паспорт архива) — метаданные + хеширование",
     }.get(mode, mode)
     # Речь пользователя, 2026-08-02 ("подумай, как сделать информативной интерактив при
     # построении паспорта"): та же ETA-machinery, что уже есть у Фазы 2 реальной сборки
@@ -5686,7 +5680,7 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
         if rec.camera:
             stats.cameras[rec.camera] += 1
 
-        if mode in ("analyze", "analyze-full") and rec.sha256:
+        if mode == "analyze" and rec.sha256:
             decision = decide(pool, rec, cfg.mirror_raw)
             if decision.decision == "skipped_present":
                 stats.n_exact_dupes += 1
@@ -5753,13 +5747,6 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
         walker.found_archive_roots, cfg, mode)
     stats.excluded_found_archives = walker.excluded_found_archives
 
-    if mode == "analyze-full":
-        stats.already_in_archive_count = stats.n_exact_dupes
-        margin = int(cfg.free_space_margin_gb * 1024**3)
-        stats.target_free_bytes = (shutil.disk_usage(winlong(cfg.target)).free
-                                    if os.path.isdir(winlong(cfg.target)) else 0)
-        stats.fits_on_target = (stats.target_free_bytes - stats.predicted_unique_bytes) >= margin
-
     if archive_cache_conn is not None:
         archive_cache_conn.commit()
         archive_cache_conn.close()
@@ -5768,12 +5755,13 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
 
 
 def print_analyze_report(stats: AnalyzeStats, log=print):
-    mode_titles = {
-        "analyze-quick": "analyze-quick (быстрая метаданными-диагностика, без SHA/pHash)",
-        "analyze": "analyze (+ полный проход хеширования: дедуп внутри источника)",
-        "analyze-full": "analyze-full (+ сверка с TARGET)",
-    }
-    log(f"\n=== Отчёт: {mode_titles.get(stats.mode, stats.mode)} ===")
+    """2026-08-04: единственный вызывающий (run_analyze_for_source()) теперь всегда передаёт
+    mode="analyze-quick" -- CLI-подкоманды "analyze"/"analyze-full" (полный хеш-проход/сверка
+    с TARGET) удалены, полный хеш-проход остался только у Паспорта (run_passport(), у него
+    свой отдельный формат отчёта, passport.html, эта функция для него не вызывается). Дедуп-
+    секция, которая раньше показывалась при mode in ("analyze", "analyze-full"), убрана как
+    недостижимая, не оставлена "на всякий случай" под мёртвым условием."""
+    log("\n=== Отчёт: analyze (read-only диагностика источника) ===")
     log(f"Просканировано: {stats.total_files} файлов, {stats.total_bytes / 1024**3:.2f} ГБ "
         f"(фото {stats.n_images}, raw {stats.n_raw}, видео {stats.n_videos})")
     log(f"✓ {stats.n_no_exif_date} файлов без EXIF-даты")
@@ -5789,18 +5777,6 @@ def print_analyze_report(stats: AnalyzeStats, log=print):
     log(f"✓ альбомов распознано: {stats.n_albums_detected}, элементов в свалках (dump): {stats.n_dump_items}")
     log(f"✓ архивов найдено: {stats.n_archives_found} (запаролено: {stats.n_archives_encrypted}, "
         f"вложенных матрёшкой: {stats.n_archives_nested})")
-    if stats.mode in ("analyze", "analyze-full"):
-        log(f"✓ {stats.n_exact_dupes} точных дубликатов (по SHA-256)")
-        log(f"✓ {stats.n_diff_name_same_content} файлов: разные имена, одинаковое содержимое")
-        log(f"✓ {stats.n_near_dupes} near-dup / возможных кропов (по pHash)")
-        log(f"✓ прогноз уникальных после дедупа: {stats.predicted_unique_count} файлов, "
-            f"~{stats.predicted_unique_bytes / 1024**3:.2f} ГБ")
-    if stats.mode == "analyze-full":
-        log(f"✓ уже есть в TARGET (по SHA): {stats.already_in_archive_count}")
-        log(f"✓ новых после сверки с TARGET: {stats.predicted_unique_count} файлов, "
-            f"~{stats.predicted_unique_bytes / 1024**3:.2f} ГБ")
-        fits = "ХВАТИТ" if stats.fits_on_target else "НЕ ХВАТИТ, освободите место перед сборкой"
-        log(f"✓ свободно на TARGET: {stats.target_free_bytes / 1024**3:.2f} ГБ -- {fits}")
 
 
 def write_analyze_report_csv(path: str, stats: AnalyzeStats):
@@ -5965,9 +5941,9 @@ def _target_has_existing_archive(target: str) -> bool:
     """True, если сам TARGET (не его предки, см. warn_if_target_nested_in_archive()) уже
     содержит структуру существующего архива photo-sort -- та же сигнатура ("__служебные_файлы" в
     listdir, либо одновременно "albums" и "bydate" -- более старый архив/ручное дерево без
-    неё). Используется меню голого запуска (RULES.md, "ЗАПУСК" п.3), чтобы выбрать между
-    analyze (первый раз) и analyze-full (уже есть с чем сверяться) без лишнего вопроса
-    пользователю. Несуществующий/недоступный TARGET -> False (сверяться пока не с чем)."""
+    неё). Используется подменю выбора диска (RULES.md, "ЗАПУСК" п.3) для статуса "уже есть —
+    допишу новые фото"/"папка уже есть" и подменю Паспорта архива (показывает только диски,
+    где архив реально уже существует). Несуществующий/недоступный TARGET -> False."""
     real_target = winlong(target)
     if not os.path.isdir(real_target):
         return False
@@ -5984,11 +5960,13 @@ _FOUND_ARCHIVE_ORGANIZED_SEGMENTS = {"albums", "bydate", "raw", "_unsorted"}
 def classify_found_archives(raw_roots: list, cfg: Config, mode: str) -> tuple:
     """ROADMAP.md, analyze как "2 части": raw_roots -- сырые пути (realpath), собранные
     SourceWalker.found_archive_roots за время обхода SOURCE (каждый -- родитель встреченной
-    где-то в дереве папки __служебные_файлы). mode=="analyze-full" дополнительно добавляет
-    сам TARGET, если у него уже есть архив (_target_has_existing_archive) -- self-eating
-    protection SourceWalker'а никогда не даёт обходу найти __служебные_файлы TARGET изнутри
-    самого TARGET (см. SourceWalker._walk_dir), поэтому для TARGET нужна отдельная проверка,
-    не walk.
+    где-то в дереве папки __служебные_файлы).
+
+    cfg/mode сохранены в сигнатуре ради обратной совместимости вызова (см. run_analyze()) --
+    2026-08-04: TARGET раньше тоже добавлялся сюда для mode=="analyze-full" (сверка с уже
+    существующим архивом) -- этот режим убран целиком (CLI-подкоманда analyze-full удалена,
+    её единственная незамещённая часть, прикидка свободного места, перенесена в dry-run, см.
+    ANALYZE_MODES), TARGET в roots больше никогда не добавляется.
 
     Возвращает (top_level: list[str], nested: dict[str, list[str]]):
     - top_level -- найденные архивы, НЕ вложенные в дерево другого найденного архива (вложенный
@@ -6000,11 +5978,6 @@ def classify_found_archives(raw_roots: list, cfg: Config, mode: str) -> tuple:
       исключаются из top_level, но не эскалируют предупреждение -- редкий случай, никакой
       организованной структуры программа сама туда не кладёт."""
     roots = list(dict.fromkeys(raw_roots))
-    if mode == "analyze-full" and _target_has_existing_archive(cfg.target):
-        target_real = os.path.realpath(cfg.target)
-        if target_real not in roots:
-            roots.append(target_real)
-
     roots_nc = {r: os.path.normcase(r) for r in roots}
     top_level = []
     nested = {}
@@ -6901,8 +6874,8 @@ DEFAULT_CONFIG_YAML_TEMPLATE = """\
                                 # SOURCE вглубь такой папки обрабатывается всегда, флаг не
                                 # мешает (см. README.md, раздел "Зоны доверия и системные папки").
 # include_found_archives_in_analyze: false
-                                # false (по умолчанию) -- сканирование источника ([1]/analyze/
-                                # analyze-quick/analyze-full) исключает из статистики (дубли/
+                                # false (по умолчанию) -- сканирование источника ([1]/CLI
+                                # analyze) исключает из статистики (дубли/
                                 # даты/спорные и т.д.) содержимое уже собранного архива
                                 # PhotoArchive, случайно найденного ВНУТРИ SOURCE -- чтобы он
                                 # не искажал числа по тому, что реально анализируется. Для
@@ -7594,8 +7567,22 @@ def resolve_sources(args) -> list:
     return sources
 
 
-ANALYZE_MODES = ("analyze-quick", "analyze", "analyze-full")
-CLI_MODES = ("archive",) + ANALYZE_MODES
+# 2026-08-04: было три analyze-режима (analyze-quick/analyze/analyze-full) + отдельный
+# CLI-флаг для [4] Паспорт архива так и не появился (RULES.md, 2026-07-31). Средний "analyze"
+# дублировал dry-run (тот считает дедуп точнее -- против живого пула, не только внутри
+# источника), "analyze-full" дублировал его же плюс терял единственную свою уникальную роль
+# (прикидка "влезет ли на диск") -- перенесена в dry-run, см. _bare_launch_run_dryrun().
+# Осталось два CLI-режима: "analyze" (переименованный analyze-quick -- "быстрый" не с чем
+# больше сравнивать) и "analyze-passport" (CLI-доступ к [4]).
+ANALYZE_MODES = ("analyze",)
+CLI_MODES = ("archive", "analyze-passport") + ANALYZE_MODES
+
+# CLI-имя подкоманды "analyze" -> внутреннее значение AnalyzeStats.mode/run_analyze()'s mode.
+# НЕ переименовано 1:1 -- строка "analyze" (без "-quick") уже занята внутри run_analyze() под
+# self-scan Паспорта (run_passport() -- полный проход хеширования, без сверки с TARGET,
+# self_scan=True). Внутреннее значение "analyze-quick" оставлено как есть, только CLI-имя,
+# под которым оно доступно пользователю, поменялось.
+_CLI_ANALYZE_MODE_MAP = {"analyze": "analyze-quick"}
 
 
 def _add_common_source_args(p: argparse.ArgumentParser):
@@ -7618,8 +7605,9 @@ class _FormatsAction(argparse.Action):
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    """Подкоманды: archive (по умолчанию, поведение как раньше) + три read-only
-    analyze-режима (А.2, см. RULES.md) -- НЕ флаг DRY_RUN, отдельные подкоманды."""
+    """Подкоманды: archive (по умолчанию, поведение как раньше) + analyze (read-only
+    диагностика источника) + analyze-passport (read-only проверка уже собранного архива,
+    CLI-доступ к [4] меню) -- НЕ флаг DRY_RUN, отдельные подкоманды."""
     parser = argparse.ArgumentParser(
         description="PhotoArchive -- сборщик семейного фото- и видеоархива (см. README)",
         epilog=f"Сайт проекта: {SITE_URL}\n\n{DONATION_TEXT}",
@@ -7639,14 +7627,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
                             help="прогнать все решения БЕЗ копирования; в отличие от analyze-* "
                                  "всё же пишет обычные __служебные_файлы\\logs\\*.csv в TARGET")
 
-    analyze_help = {
-        "analyze-quick": "быстрая read-only диагностика источника: только метаданные, без SHA/pHash",
-        "analyze": "+ полный проход хеширования: точные и near-дубликаты ВНУТРИ источника",
-        "analyze-full": "+ сверка с существующим TARGET: что уже спасено, что новое, поместится ли",
-    }
-    for mode in ANALYZE_MODES:
-        p = subparsers.add_parser(mode, help=analyze_help[mode])
-        _add_common_source_args(p)
+    p_analyze = subparsers.add_parser(
+        "analyze",
+        help="быстрая read-only диагностика источника: только метаданные, без SHA/pHash "
+             "(без поиска дублей); ничего не пишет в TARGET")
+    _add_common_source_args(p_analyze)
+
+    p_passport = subparsers.add_parser(
+        "analyze-passport",
+        help="read-only проверка целостности уже собранного архива (TARGET) -- см. [4] в "
+             "интерактивном меню")
+    p_passport.add_argument("--target", required=True, help="путь к уже собранному архиву")
 
     return parser
 
@@ -8116,8 +8107,14 @@ def _bare_launch_run_passport(target: str, log=print) -> str:
     [1]/[2]/analyze, паспорт всегда про КОНКРЕТНЫЙ существующий архив, не эфемерный
     WORKDIR-снимок -- разумно оставить его результат рядом с самим архивом, не только в WORKDIR
     этого запуска программы. Возвращает путь к отчёту (или None при ошибке конфига/архив
-    оказался пуст) -- браузер открывает вызывающий код (run_bare_launch()) после общей паузы
-    _pause_for_report(), тот же паттерн, что и у [1]/[2]/[3]."""
+    оказался пуст) -- браузер открывает вызывающий код после общей паузы _pause_for_report(),
+    тот же паттерн, что и у [1]/[2]/[3].
+
+    2026-08-04: несмотря на префикс "_bare_launch_", теперь два вызывающих места -- меню [4]
+    (run_bare_launch()) И CLI-подкоманда analyze-passport (_main(), без браузера -- полный CLI
+    его не открывает, тот же принцип, что у analyze/archive). Имя не переименовано вслед за
+    этим -- функция по-прежнему в первую очередь про шаг [4], переименование ради одного
+    дополнительного вызывающего было бы чисто косметическим churn."""
     with _prevent_sleep():
         stats = run_passport(target, log=log)
     if stats is None:
@@ -8181,6 +8178,16 @@ def _bare_launch_run_dryrun(sources: list, target: str, input_fn=input, log=prin
         merged["free_disk_bytes"] = shutil.disk_usage(winlong(target)).free
     except OSError:
         pass
+    # 2026-08-04: перенесено из удалённого CLI-режима analyze-full (RULES.md, "поместятся ли
+    # новые на TARGET") -- та была единственной его частью, не дублирующей то, что уже точнее
+    # считает сам dry-run (сверка с TARGET здесь -- через реальный decide()/Pool, а не только
+    # по SHA). Тот же запас (free_space_margin_gb), который реальная сборка проверяет перед
+    # копированием (см. atomic_copy()) -- если бы это была настоящая сборка, хватило бы места.
+    if "free_disk_bytes" in merged:
+        margin_gb = load_yaml_config(CONFIG_YAML_PATH, log=log).get("free_space_margin_gb", 10.0)
+        margin_bytes = int(margin_gb * 1024**3)
+        merged["fits_after_dryrun"] = (
+            merged["free_disk_bytes"] - merged.get("bytes_appended", 0)) >= margin_bytes
     write_dryrun_report_csv(os.path.join(WORKDIR, "dryrun_report.csv"), merged)
     out_path = os.path.join(WORKDIR, "report.html")
     if total_processed == 0:
@@ -8517,6 +8524,16 @@ def _main():
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
+    if args.mode == "analyze-passport":
+        # Нет понятия SOURCE вообще (self-scan TARGET), поэтому обрабатывается отдельной
+        # веткой ДО resolve_sources()/interactive_mode ниже -- та инфраструктура рассчитана на
+        # SOURCE+TARGET у любой другой подкоманды. --target обязателен на уровне argparse
+        # (analyze-passport субпарсер), интерактивного доспрашивания для CLI-пути нет --
+        # интерактив для Паспорта уже есть отдельно, [4] в run_bare_launch().
+        check_bundled_tools(log=print)
+        report_path = _bare_launch_run_passport(args.target, log=console_log)
+        return EXIT_CONFIG_ERROR if report_path is None else 0
+
     sources = resolve_sources(args)
     target = args.target
 
@@ -8602,7 +8619,11 @@ def _main():
                     any_interrupted = True
                     break
             else:
-                stats = run_analyze_for_source(s, target, args.sample_limit, args.mode, log=console_log)
+                # args.mode здесь всегда "analyze" (analyze-passport ушла в отдельную ветку
+                # выше, archive -- в ветку if) -- _CLI_ANALYZE_MODE_MAP переводит CLI-имя в
+                # внутреннее значение mode, см. её же комментарий у ANALYZE_MODES.
+                internal_mode = _CLI_ANALYZE_MODE_MAP.get(args.mode, args.mode)
+                stats = run_analyze_for_source(s, target, args.sample_limit, internal_mode, log=console_log)
                 source_exit_code = EXIT_CONFIG_ERROR if stats is None else 0
                 # PROMPT_archive_report.md, раздел 1.2: analyze-* -- "один слот, не
                 # персистентно per-источник", каждый анализ перезаписывает WORKDIR\report.html

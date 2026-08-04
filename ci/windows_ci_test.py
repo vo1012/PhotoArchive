@@ -732,28 +732,68 @@ def test_place_file_archive_no_crc_forces_hash_verify():
 
 
 def test_analyze_modes():
-    print("\n=== A.2: analyze-quick / analyze (read-only, no writes to TARGET) ===")
+    # 2026-08-04: CLI-подкоманды analyze-quick/analyze/analyze-full сведены к одной "analyze"
+    # (переименованный analyze-quick -- "быстрый" не с чем больше сравнивать, средний/полный
+    # тиры убраны, их единственная незамещённая часть, дедуп/сверка с TARGET, точнее и так уже
+    # считает dry-run, см. CLAUDE.md/RULES.md). CLI-имя "analyze" внутри маппится на прежнее
+    # значение mode="analyze-quick" (см. _CLI_ANALYZE_MODE_MAP) -- отдельной CLI-подкоманды с
+    # полным проходом хеширования по голому SOURCE (без self-scan) больше нет вообще, поэтому
+    # проверка дедупа здесь больше не имеет смысла -- она теперь только у analyze-passport
+    # (self-scan уже собранного архива, см. test_analyze_passport_cli() ниже).
+    print("\n=== A.2: analyze (read-only, no writes to TARGET) ===")
     src = os.path.join(WORK, "src_analyze")
     tgt = os.path.join(WORK, "target_analyze")
     image(os.path.join(src, "normal.jpg"), 1600, 1200, exif=True, dt="2018:05:01 10:00:00")
     with open(os.path.join(src, "broken.jpg"), "wb"):
         pass
-    image(os.path.join(src, "dup_a.jpg"), 1400, 1000, exif=True, dt="2017:06:01 08:00:00")
-    shutil.copy2(os.path.join(src, "dup_a.jpg"), os.path.join(src, "dup_b_renamed.jpg"))
 
-    r = run_photosort_mode("analyze-quick", src, tgt)
-    check(r.returncode == 0, "A.2: analyze-quick exits 0")
-    check(not os.path.isdir(os.path.join(tgt, "ByDate")), "A.2: analyze-quick writes nothing to TARGET")
-
-    r2 = run_photosort_mode("analyze", src, tgt)
-    check(r2.returncode == 0, "A.2: analyze exits 0")
+    r = run_photosort_mode("analyze", src, tgt)
+    check(r.returncode == 0, "A.2: analyze exits 0")
     check(not os.path.isdir(os.path.join(tgt, "ByDate")), "A.2: analyze writes nothing to TARGET")
     report_path = os.path.join(ROOT, "analyze_report.csv")
     rows = {row["metric"]: row["value"] for row in read_csv(report_path)}
-    check(rows.get("mode") == "analyze", "A.2: analyze_report.csv reflects the analyze mode")
-    check(int(rows.get("n_exact_dupes", 0)) >= 1, "A.2: analyze found the exact duplicate (dup_a/dup_b)")
+    check(rows.get("mode") == "analyze-quick",
+          "A.2: analyze_report.csv reflects the internal analyze-quick mode (CLI name changed, "
+          "internal value did not -- see _CLI_ANALYZE_MODE_MAP)")
     if os.path.exists(report_path):
         os.remove(report_path)
+
+
+def test_analyze_passport_cli():
+    # 2026-08-04: новая CLI-подкоманда, закрывает пробел, отмеченный ещё в RULES.md
+    # (2026-07-31: "CLI-флаг для [4] не сделан в этом же заходе") -- до сих пор Паспорт был
+    # доступен только через интерактивное меню ([4]), _bare_launch_run_passport() гонялась
+    # тестами только Python-однострочником в обход argv. Здесь -- реальный argv, реальный
+    # subprocess.run(), без --source вообще (self-scan TARGET, см. run_passport()).
+    print("\n=== analyze-passport CLI: реальный argv, без --source (self-scan TARGET) ===")
+    src = os.path.join(WORK, "src_analyze_passport_cli")
+    tgt = os.path.join(WORK, "target_analyze_passport_cli")
+    image(os.path.join(src, "Отпуск", "a.jpg"), 1600, 1200, exif=True, dt="2022:04:04 10:00:00")
+    r = run_photosort(src, tgt)
+    check(r.returncode == 0, "analyze-passport-cli: initial real archive build exits 0")
+
+    report_path = os.path.join(tgt, "__служебные_файлы", "passport.html")
+    if os.path.isfile(report_path):
+        os.remove(report_path)
+    r2 = subprocess.run([sys.executable, SCRIPT, "analyze-passport", "--target", tgt],
+                         capture_output=True, text=True, encoding="utf-8", errors="replace")
+    print(r2.stdout[-2000:])
+    if r2.returncode != 0:
+        print(r2.stderr[-2000:])
+    check(r2.returncode == 0, f"analyze-passport-cli: exits 0 (stderr={r2.stderr[-800:]})")
+    check(os.path.isfile(report_path),
+          "analyze-passport-cli: passport.html written to TARGET\\__служебные_файлы\\")
+    if os.path.isfile(report_path):
+        with open(report_path, encoding="utf-8") as f:
+            html_out = f.read()
+        check("Целостность архива" in html_out, "analyze-passport-cli: integrity section is rendered")
+        os.remove(report_path)
+
+    r3 = subprocess.run([sys.executable, SCRIPT, "analyze-passport"],
+                         capture_output=True, text=True, encoding="utf-8", errors="replace")
+    check(r3.returncode != 0 and "--target" in r3.stderr,
+          "analyze-passport-cli: --target is required, clean argparse error without it "
+          "(no --source on this subcommand at all, see build_arg_parser())")
 
 
 def test_analyze_closing_cta_mentions_archives_found():
@@ -831,15 +871,15 @@ def test_oldest_file_line_shows_folder_and_name():
 
 def test_analyze_report_recommendations_section():
     print("\n=== REVIEW-HANDOFF.md, Раунд 36: секция «Рекомендации» в analyze-отчёте -- через "
-          "реальный analyze-пайплайн (analyze-quick), не через build_model_from_analyze_stats() "
-          "с вручную подставленным stats ===")
+          "реальный analyze-пайплайн (CLI analyze, внутренний mode=\"analyze-quick\"), не через "
+          "build_model_from_analyze_stats() с вручную подставленным stats ===")
     src = os.path.join(WORK, "src_analyze_recommendations")
     os.makedirs(src, exist_ok=True)
     image(os.path.join(src, "photo.jpg"), 1600, 1200, exif=True, dt="2021:03:01 10:00:00")
 
     tgt = os.path.join(WORK, "target_analyze_recommendations")
-    r = run_photosort_mode("analyze-quick", src, tgt)
-    check(r.returncode == 0, "analyze-recommendations: analyze-quick exits 0")
+    r = run_photosort_mode("analyze", src, tgt)
+    check(r.returncode == 0, "analyze-recommendations: analyze exits 0")
 
     report_path = os.path.join(ROOT, "report.html")
     check(os.path.isfile(report_path), "analyze-recommendations: report.html generated")
@@ -849,12 +889,13 @@ def test_analyze_report_recommendations_section():
         check("Рекомендации" in html_out,
               "analyze-recommendations: section heading is rendered")
         check("Архиву потребуется примерно" in html_out and "свободного места" in html_out,
-              "analyze-recommendations: disk-space item works even in analyze-quick "
-              "(total_bytes is always counted)")
-        # analyze-quick не делает полного прохода хеширования -- near-dup серии физически
-        # не могут быть посчитаны, пункт должен молча отсутствовать, не падать ошибкой.
+              "analyze-recommendations: disk-space item works even in the quick (no-hashing) "
+              "mode (total_bytes is always counted)")
+        # analyze не делает полного прохода хеширования (internal mode="analyze-quick") --
+        # near-dup серии физически не могут быть посчитаны, пункт должен молча отсутствовать,
+        # не падать ошибкой.
         check("похожих кадров" not in html_out,
-              "analyze-recommendations: near-dup item is absent in analyze-quick (no data)")
+              "analyze-recommendations: near-dup item is absent in analyze (no hashing done)")
         os.remove(report_path)
 
 
@@ -1681,8 +1722,10 @@ def test_cli_version_help_routing():
     r3 = subprocess.run([sys.executable, SCRIPT, "--help"], capture_output=True,
                          text=True, encoding="utf-8", errors="replace")
     check(r3.returncode == 0, "B.3: top-level --help exits 0")
-    check("analyze-quick" in r3.stdout and "analyze-full" in r3.stdout,
-          "B.3: top-level --help lists analyze-* subcommands (not swallowed by the archive shim)")
+    check("analyze-passport" in r3.stdout and "{archive,analyze,analyze-passport}" in r3.stdout,
+          "B.3: top-level --help lists all subcommands, incl. analyze-passport (not swallowed "
+          "by the archive shim) -- 2026-08-04: analyze-quick/analyze-full retired, see "
+          "build_arg_parser()")
     check("vo1012.github.io/PhotoArchive" in r3.stdout,
           "2026-07-20: --help epilog links the project site (SITE_URL), not the raw repo")
     check("Контакты" in r3.stdout and "коммерческой выгоды" in r3.stdout,
@@ -4001,8 +4044,14 @@ def test_relative_path_rejected():
           "5.9: relative TARGET gets a clear Russian error message")
 
 
-def test_third_party_licenses_wired_up():
-    print("\n=== Phase-2 finding 5: THIRD_PARTY_LICENSES.md wired into build.bat/RELEASING.md ===")
+def test_third_party_licenses_content():
+    # 2026-08-04: this repo's build.bat no longer packages licenses/PDF docs at all (by direct
+    # user decision -- local dev build is exe-only, for a real-hardware "does it even build"
+    # check before a live test run; the distributable bundle, PDFs included, is now built
+    # exclusively by the public repo's CI on a release tag, see RELEASING.md). What used to be
+    # "Phase-2 finding 5: THIRD_PARTY_LICENSES.md wired into build.bat" no longer applies here
+    # -- only the content of THIRD_PARTY_LICENSES.md itself is still this repo's concern.
+    print("\n=== THIRD_PARTY_LICENSES.md content ===")
     licenses_path = os.path.join(ROOT, "THIRD_PARTY_LICENSES.md")
     check(os.path.isfile(licenses_path), "THIRD_PARTY_LICENSES.md exists at repo root")
     licenses_text = ""
@@ -4011,26 +4060,6 @@ def test_third_party_licenses_wired_up():
             licenses_text = f.read()
     for name in ("ExifTool", "FFmpeg", "7-Zip", "UnRAR", "bin/licenses"):
         check(name in licenses_text, f"THIRD_PARTY_LICENSES.md mentions {name}")
-
-    build_bat = os.path.join(ROOT, "build", "build.bat")
-    with open(build_bat, encoding="utf-8") as f:
-        build_text = f.read()
-    check("licenses" in build_text, "build.bat references bin/licenses")
-
-    # 2026-07-15: THIRD_PARTY_LICENSES.md is no longer copied as-is by build.bat -- it goes
-    # through build/md_to_pdf.py's DOCS list like the other user docs, so dist\ only ever
-    # contains THIRD_PARTY_LICENSES.pdf, never a stray .md (see RELEASING.md).
-    md_to_pdf = os.path.join(ROOT, "build", "md_to_pdf.py")
-    with open(md_to_pdf, encoding="utf-8") as f:
-        md_to_pdf_text = f.read()
-    check("THIRD_PARTY_LICENSES.md" in md_to_pdf_text,
-          "build/md_to_pdf.py converts THIRD_PARTY_LICENSES.md into dist\\THIRD_PARTY_LICENSES.pdf")
-    # build.bat still mentions "..\THIRD_PARTY_LICENSES.md" in dev-facing warnings/reminders
-    # (the file at the repo root genuinely has that name) -- what must NOT exist anymore is a
-    # command that copies it into dist\ as-is.
-    check("copy /Y ..\\THIRD_PARTY_LICENSES.md" not in build_text,
-          "build.bat no longer copies THIRD_PARTY_LICENSES.md into dist\\ as-is "
-          "(superseded by the PDF pipeline)")
 
     # RELEASING.md is a dev-repo-only internal doc (not published to the public repo, which
     # mirrors this test file too) -- skip gracefully there instead of hard-failing on a file
@@ -4111,6 +4140,7 @@ ALL_TESTS = [
     test_tar_source_never_uses_unverified_rename,
     test_place_file_archive_no_crc_forces_hash_verify,
     test_analyze_modes,
+    test_analyze_passport_cli,
     test_analyze_closing_cta_mentions_archives_found,
     test_oldest_file_line_shows_folder_and_name,
     test_analyze_report_recommendations_section,
@@ -4176,7 +4206,7 @@ ALL_TESTS = [
     test_archive_symlink_rejected,
     test_archive_entry_count_mismatch_rejected,
     test_relative_path_rejected,
-    test_third_party_licenses_wired_up,
+    test_third_party_licenses_content,
     test_requirements_txt_pinned_and_wired_up,
 ]
 
