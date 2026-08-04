@@ -2,7 +2,7 @@
 PyInstaller-packaged binary actually launches and processes a real file end-to-end, catching
 frozen-import risks (reverse_geocoder/pillow_heif data files, missing --add-binary) that a
 plain `python photosort_win.py` run in the `test` job cannot catch. Also exercises the new
-argparse subparsers (archive is implicit / analyze-quick explicit) and RAW_LAYOUT=sibling
+argparse subparsers (archive is implicit / analyze explicit) and RAW_LAYOUT=sibling
 through the actual frozen binary -- these previously only ran via `python photosort_win.py`
 in ci/windows_ci_test.py, never through PyInstaller's frozen entry point.
 """
@@ -81,15 +81,17 @@ def test_basic_archive():
     check(os.path.isfile(dest), "photo archived end-to-end by the frozen exe")
 
 
-def test_analyze_quick():
-    print("\n=== frozen exe: analyze-quick subcommand ===")
+def test_analyze():
+    # 2026-08-04: CLI subcommand renamed analyze-quick -> analyze (see build_arg_parser());
+    # internal AnalyzeStats.mode value is still "analyze-quick" (see _CLI_ANALYZE_MODE_MAP).
+    print("\n=== frozen exe: analyze subcommand ===")
     src = os.path.join(WORK, "src_analyze")
     tgt = os.path.join(WORK, "target_analyze")
     make_photo(os.path.join(src, "photo2.jpg"), dt="2020:01:01 10:00:00", seed=2)
 
-    r = run_exe(["analyze-quick", "--source", src, "--target", tgt])
-    check(r.returncode == 0, "PhotoArchive.exe analyze-quick exits 0")
-    check(not os.path.isdir(os.path.join(tgt, "ByDate")), "analyze-quick writes nothing to TARGET")
+    r = run_exe(["analyze", "--source", src, "--target", tgt])
+    check(r.returncode == 0, "PhotoArchive.exe analyze exits 0")
+    check(not os.path.isdir(os.path.join(tgt, "ByDate")), "analyze writes nothing to TARGET")
     report = os.path.join(DIST_DIR, "analyze_report.csv")
     check(os.path.isfile(report), "analyze_report.csv created next to the frozen exe")
     if os.path.exists(report):
@@ -121,7 +123,7 @@ def main():
         sys.exit(1)
 
     test_basic_archive()
-    test_analyze_quick()
+    test_analyze()
     test_raw_layout_sibling()
 
     for junk in ("work.db", "photoarchive_config.yaml", "analyze_report.csv"):
@@ -136,7 +138,7 @@ def main():
             print(f"  - {f}")
         sys.exit(1)
     print("PASS: PhotoArchive.exe built, launched, and exercised end-to-end "
-          "(archive default + analyze-quick + raw_layout=sibling)")
+          "(archive default + analyze + raw_layout=sibling)")
 
 
 if __name__ == "__main__":
