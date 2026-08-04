@@ -601,10 +601,14 @@ def test_archive_unlistable_treated_as_bomb():
           "5.6: unlistable archive is never actually extracted (tmp_extract stays empty)")
 
 
-def run_photosort_mode(mode, source, target, extra_args=None):
-    """Like run_photosort() but for the analyze-* subcommands (mode is the first positional
-    CLI argument, not implied via the "archive" default)."""
-    cmd = [sys.executable, SCRIPT, mode, "--source", source, "--target", target]
+def run_photosort_mode(mode, source, extra_args=None):
+    """Like run_photosort() but for "analyze --source ..." (mode is the first positional CLI
+    argument, not implied via the "archive" default). 2026-08-04: no --target here at all --
+    "analyze" now requires EXACTLY ONE of --source/--target (mutually exclusive, see
+    build_arg_parser()/_main()), passing both would hit the new "не оба сразу" error. The
+    --target ("analyze --target ..." self-scan/passport) branch is exercised separately, see
+    test_analyze_target_cli()."""
+    cmd = [sys.executable, SCRIPT, mode, "--source", source]
     if extra_args:
         cmd.extend(extra_args)
     result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
@@ -738,18 +742,17 @@ def test_analyze_modes():
     # считает dry-run, см. CLAUDE.md/RULES.md). CLI-имя "analyze" внутри маппится на прежнее
     # значение mode="analyze-quick" (см. _CLI_ANALYZE_MODE_MAP) -- отдельной CLI-подкоманды с
     # полным проходом хеширования по голому SOURCE (без self-scan) больше нет вообще, поэтому
-    # проверка дедупа здесь больше не имеет смысла -- она теперь только у analyze-passport
-    # (self-scan уже собранного архива, см. test_analyze_passport_cli() ниже).
-    print("\n=== A.2: analyze (read-only, no writes to TARGET) ===")
+    # проверка дедупа здесь больше не имеет смысла -- она теперь только у "analyze --target"
+    # (self-scan уже собранного архива, см. test_analyze_target_cli() ниже; та же CLI-подкоманда
+    # "analyze", была отдельная "analyze-passport", объединены тем же заходом чуть позже).
+    print("\n=== A.2: analyze --source (read-only, no writes to TARGET) ===")
     src = os.path.join(WORK, "src_analyze")
-    tgt = os.path.join(WORK, "target_analyze")
     image(os.path.join(src, "normal.jpg"), 1600, 1200, exif=True, dt="2018:05:01 10:00:00")
     with open(os.path.join(src, "broken.jpg"), "wb"):
         pass
 
-    r = run_photosort_mode("analyze", src, tgt)
+    r = run_photosort_mode("analyze", src)
     check(r.returncode == 0, "A.2: analyze exits 0")
-    check(not os.path.isdir(os.path.join(tgt, "ByDate")), "A.2: analyze writes nothing to TARGET")
     report_path = os.path.join(ROOT, "analyze_report.csv")
     rows = {row["metric"]: row["value"] for row in read_csv(report_path)}
     check(rows.get("mode") == "analyze-quick",
@@ -759,41 +762,52 @@ def test_analyze_modes():
         os.remove(report_path)
 
 
-def test_analyze_passport_cli():
-    # 2026-08-04: новая CLI-подкоманда, закрывает пробел, отмеченный ещё в RULES.md
-    # (2026-07-31: "CLI-флаг для [4] не сделан в этом же заходе") -- до сих пор Паспорт был
-    # доступен только через интерактивное меню ([4]), _bare_launch_run_passport() гонялась
-    # тестами только Python-однострочником в обход argv. Здесь -- реальный argv, реальный
-    # subprocess.run(), без --source вообще (self-scan TARGET, см. run_passport()).
-    print("\n=== analyze-passport CLI: реальный argv, без --source (self-scan TARGET) ===")
-    src = os.path.join(WORK, "src_analyze_passport_cli")
-    tgt = os.path.join(WORK, "target_analyze_passport_cli")
+def test_analyze_target_cli():
+    # 2026-08-04: closes the gap flagged in RULES.md (2026-07-31: "CLI-флаг для [4] не сделан
+    # в этом же заходе") -- Passport used to be reachable only through the interactive menu
+    # ([4]), _bare_launch_run_passport() was only exercised by a Python one-liner bypassing
+    # argv. First landed as its own "analyze-passport" subcommand, then merged into "analyze"
+    # the same day by direct user request: "analyze --source ..." (diagnose a raw source) vs
+    # "analyze --target ..." (self-scan an already-built archive) -- same subcommand, mode
+    # picked by which flag is actually given (see build_arg_parser()/_main()), not two
+    # separate subcommand names. Here -- real argv, real subprocess.run(), self-scan TARGET
+    # without --source at all (see run_passport()).
+    print("\n=== analyze --target CLI: real argv, no --source (self-scan TARGET) ===")
+    src = os.path.join(WORK, "src_analyze_target_cli")
+    tgt = os.path.join(WORK, "target_analyze_target_cli")
     image(os.path.join(src, "Отпуск", "a.jpg"), 1600, 1200, exif=True, dt="2022:04:04 10:00:00")
     r = run_photosort(src, tgt)
-    check(r.returncode == 0, "analyze-passport-cli: initial real archive build exits 0")
+    check(r.returncode == 0, "analyze-target-cli: initial real archive build exits 0")
 
     report_path = os.path.join(tgt, "__служебные_файлы", "passport.html")
     if os.path.isfile(report_path):
         os.remove(report_path)
-    r2 = subprocess.run([sys.executable, SCRIPT, "analyze-passport", "--target", tgt],
+    r2 = subprocess.run([sys.executable, SCRIPT, "analyze", "--target", tgt],
                          capture_output=True, text=True, encoding="utf-8", errors="replace")
     print(r2.stdout[-2000:])
     if r2.returncode != 0:
         print(r2.stderr[-2000:])
-    check(r2.returncode == 0, f"analyze-passport-cli: exits 0 (stderr={r2.stderr[-800:]})")
+    check(r2.returncode == 0, f"analyze-target-cli: exits 0 (stderr={r2.stderr[-800:]})")
     check(os.path.isfile(report_path),
-          "analyze-passport-cli: passport.html written to TARGET\\__служебные_файлы\\")
+          "analyze-target-cli: passport.html written to TARGET\\__служебные_файлы\\")
     if os.path.isfile(report_path):
         with open(report_path, encoding="utf-8") as f:
             html_out = f.read()
-        check("Целостность архива" in html_out, "analyze-passport-cli: integrity section is rendered")
+        check("Целостность архива" in html_out, "analyze-target-cli: integrity section is rendered")
         os.remove(report_path)
 
-    r3 = subprocess.run([sys.executable, SCRIPT, "analyze-passport"],
+    r3 = subprocess.run([sys.executable, SCRIPT, "analyze"],
                          capture_output=True, text=True, encoding="utf-8", errors="replace")
-    check(r3.returncode != 0 and "--target" in r3.stderr,
-          "analyze-passport-cli: --target is required, clean argparse error without it "
-          "(no --source on this subcommand at all, see build_arg_parser())")
+    check(r3.returncode != 0 and "--source" in r3.stdout and "--target" in r3.stdout,
+          "analyze-target-cli: neither --source nor --target -> clean config error, not an "
+          "interactive prompt or a crash (stdout, not argparse/stderr -- this is _main()'s "
+          "own manual check, see build_arg_parser() docstring)")
+
+    r4 = subprocess.run([sys.executable, SCRIPT, "analyze", "--source", src, "--target", tgt],
+                         capture_output=True, text=True, encoding="utf-8", errors="replace")
+    check(r4.returncode != 0 and "не оба сразу" in r4.stdout,
+          "analyze-target-cli: --source AND --target together -> clean config error, "
+          "mutually exclusive")
 
 
 def test_analyze_closing_cta_mentions_archives_found():
@@ -808,8 +822,7 @@ def test_analyze_closing_cta_mentions_archives_found():
     with zipfile.ZipFile(zpath, "w") as zf:
         zf.write(tmp_jpg, arcname="photo_from_zip.jpg")
 
-    tgt = os.path.join(WORK, "target_analyze_cta_archives")
-    r = run_photosort_mode("analyze", src, tgt)
+    r = run_photosort_mode("analyze", src)
     check(r.returncode == 0, "analyze-cta-archives: analyze exits 0")
 
     report_path = os.path.join(ROOT, "report.html")
@@ -877,8 +890,7 @@ def test_analyze_report_recommendations_section():
     os.makedirs(src, exist_ok=True)
     image(os.path.join(src, "photo.jpg"), 1600, 1200, exif=True, dt="2021:03:01 10:00:00")
 
-    tgt = os.path.join(WORK, "target_analyze_recommendations")
-    r = run_photosort_mode("analyze", src, tgt)
+    r = run_photosort_mode("analyze", src)
     check(r.returncode == 0, "analyze-recommendations: analyze exits 0")
 
     report_path = os.path.join(ROOT, "report.html")
@@ -1321,7 +1333,7 @@ def test_top_cameras_chart_in_report():
     workdir_report = os.path.join(ROOT, "report.html")
     if os.path.isfile(workdir_report):
         os.remove(workdir_report)  # не унести случайно устаревший файл от прошлого теста
-    r2 = run_photosort_mode("analyze", src, tgt + "_analyze")
+    r2 = run_photosort_mode("analyze", src)
     check(r2.returncode == 0, "top-cameras: analyze exits 0")
     check(os.path.isfile(workdir_report), "top-cameras: analyze writes report.html to WORKDIR")
     if os.path.isfile(workdir_report):
@@ -1722,10 +1734,11 @@ def test_cli_version_help_routing():
     r3 = subprocess.run([sys.executable, SCRIPT, "--help"], capture_output=True,
                          text=True, encoding="utf-8", errors="replace")
     check(r3.returncode == 0, "B.3: top-level --help exits 0")
-    check("analyze-passport" in r3.stdout and "{archive,analyze,analyze-passport}" in r3.stdout,
-          "B.3: top-level --help lists all subcommands, incl. analyze-passport (not swallowed "
-          "by the archive shim) -- 2026-08-04: analyze-quick/analyze-full retired, see "
-          "build_arg_parser()")
+    check("{archive,analyze}" in r3.stdout,
+          "B.3: top-level --help lists exactly two subcommands (not swallowed by the archive "
+          "shim) -- 2026-08-04: analyze-quick/analyze/analyze-full retired, then analyze/"
+          "analyze-passport merged into one \"analyze\" (branches on --source vs --target), "
+          "see build_arg_parser()")
     check("vo1012.github.io/PhotoArchive" in r3.stdout,
           "2026-07-20: --help epilog links the project site (SITE_URL), not the raw repo")
     check("Контакты" in r3.stdout and "коммерческой выгоды" in r3.stdout,
@@ -4140,7 +4153,7 @@ ALL_TESTS = [
     test_tar_source_never_uses_unverified_rename,
     test_place_file_archive_no_crc_forces_hash_verify,
     test_analyze_modes,
-    test_analyze_passport_cli,
+    test_analyze_target_cli,
     test_analyze_closing_cta_mentions_archives_found,
     test_oldest_file_line_shows_folder_and_name,
     test_analyze_report_recommendations_section,

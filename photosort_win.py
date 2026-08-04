@@ -66,7 +66,7 @@ import report  # PROMPT_archive_report.md, границы: отдельный м
 # blanket ignore of all warnings, so any other future PIL/library warning still surfaces.
 warnings.filterwarnings("ignore", message="Palette images with Transparency.*", category=UserWarning)
 
-__version__ = "0.3.1"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
+__version__ = "0.3.2"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
                                  # с RULES_VERSION ниже (та про совместимость архива, а не exe)
 RULES_VERSION = "2026-08-03"   # дата последнего изменения бизнес-правил -- см. RULES.md;
                                 # менять руками при изменении логики раскладки/дедупа/дат
@@ -1611,8 +1611,8 @@ def archive_cache_db_path(archive_root: str) -> str:
 
 
 def _open_archive_cache_conn(archive_root: str) -> sqlite3.Connection:
-    """None, если у archive_root ещё даже нет служебной папки -- например analyze-passport
-    (self-scan, см. run_passport()) запущен на папке, которая архивом ещё не является
+    """None, если у archive_root ещё даже нет служебной папки -- например "analyze --target"
+    (Паспорт, self-scan, см. run_passport()) запущен на папке, которая архивом ещё не является
     (analyze-режимы read-only, __служебные_файлы здесь заводить рано, см. докстринг у ANALYZE
     выше). Вызывающая сторона в этом случае просто работает без кэша (тот же эффект, что и
     archive_hash_cache=False) -- ensure_target_layout() уже создаёт эту папку до реальной
@@ -5296,8 +5296,8 @@ class AnalyzeStats:
     cameras: Counter = field(default_factory=Counter)
     tier_counts: Counter = field(default_factory=Counter)  # "A"/"B"/"C"/"D" -> count
     # mode="analyze" (полный проход хеширования -- точный/near-дедуп; 2026-08-04: достижимо
-    # только через run_passport()'s self_scan=True, у CLI отдельной подкоманды для этого
-    # варианта нет, см. ANALYZE_MODES):
+    # через run_passport()'s self_scan=True -- CLI "analyze --target ..." см. CLI_MODES/
+    # _main()):
     n_exact_dupes: int = 0
     n_diff_name_same_content: int = 0
     n_near_dupes: int = 0
@@ -5414,10 +5414,10 @@ def _walk_with_exif_prefetch(items_iter, tmp_extract_dir: str, batch_size: int, 
 
 
 def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> AnalyzeStats:
-    """mode: analyze-quick (метаданные, без SHA/pHash; CLI-имя подкоманды -- просто "analyze",
-    см. _CLI_ANALYZE_MODE_MAP) | analyze (+ полный проход хеширования, точный+near-дедуп
-    ВНУТРИ источника -- сейчас достижимо только через run_passport()'s self_scan=True, у CLI
-    для этого варианта отдельной подкоманды нет, см. 2026-08-04 у ANALYZE_MODES).
+    """mode: analyze-quick (метаданные, без SHA/pHash; CLI -- "analyze --source ...", см.
+    _CLI_ANALYZE_MODE_MAP) | analyze (+ полный проход хеширования, точный+near-дедуп ВНУТРИ
+    источника -- достижимо через run_passport()'s self_scan=True, CLI -- "analyze --target
+    ...", см. CLI_MODES/_main()).
 
     Переиспользует РЕАЛЬНЫЙ конвейер (SourceWalker, analyze_batch, resolve_date, find_album,
     decide()+Pool) вплоть до Фазы 4.5 включительно -- решения о дедупе и дате считаются той же
@@ -5966,7 +5966,7 @@ def classify_found_archives(raw_roots: list, cfg: Config, mode: str) -> tuple:
     2026-08-04: TARGET раньше тоже добавлялся сюда для mode=="analyze-full" (сверка с уже
     существующим архивом) -- этот режим убран целиком (CLI-подкоманда analyze-full удалена,
     её единственная незамещённая часть, прикидка свободного места, перенесена в dry-run, см.
-    ANALYZE_MODES), TARGET в roots больше никогда не добавляется.
+    CLI_MODES), TARGET в roots больше никогда не добавляется.
 
     Возвращает (top_level: list[str], nested: dict[str, list[str]]):
     - top_level -- найденные архивы, НЕ вложенные в дерево другого найденного архива (вложенный
@@ -7572,10 +7572,12 @@ def resolve_sources(args) -> list:
 # дублировал dry-run (тот считает дедуп точнее -- против живого пула, не только внутри
 # источника), "analyze-full" дублировал его же плюс терял единственную свою уникальную роль
 # (прикидка "влезет ли на диск") -- перенесена в dry-run, см. _bare_launch_run_dryrun().
-# Осталось два CLI-режима: "analyze" (переименованный analyze-quick -- "быстрый" не с чем
-# больше сравнивать) и "analyze-passport" (CLI-доступ к [4]).
-ANALYZE_MODES = ("analyze",)
-CLI_MODES = ("archive", "analyze-passport") + ANALYZE_MODES
+# Сначала осталось два CLI-режима ("analyze" = переименованный analyze-quick, и отдельная
+# "analyze-passport" = CLI-доступ к [4]) -- в этом же заходе, той же датой, по прямому
+# предложению пользователя объединены в один: "analyze" ветвится по тому, какой из
+# --source/--target дан (см. build_arg_parser()/_main()), отдельной подкоманды для [4]
+# больше нет вовсе.
+CLI_MODES = ("archive", "analyze")
 
 # CLI-имя подкоманды "analyze" -> внутреннее значение AnalyzeStats.mode/run_analyze()'s mode.
 # НЕ переименовано 1:1 -- строка "analyze" (без "-quick") уже занята внутри run_analyze() под
@@ -7585,12 +7587,11 @@ CLI_MODES = ("archive", "analyze-passport") + ANALYZE_MODES
 _CLI_ANALYZE_MODE_MAP = {"analyze": "analyze-quick"}
 
 
-def _add_common_source_args(p: argparse.ArgumentParser):
+def _add_source_args(p: argparse.ArgumentParser):
     p.add_argument("--source", action="append", default=None,
                     help="источник; флаг можно повторять для нескольких источников за один запуск")
     p.add_argument("--source-list", default=None,
                     help="файл со списком SOURCE, по одному пути на строку")
-    p.add_argument("--target", default=None)
     p.add_argument("--sample-limit", type=int, default=0,
                     help="не более N файлов источника (быстрый тест на малой выборке)")
 
@@ -7605,9 +7606,15 @@ class _FormatsAction(argparse.Action):
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    """Подкоманды: archive (по умолчанию, поведение как раньше) + analyze (read-only
-    диагностика источника) + analyze-passport (read-only проверка уже собранного архива,
-    CLI-доступ к [4] меню) -- НЕ флаг DRY_RUN, отдельные подкоманды."""
+    """Подкоманды: archive (по умолчанию, поведение как раньше) + analyze (read-only,
+    дальнейшее ветвление по тому, какой из --source/--target дан -- НЕ отдельная подкоманда
+    "analyze-passport", см. 2026-08-04 у CLI_MODES).
+
+    "analyze --source X" (диагностика источника) и "analyze --target Y" (проверка целостности
+    уже собранного архива, self-scan) -- РОВНО один из двух, не оба сразу и не ни одного;
+    argparse сам по себе это не выражает (--source-list -- отдельный от --source флаг,
+    складывается с ним же, не с --target -- см. resolve_sources()), поэтому проверяется
+    вручную в _main() сразу после parse_args(), не здесь."""
     parser = argparse.ArgumentParser(
         description="PhotoArchive -- сборщик семейного фото- и видеоархива (см. README)",
         epilog=f"Сайт проекта: {SITE_URL}\n\n{DONATION_TEXT}",
@@ -7622,22 +7629,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="mode", required=True)
 
     p_archive = subparsers.add_parser("archive", help="собрать архив (поведение по умолчанию)")
-    _add_common_source_args(p_archive)
+    _add_source_args(p_archive)
+    p_archive.add_argument("--target", default=None, help="куда собирать архив")
     p_archive.add_argument("--dry-run", action="store_true",
-                            help="прогнать все решения БЕЗ копирования; в отличие от analyze-* "
+                            help="прогнать все решения БЕЗ копирования; в отличие от analyze "
                                  "всё же пишет обычные __служебные_файлы\\logs\\*.csv в TARGET")
 
     p_analyze = subparsers.add_parser(
         "analyze",
-        help="быстрая read-only диагностика источника: только метаданные, без SHA/pHash "
-             "(без поиска дублей); ничего не пишет в TARGET")
-    _add_common_source_args(p_analyze)
-
-    p_passport = subparsers.add_parser(
-        "analyze-passport",
-        help="read-only проверка целостности уже собранного архива (TARGET) -- см. [4] в "
-             "интерактивном меню")
-    p_passport.add_argument("--target", required=True, help="путь к уже собранному архиву")
+        help="read-only диагностика: --source -- быстро проверить источник (метаданные, без "
+             "SHA/pHash); --target -- проверить целостность уже собранного архива "
+             "(self-scan, полный проход хеширования) -- дать ровно один из двух")
+    _add_source_args(p_analyze)
+    p_analyze.add_argument("--target", default=None,
+                            help="путь к уже собранному архиву для проверки целостности "
+                                 "(взаимоисключимо с --source/--source-list)")
 
     return parser
 
@@ -8111,10 +8117,12 @@ def _bare_launch_run_passport(target: str, log=print) -> str:
     тот же паттерн, что и у [1]/[2]/[3].
 
     2026-08-04: несмотря на префикс "_bare_launch_", теперь два вызывающих места -- меню [4]
-    (run_bare_launch()) И CLI-подкоманда analyze-passport (_main(), без браузера -- полный CLI
-    его не открывает, тот же принцип, что у analyze/archive). Имя не переименовано вслед за
-    этим -- функция по-прежнему в первую очередь про шаг [4], переименование ради одного
-    дополнительного вызывающего было бы чисто косметическим churn."""
+    (run_bare_launch()) И CLI "analyze --target ..." (_main(), без браузера -- полный CLI его
+    не открывает, тот же принцип, что у analyze --source/archive; изначально была отдельная
+    подкоманда "analyze-passport", объединена с "analyze" тем же днём чуть позже). Имя не
+    переименовано вслед за этим -- функция по-прежнему в первую очередь про шаг [4],
+    переименование ради одного дополнительного вызывающего было бы чисто косметическим
+    churn."""
     with _prevent_sleep():
         stats = run_passport(target, log=log)
     if stats is None:
@@ -8524,15 +8532,35 @@ def _main():
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
-    if args.mode == "analyze-passport":
-        # Нет понятия SOURCE вообще (self-scan TARGET), поэтому обрабатывается отдельной
-        # веткой ДО resolve_sources()/interactive_mode ниже -- та инфраструктура рассчитана на
-        # SOURCE+TARGET у любой другой подкоманды. --target обязателен на уровне argparse
-        # (analyze-passport субпарсер), интерактивного доспрашивания для CLI-пути нет --
-        # интерактив для Паспорта уже есть отдельно, [4] в run_bare_launch().
-        check_bundled_tools(log=print)
-        report_path = _bare_launch_run_passport(args.target, log=console_log)
-        return EXIT_CONFIG_ERROR if report_path is None else 0
+    if args.mode == "analyze":
+        # 2026-08-04, по прямому предложению пользователя: раньше "проверка источника" и
+        # "проверка уже собранного архива" были двумя отдельными подкомандами (analyze/
+        # analyze-passport) -- объединены в одну, "analyze" ветвится по тому, какой из
+        # --source/--target реально дан. argparse сам по себе не умеет "ровно один из двух
+        # флагов, не оба и не ни одного" для этой комбинации (--source-list -- отдельный от
+        # --source флаг, складывается с ним же в resolve_sources(), не участвует в
+        # взаимоисключении с --target как таковой) -- проверяется вручную здесь.
+        has_source = bool(args.source) or bool(args.source_list)
+        has_target = bool(args.target)
+        if has_source and has_target:
+            print("ОШИБКА: analyze принимает либо --source (диагностика источника), либо "
+                  "--target (проверка целостности уже собранного архива) -- не оба сразу.")
+            return EXIT_CONFIG_ERROR
+        if not has_source and not has_target:
+            print("ОШИБКА: analyze требует --source (диагностика источника) или --target "
+                  "(проверка целостности уже собранного архива).")
+            return EXIT_CONFIG_ERROR
+        if has_target:
+            # Паспорт: self-scan уже собранного архива (TARGET), не диагностика SOURCE --
+            # нет понятия SOURCE вообще в этой ветке, поэтому обрабатывается отдельно, ДО
+            # resolve_sources()/interactive_mode ниже (та инфраструктура рассчитана на
+            # SOURCE+TARGET у archive/analyze-с-источником). Интерактивного доспрашивания
+            # для этого CLI-пути нет -- интерактив для Паспорта уже есть отдельно, [4] в
+            # run_bare_launch().
+            check_bundled_tools(log=print)
+            report_path = _bare_launch_run_passport(args.target, log=console_log)
+            return EXIT_CONFIG_ERROR if report_path is None else 0
+        # else has_source: обычная диагностика источника, падает в общий поток ниже.
 
     sources = resolve_sources(args)
     target = args.target
@@ -8547,7 +8575,15 @@ def _main():
     # доспросить подменю, (б) паузы "Нажмите Enter для выхода" в конце, (в) подтверждения-
     # «да» перед archive (_confirm_build_summary). Полный CLI (все нужные пути заданы явно)
     # -- ни меню, ни паузы, ни подтверждения; автоматизация/скрипты не должны спотыкаться.
-    interactive_mode = not sources or not target
+    #
+    # 2026-08-04, живой вопрос пользователя: "analyze" (в отличие от "archive") не читает
+    # cfg.target вообще при диагностике источника (read-only, см. run_analyze()/
+    # _NO_TARGET_PLACEHOLDER ниже -- та же причина, по которой [1] меню его даже не
+    # спрашивает) -- если мы уже здесь с mode=="analyze", target гарантированно None (ветка
+    # has_target выше уже вернула управление раньше). Требовать --target только ради того,
+    # чтобы не провалиться в интерактивный вопрос "Куда сложить архив?" (бессмысленный для
+    # диагностики источника), было чистой шероховатостью CLI, не реальной потребностью.
+    interactive_mode = not sources or (not target and args.mode != "analyze")
     if interactive_mode:
         # Частичный CLI: доспрашиваем ТОЛЬКО то, что не задано флагами (не весь набор
         # вопросов бare-launch меню -- режим уже известен из явной подкоманды/флагов).
@@ -8556,6 +8592,8 @@ def _main():
             sources = [prompt_source_submenu()]
         if not target:
             target = prompt_target_submenu(sources)
+    if not target and args.mode == "analyze":
+        target = _NO_TARGET_PLACEHOLDER
 
     # Голая буква диска без слеша ("C:") -- удобный короткий ввод ("источник C:, архив D:"),
     # но неоднозначный сам по себе в терминах Windows (p.5.9 отклонил бы его как "не полный
@@ -8619,9 +8657,9 @@ def _main():
                     any_interrupted = True
                     break
             else:
-                # args.mode здесь всегда "analyze" (analyze-passport ушла в отдельную ветку
-                # выше, archive -- в ветку if) -- _CLI_ANALYZE_MODE_MAP переводит CLI-имя в
-                # внутреннее значение mode, см. её же комментарий у ANALYZE_MODES.
+                # args.mode здесь всегда "analyze" с has_source=True (target-ветка Паспорта
+                # ушла в отдельный return выше, archive -- в ветку if) -- _CLI_ANALYZE_MODE_MAP
+                # переводит CLI-имя в внутреннее значение mode, см. её же комментарий у CLI_MODES.
                 internal_mode = _CLI_ANALYZE_MODE_MAP.get(args.mode, args.mode)
                 stats = run_analyze_for_source(s, target, args.sample_limit, internal_mode, log=console_log)
                 source_exit_code = EXIT_CONFIG_ERROR if stats is None else 0
