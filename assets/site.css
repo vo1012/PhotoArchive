@@ -71,8 +71,7 @@ img,svg{display:block;max-width:100%}
   min-height:64px}
 .brand{display:inline-flex;align-items:center;gap:.55rem;font-weight:700}
 .brand:hover{text-decoration:none}
-.brand-mark{width:34px;height:34px}
-.brand-name{font-family:var(--font-serif);font-size:1.25rem;color:var(--color-primary);font-weight:700}
+.brand-logo{display:block;height:36px;width:auto}
 .site-nav{display:flex;align-items:center;gap:1.6rem}
 .site-nav a{color:var(--color-text);font-size:1rem}
 .site-nav a:hover{color:var(--color-primary)}
@@ -325,7 +324,7 @@ h2+.section-lede{margin-top:.25rem}
 
 /* ============ Footer ============ */
 .site-footer{background:var(--color-primary);color:#e7ece6;padding-block:2.8rem 1.6rem}
-.site-footer .brand-name{color:#fff}
+.footer-logo{display:block;height:36px;width:auto;margin-bottom:.2rem}
 .site-footer .muted{color:#b9c9c1}
 .site-footer h4{color:#fff;font-family:var(--font-sans);font-size:.85rem;letter-spacing:.08em;
   text-transform:uppercase;margin:0 0 .8rem}
