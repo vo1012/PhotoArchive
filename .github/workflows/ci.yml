@@ -128,10 +128,13 @@ jobs:
 
       # 2026-08-04: та же документация, что уже упакована ВНУТРИ PhotoArchive.zip выше
       # (build.bat уже конвертирует её в PDF через md_to_pdf.py на этом же раннере) --
-      # публикуется ЕЩЁ и отдельными файлами релиза, чтобы сайт мог линковать на них
-      # напрямую (releases/latest/download/...), вместо отдельного ручного Windows-шага
-      # (build/gen_doc_pdfs.py, удалён) с независимым от CI источником PDF -- расхождение
-      # между PDF на сайте и PDF в ZIP было устранено именно тем, что источник теперь один.
+      # публикуется ЕЩЁ и отдельными файлами релиза, а release-job ниже дополнительно
+      # коммитит три из них (QUICKSTART/FAQ/PhotoArchive_ot_avtora) обратно в main для
+      # самого сайта (см. шаг "Publish site PDFs to main" -- нужен из-за того, что
+      # Release-ассеты GitHub не открываются в браузере, только скачиваются). Это заменило
+      # отдельный ручной Windows-шаг (build/gen_doc_pdfs.py, удалён) с независимым от CI
+      # источником PDF -- расхождение между PDF на сайте и PDF в ZIP устранено тем, что
+      # генерируется PDF теперь только здесь, в одном месте.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: PhotoArchive-docs-pdf
@@ -146,6 +149,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Нужен реальный checkout main (не только download-artifact) -- следующий шаг ниже
+      # коммитит PDF обратно в ветку, а не просто публикует релиз.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          ref: main
+
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: PhotoArchive-exe
@@ -171,3 +180,26 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 2026-08-05: GitHub Release-ассеты всегда отдаются с Content-Disposition: attachment
+      # и Content-Type: application/octet-stream (подтверждено curl -- прибито на стороне
+      # GitHub, не лечится атрибутами <a>) -- ссылки "Открыть" на сайте вместо просмотра PDF
+      # в браузере предлагали его скачать. Раздать те же три PDF ещё и с самого сайта (GitHub
+      # Pages, свой домен -- отдаёт настоящий application/pdf без attachment) чинит это без
+      # возврата ко второму независимому источнику PDF: файлы те же самые, из того же
+      # CI-артефакта, что и релизный ассет выше, просто дополнительно закоммичены в main.
+      - name: Publish site PDFs to main (same-origin hosting for "Открыть" links)
+        shell: bash
+        run: |
+          cp dist/QUICKSTART.pdf QUICKSTART.pdf
+          cp dist/FAQ.pdf FAQ.pdf
+          cp dist/PhotoArchive_ot_avtora.pdf PhotoArchive_ot_avtora.pdf
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add QUICKSTART.pdf FAQ.pdf PhotoArchive_ot_avtora.pdf
+          if git diff --cached --quiet; then
+            echo "PDFs unchanged, nothing to commit"
+          else
+            git commit -m "Сайт: обновить PDF-документацию (релиз ${{ github.ref_name }})"
+            git push origin main
+          fi
