@@ -889,6 +889,28 @@ def test_analyze_report_recommendations_section():
     src = os.path.join(WORK, "src_analyze_recommendations")
     os.makedirs(src, exist_ok=True)
     image(os.path.join(src, "photo.jpg"), 1600, 1200, exif=True, dt="2021:03:01 10:00:00")
+    # SESSION-HANDOFF.txt п.6 (2026-08-05, боевой прогон): раньше "Архиву потребуется примерно
+    # N" рендерился безусловно (total_bytes > 0 для любого файла) и держал секцию
+    # «Рекомендации» непустой даже для этого сценария (один датированный EXIF-снимок, без
+    # пробела лет/найденного архива/near-dup/запароленных архивов). После удаления этого пункта
+    # _render_checklist_card() увидела пустой items и не напечатала heading вовсе -- живой
+    # регресс, пойманный CI (не локальным pytest -- тот подставлял tier_counts вручную, минуя
+    # реальный resolve_date()). Второй, недатированный файл без EXIF/имени-даты -- та же
+    # техника, что уже в test_passport_self_scan_recognizes_bydate_and_keeps_low_confidence_tier
+    # (единственный такой файл в папке, mtime не похож на "скопировано только что" ->
+    # resolve_date() даёт Tier C по mtime, не по кластеру соседей) -- раньше гарантировала хотя
+    # бы один пункт «Рекомендаций» через Tier C.
+    undated_path = os.path.join(src, "randomname.jpg")
+    image(undated_path, 1600, 1200, exif=False)
+    old_mtime = datetime(2018, 6, 1).timestamp()
+    os.utime(undated_path, (old_mtime, old_mtime))
+    # 2026-08-06, боевой прогон: пункт "У N дата определена приблизительно" (Tier C), на
+    # который опирался файл выше, убран из "Рекомендаций" целиком (дублировал "Что стоит
+    # проверить" под похожей формулировкой, но с другим числом -- Tier B+C против Tier C).
+    # Гарантированный, независимый от Tier-логики триггер -- папка __служебные_файлы где-то в
+    # SOURCE (см. classify_found_archives()/found_archive_roots) помечает родителя как "уже
+    # собранный архив", без единого файла внутри неё.
+    os.makedirs(os.path.join(src, "OldArchive", "__служебные_файлы"), exist_ok=True)
 
     r = run_photosort_mode("analyze", src)
     check(r.returncode == 0, "analyze-recommendations: analyze exits 0")
@@ -900,9 +922,12 @@ def test_analyze_report_recommendations_section():
             html_out = f.read()
         check("Рекомендации" in html_out,
               "analyze-recommendations: section heading is rendered")
-        check("Архиву потребуется примерно" in html_out and "свободного места" in html_out,
-              "analyze-recommendations: disk-space item works even in the quick (no-hashing) "
-              "mode (total_bytes is always counted)")
+        # SESSION-HANDOFF.txt п.6 (2026-08-05, боевой прогон): "Архиву потребуется примерно N"
+        # убран целиком -- дублировал total_bytes, уже показанный плиткой статистики вверху
+        # отчёта. Пункт больше не существует ни в каком режиме -- проверяем отсутствие, не
+        # наличие.
+        check("Архиву потребуется примерно" not in html_out,
+              "analyze-recommendations: disk-space item removed (duplicated the top stat tile)")
         # analyze не делает полного прохода хеширования (internal mode="analyze-quick") --
         # near-dup серии физически не могут быть посчитаны, пункт должен молча отсутствовать,
         # не падать ошибкой.

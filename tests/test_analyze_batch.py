@@ -599,6 +599,86 @@ class TestAnalyzeExifPrefetchRespectsSampleLimit:
         assert call_sizes == [cfg.sample_limit], call_sizes
 
 
+class TestExifPrefetchTransientOp:
+    """2026-08-06, боевой прогон пользователя ("статус-строка надолго замирает, работает
+    очень медленно"): пока идёт сбор батча + сам вызов exiftool_batch() на весь батч сразу --
+    ни один update() не происходит, статус-строка визуально замирает на всё это время. Тот же
+    приём "работаю", что уже применён к распаковке архива/хешированию видео
+    (ProgressReporter.set_transient_op()) -- transient_op_cb получает текст ДО батч-вызова и
+    None сразу после.
+
+    Следующая находка того же дня ("скорость всегда 0"): исключение времени батча из EMA
+    целиком -- неверная модель (в отличие от распаковки, это время И ЕСТЬ цена N файлов) --
+    rate_hint_cb получает (секунд_на_файл, N), тем же порогом len>1, что и transient_op_cb."""
+
+    def _items(self, tmp_path, n):
+        paths = []
+        for i in range(n):
+            p = tmp_path / f"a{i}.jpg"
+            _make_jpeg(p)
+            paths.append(p)
+        return [_item(p) for p in paths]
+
+    def test_transient_op_shown_only_for_multi_file_batches(self, tmp_path):
+        items = self._items(tmp_path, 3)
+        calls = []
+        list(m._walk_with_exif_prefetch(
+            iter(items), str(tmp_path / "_extract"), batch_size=2,
+            transient_op_cb=calls.append))
+        # batch_size=2 -> первый батч из 2 файлов (транзиент показан и сброшен), хвостовой
+        # батч из 1 файла (транзиент НЕ показан -- одиночный файл и так почти мгновенен).
+        assert calls == ["чтение метаданных, файлов: 2…", None]
+
+    def test_transient_op_not_shown_for_single_file_batch(self, tmp_path):
+        items = self._items(tmp_path, 1)
+        calls = []
+        list(m._walk_with_exif_prefetch(
+            iter(items), str(tmp_path / "_extract"), batch_size=200,
+            transient_op_cb=calls.append))
+        assert calls == []
+
+    def test_none_callback_does_not_crash(self, tmp_path):
+        # transient_op_cb=None -- дефолт, вызывающий код без two_line-бара (не должно упасть).
+        items = self._items(tmp_path, 3)
+        result = list(m._walk_with_exif_prefetch(
+            iter(items), str(tmp_path / "_extract"), batch_size=2))
+        assert len(result) == 3
+
+    def test_rate_hint_called_only_for_multi_file_batches(self, tmp_path):
+        items = self._items(tmp_path, 3)
+        calls = []
+        list(m._walk_with_exif_prefetch(
+            iter(items), str(tmp_path / "_extract"), batch_size=2,
+            rate_hint_cb=lambda per_item, n: calls.append(n)))
+        # Тот же batch_size=2 расклад, что и у transient_op: батч из 2 файлов вызывает хинт
+        # (с n=2), хвостовой батч из 1 файла -- нет (одиночный файл меряется честно как есть).
+        assert calls == [2]
+
+    def test_rate_hint_reflects_real_elapsed_time(self, tmp_path, monkeypatch):
+        items = self._items(tmp_path, 2)
+        real_exiftool_batch = m.exiftool_batch
+
+        def _slow_exiftool_batch(paths, **kw):
+            fake_clock["now"] += 4.0  # имитирует 4 секунды на весь батч из 2 файлов
+            return real_exiftool_batch(paths, **kw)
+
+        fake_clock = {"now": 1000.0}
+        monkeypatch.setattr(m, "exiftool_batch", _slow_exiftool_batch)
+        monkeypatch.setattr(m.time, "time", lambda: fake_clock["now"])
+
+        calls = []
+        list(m._walk_with_exif_prefetch(
+            iter(items), str(tmp_path / "_extract"), batch_size=2,
+            rate_hint_cb=lambda per_item, n: calls.append((per_item, n))))
+        assert calls == [(2.0, 2)]  # 4.0s / 2 файла = 2.0s/файл
+
+    def test_none_rate_hint_callback_does_not_crash(self, tmp_path):
+        items = self._items(tmp_path, 3)
+        result = list(m._walk_with_exif_prefetch(
+            iter(items), str(tmp_path / "_extract"), batch_size=2, rate_hint_cb=None))
+        assert len(result) == 3
+
+
 class TestAnalyzeShowsObjectEta:
     """Речь пользователя, 2026-08-02 ("подумай, как сделать информативной интерактив при
     построении паспорта"): run_analyze() (значит и "Паспорт архива", и CLI analyze/
@@ -666,3 +746,66 @@ class TestAnalyzeShowsObjectEta:
         assert seen_kwargs.get("object_line_cb") is not None
         assert seen_kwargs.get("transient_op_cb") is not None
         assert seen_kwargs.get("object_progress_cb") is not None
+
+
+class TestAlbumDateGroupingStats:
+    """SESSION-HANDOFF.txt, 2026-08-07 (группировка альбом/дата в analyze-отчёте):
+    n_albums_detected -- фикс точности (album_prefix, не голое имя альбома), плюс новые
+    n_media_in_albums/n_media_by_date/bydate_media_by_folder."""
+
+    def _cfg(self, tmp_path):
+        source = tmp_path / "NewBatch"
+        source.mkdir()
+        target = tmp_path / "MyArchive"
+        target.mkdir()
+        workdir = tmp_path / "appdir"
+        workdir.mkdir()
+        return source, m.Config(source=str(source), target=str(target), sample_limit=0,
+                                 workdir=str(workdir))
+
+    def test_n_albums_detected_counts_by_full_path_not_bare_album_name(self, tmp_path):
+        """Два физически разных альбома с одинаковым голым именем ("Отпуск" под разными
+        dump-родителями DCIM/Camera -- find_album() пропускает известные технические имена
+        при поиске альбома, см. DEFAULT_DUMP_SEGMENT_NAMES) -- должны считаться как ДВА
+        альбома, не как один. До фикса album_names копил голое имя (segments[album_idx]), оба
+        схлопывались в одну запись -- недосчёт."""
+        source, cfg = self._cfg(tmp_path)
+        (source / "DCIM" / "Отпуск").mkdir(parents=True)
+        (source / "Camera" / "Отпуск").mkdir(parents=True)
+        _make_jpeg(source / "DCIM" / "Отпуск" / "a.jpg")
+        _make_jpeg(source / "Camera" / "Отпуск" / "b.jpg")
+
+        stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
+
+        assert stats.n_albums_detected == 2
+
+    def test_n_media_in_albums_and_n_media_by_date_split_correctly(self, tmp_path):
+        """YY (n_media_in_albums)/QQ (n_media_by_date) -- фильтр по item.ftype media, тот же
+        цикл, что и n_albums_detected."""
+        source, cfg = self._cfg(tmp_path)
+        (source / "DCIM" / "Отпуск").mkdir(parents=True)
+        _make_jpeg(source / "DCIM" / "Отпуск" / "a.jpg")
+        _make_jpeg(source / "DCIM" / "Отпуск" / "b.jpg")
+        _make_jpeg(source / "c.jpg")  # без альбома -- файл прямо в корне SOURCE
+
+        stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
+
+        assert stats.n_media_in_albums == 2
+        assert stats.n_media_by_date == 1
+        assert len(stats.bydate_media_by_folder) == 1
+
+    def test_bydate_media_by_folder_counts_distinct_folders_not_files(self, tmp_path):
+        """ZZ (число обычных папок) -- len() счётчика по РАЗНЫМ папкам, не суммарный файл-
+        счёт (это QQ, отдельно). DCIM/Camera -- известные технические имена (dump), файлы
+        прямо внутри них (без вложенного альбома глубже) не находят альбом вовсе."""
+        source, cfg = self._cfg(tmp_path)
+        (source / "DCIM").mkdir()
+        (source / "Camera").mkdir()
+        _make_jpeg(source / "DCIM" / "a.jpg")
+        _make_jpeg(source / "DCIM" / "b.jpg")
+        _make_jpeg(source / "Camera" / "c.jpg")
+
+        stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
+
+        assert len(stats.bydate_media_by_folder) == 2
+        assert stats.n_media_by_date == 3

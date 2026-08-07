@@ -13,6 +13,7 @@
 этого файла)."""
 import tarfile
 import textwrap
+import zipfile
 
 import pytest
 
@@ -110,25 +111,41 @@ def test_walk_dir_object_line_cb_not_called_for_excluded_dirs(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# SourceWalker: dvd_folders -- DVD-Video (VIDEO_TS) обнаружен, но не скопирован (живой репорт
-# пользователя, 2026-08-01 -- .vob не распознаётся как медиа вообще, см. SESSION-HANDOFF.txt).
+# SourceWalker: DVD-юниты (VIDEO_TS) -- 2026-08-07, по итогам боевого прогона (домашнее видео
+# на DVD не попадало в архив) целая папка VIDEO_TS теперь копируется как один неделимый юнит
+# (см. секцию "DVD-VIDEO UNITS" в photosort_win.py) вместо старого поведения "обнаружен, но не
+# скопирован". Эти тесты бьют по walker.walk() напрямую (не через run()) -- проверяют
+# детекцию/fingerprint/yield SourceItem, не реальное копирование на диск (это отдельно, см.
+# test_dvd_unit_build.py).
 # ---------------------------------------------------------------------------
 
-def test_dvd_folder_detected_by_video_ts_with_vob(tmp_path):
+def test_dvd_unit_yields_items_with_forced_dest_and_records_as_copied(tmp_path):
     source = tmp_path / "source"
     disc = source / "Some_Movie_DVD5"
     (disc / "VIDEO_TS").mkdir(parents=True)
-    (disc / "VIDEO_TS" / "VTS_01_0.VOB").write_bytes(b"x")
+    (disc / "VIDEO_TS" / "VTS_01_0.VOB").write_bytes(b"x" * 10)
     (tmp_path / "target").mkdir()
 
     cfg = _make_cfg(tmp_path)
     walker = m.SourceWalker(cfg, log=lambda *a, **k: None)
-    list(walker.walk())
+    items = list(walker.walk())
 
-    assert walker.dvd_folders == [str(disc)]  # parent of VIDEO_TS, not VIDEO_TS itself
+    assert len(items) == 1
+    item = items[0]
+    assert item.dvd_dest_path is not None
+    assert item.dvd_dest_path.endswith(
+        m.os.path.join("Albums", "Some_Movie_DVD5", "VIDEO_TS", "VTS_01_0.VOB"))
+    assert item.dvd_sha256 == m.sha256_file(str(disc / "VIDEO_TS" / "VTS_01_0.VOB"))
+
+    assert len(walker.dvd_units_copied) == 1
+    unit = walker.dvd_units_copied[0]
+    assert unit["name"] == "Some_Movie_DVD5"
+    assert unit["n_files"] == 1
+    assert unit["total_bytes"] == 10
+    assert walker.dvd_units_skipped_duplicate == []
 
 
-def test_dvd_folder_detection_is_case_insensitive(tmp_path):
+def test_dvd_unit_detection_is_case_insensitive(tmp_path):
     # Folder name case and extension case both vary in the wild -- neither should matter.
     source = tmp_path / "source"
     disc = source / "lowercase_disc"
@@ -138,12 +155,13 @@ def test_dvd_folder_detection_is_case_insensitive(tmp_path):
 
     cfg = _make_cfg(tmp_path)
     walker = m.SourceWalker(cfg, log=lambda *a, **k: None)
-    list(walker.walk())
+    items = list(walker.walk())
 
-    assert walker.dvd_folders == [str(disc)]
+    assert len(items) == 1
+    assert walker.dvd_units_copied[0]["name"] == "lowercase_disc"
 
 
-def test_dvd_folder_not_detected_without_vob_ifo_bup(tmp_path):
+def test_dvd_unit_not_detected_without_vob_ifo_bup(tmp_path):
     source = tmp_path / "source"
     disc = source / "Not_A_DVD"
     (disc / "VIDEO_TS").mkdir(parents=True)
@@ -152,14 +170,18 @@ def test_dvd_folder_not_detected_without_vob_ifo_bup(tmp_path):
 
     cfg = _make_cfg(tmp_path)
     walker = m.SourceWalker(cfg, log=lambda *a, **k: None)
-    list(walker.walk())
+    items = list(walker.walk())
 
-    assert walker.dvd_folders == []
+    # readme.txt -- "other" file type, normal per-file pipeline drops it silently (see
+    # _walk_dir()) -- not a DVD unit AND not yielded as a regular item either.
+    assert items == []
+    assert walker.dvd_units_copied == []
 
 
-def test_vob_file_outside_video_ts_folder_not_detected(tmp_path):
-    # Folder NAME is the signal, not just the presence of a .vob file anywhere -- a stray .vob
-    # dropped directly in an ordinary album folder shouldn't misfire the DVD notice.
+def test_vob_file_outside_video_ts_folder_goes_through_normal_video_pipeline(tmp_path):
+    # 2026-08-07, по требованию пользователя: отдельностоящий .vob (НЕ внутри VIDEO_TS) --
+    # обычный видеофайл (VIDEO_EXTS теперь включает "vob"), не DVD-юнит. Папка VIDEO_TS --
+    # сигнал для DVD-обработки, не голое расширение .vob само по себе.
     source = tmp_path / "source"
     (source / "Album").mkdir(parents=True)
     (source / "Album" / "clip.vob").write_bytes(b"x")
@@ -167,12 +189,15 @@ def test_vob_file_outside_video_ts_folder_not_detected(tmp_path):
 
     cfg = _make_cfg(tmp_path)
     walker = m.SourceWalker(cfg, log=lambda *a, **k: None)
-    list(walker.walk())
+    items = list(walker.walk())
 
-    assert walker.dvd_folders == []
+    assert walker.dvd_units_copied == []
+    assert len(items) == 1
+    assert items[0].dvd_dest_path is None  # обычный item, не форсированное DVD-размещение
+    assert items[0].ftype == "video"
 
 
-def test_dvd_folder_detected_via_ifo_without_vob(tmp_path):
+def test_dvd_unit_detected_via_ifo_without_vob(tmp_path):
     source = tmp_path / "source"
     disc = source / "Menu_Only_DVD"
     (disc / "VIDEO_TS").mkdir(parents=True)
@@ -181,38 +206,91 @@ def test_dvd_folder_detected_via_ifo_without_vob(tmp_path):
 
     cfg = _make_cfg(tmp_path)
     walker = m.SourceWalker(cfg, log=lambda *a, **k: None)
+    items = list(walker.walk())
+
+    assert len(items) == 1
+    assert walker.dvd_units_copied[0]["name"] == "Menu_Only_DVD"
+
+
+def test_dvd_unit_duplicate_is_skipped_not_reyielded(tmp_path):
+    """Прямое требование пользователя, 2026-08-07: "объединение DVD-папок недопустимо" --
+    юнит, чей fingerprint уже есть в реестре (переданном как dvd_unit_registry, см.
+    сохранение/чтение таблицы dvd_units в _run_impl()), пропускается ЦЕЛИКОМ -- ни одного
+    SourceItem не yield'ится, ничего не дописывается."""
+    source = tmp_path / "source"
+    disc = source / "Disc1"
+    (disc / "VIDEO_TS").mkdir(parents=True)
+    (disc / "VIDEO_TS" / "VTS_01_0.VOB").write_bytes(b"x" * 10)
+    (tmp_path / "target").mkdir()
+
+    records = m._dvd_unit_file_records(str(disc / "VIDEO_TS"))
+    fingerprint = m._dvd_unit_fingerprint(records)
+
+    cfg = _make_cfg(tmp_path)
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None,
+                             dvd_unit_registry={fingerprint: r"D:\Target\Albums\Disc1\VIDEO_TS"})
+    items = list(walker.walk())
+
+    assert items == []
+    assert walker.dvd_units_copied == []
+    assert walker.dvd_units_skipped_duplicate == [
+        {"name": "Disc1", "dest_path": r"D:\Target\Albums\Disc1\VIDEO_TS"}]
+
+
+def test_dvd_unit_name_collision_with_existing_target_content_gets_suffixed(tmp_path):
+    # Реалистичный коллизионный сценарий: альбом "Video"/VIDEO_TS уже существует в TARGET (от
+    # более раннего прогона/другого источника) -- НОВЫЙ (другое содержимое, другой fingerprint)
+    # диск с тем же альбомным именем "Video" не должен ни слиться с уже стоящей там VIDEO_TS,
+    # ни провалиться -- заводит "VIDEO_TS (2)" рядом, прямое требование пользователя
+    # ("объединение DVD-папок недопустимо").
+    source = tmp_path / "source"
+    disc = source / "Video" / "VIDEO_TS"
+    disc.mkdir(parents=True)
+    (disc / "VTS_01_0.VOB").write_bytes(b"new_content")
+    target = tmp_path / "target"
+    existing = target / "Albums" / "Video" / "VIDEO_TS"
+    existing.mkdir(parents=True)
+    (existing / "VTS_01_0.VOB").write_bytes(b"old_content_from_earlier_run")
+
+    cfg = _make_cfg(tmp_path, target=str(target))
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None)
     list(walker.walk())
 
-    assert walker.dvd_folders == [str(disc)]
+    assert len(walker.dvd_units_copied) == 1
+    dest = walker.dvd_units_copied[0]["dest_path"]
+    assert m.os.path.basename(dest) == "VIDEO_TS (2)"
+    assert m.os.path.dirname(dest) == str(target / "Albums" / "Video")
 
 
-def test_dvd_folder_inside_archive_is_not_dead_tmp_extract_path(tmp_path):
-    """Раунд 49 ревью (REVIEW-HANDOFF.md, замечание 2): VIDEO_TS найден ВНУТРИ архива (не
-    напрямую под SOURCE) -- тот же класс бага, что уже чинился для запароленных вложенных
-    архивов (Раунды 45/47). До фикса dvd_folders хранил os.path.dirname(cur_dirpath), реальный
-    путь под cfg.tmp_extract -- удаляется cleanup_dir() до того, как report.html строит по нему
-    ссылку. После фикса -- читаемый origin-трейл ("vacation.zip → vacation", тот же формат, что
-    у skip_marker-лога/progress_cb в этой же функции), не абсолютный путь под tmp_extract."""
+def test_dvd_unit_inside_archive_hashes_before_tmp_extract_cleanup(tmp_path):
+    """Раунд 49 ревью (REVIEW-HANDOFF.md, замечание 2), тот же класс бага, что уже чинился для
+    запароленных вложенных архивов (Раунды 45/47) -- VIDEO_TS найден ВНУТРИ архива, физически
+    живёт под cfg.tmp_extract, удаляется cleanup_dir() до конца walk(). _handle_dvd_unit()
+    хеширует файлы СИНХРОННО в момент обнаружения (см. _dvd_unit_file_records() внутри неё) --
+    этот тест реально прогоняет весь walk() и проверяет, что sha256 посчитан успешно (не
+    FileNotFoundError), а имя юнита взято из папки-контейнера ВНУТРИ архива ("vacation"), не
+    голой "VIDEO_TS"."""
     import zipfile
 
     source = tmp_path / "source"
     source.mkdir()
     with zipfile.ZipFile(source / "vacation.zip", "w") as zf:
-        zf.writestr("photo.jpg", b"x" * 100)  # real media -- has_media_candidate=True, archive extracted
+        zf.writestr("photo.jpg", b"x" * 100)  # real media -- archive gets extracted
         zf.writestr("VIDEO_TS/VTS_01_0.VOB", b"v" * 100)
     (tmp_path / "target").mkdir()
 
     cfg = _make_cfg(tmp_path)
     walker = m.SourceWalker(cfg, log=lambda *a, **k: None)
-    list(walker.walk())
+    items = list(walker.walk())
 
-    assert walker.dvd_folders == ["vacation.zip → vacation"]
+    dvd_items = [it for it in items if it.dvd_dest_path is not None]
+    assert len(dvd_items) == 1
+    assert dvd_items[0].dvd_sha256 == m.sha256_bytes(b"v" * 100)  # same bytes -> same digest
+    assert walker.dvd_units_copied[0]["name"] == "vacation"
 
 
-def test_dvd_folder_inside_nested_archive_subdir_keeps_origin_trail(tmp_path):
-    """Same bug class as above, one directory level deeper inside the archive -- the fix must
-    strip only the trailing VIDEO_TS component of cur_rel_prefix, keeping the rest of the trail
-    (the "disk" folder), same convention as the depth==0 dirname(cur_dirpath) case."""
+def test_dvd_unit_inside_nested_archive_subdir_uses_container_name(tmp_path):
+    """Same bug class as above, one directory level deeper inside the archive."""
     import zipfile
 
     source = tmp_path / "source"
@@ -226,7 +304,7 @@ def test_dvd_folder_inside_nested_archive_subdir_keeps_origin_trail(tmp_path):
     walker = m.SourceWalker(cfg, log=lambda *a, **k: None)
     list(walker.walk())
 
-    assert walker.dvd_folders == ["vacation.zip → vacation/Disk1"]
+    assert walker.dvd_units_copied[0]["name"] == "Disk1"
 
 
 # ---------------------------------------------------------------------------
@@ -300,12 +378,12 @@ def test_handle_archive_sets_and_clears_transient_op_around_extraction(tmp_path)
     assert ops[-1] is None  # cleared again after extraction, whether it succeeded or not
 
 
-def test_handle_archive_extracted_log_line_matches_object_line_style(tmp_path):
-    # Живой репорт пользователя (2026-08-01): "[archive] X: archive_extracted N медиафайлов"
-    # (status-стиль) vs "[archive] X найдено медиафайлов N" (object-line-стиль, тот же самый
-    # архив несколькими строками выше) -- две разные на вид строки про одно и то же архивное
-    # событие. Приводим archive_extracted к object-line-стилю (с "распаковано," спереди --
-    # второе, подтверждённое после реальной распаковки число, не буквальный повтор).
+def test_handle_archive_extracted_log_line_suppressed_when_count_matches_listing(tmp_path):
+    # SESSION-HANDOFF.txt п.6 (2026-08-05, боевой прогон): симметрично с уже исправленной
+    # archive_no_media (0==0 подавлен, живой репорт 2026-08-02) -- write_object_line() уже
+    # напечатал предварительное число из листинга ДО распаковки; когда подтверждённое после
+    # реальной распаковки число СОВПАДАЕТ с ним -- вторая строка ("распаковано, найдено
+    # медиафайлов N") больше не печатается, это был бы буквальный повтор.
     source = tmp_path / "source"
     source.mkdir()
     tar_path = source / "album.tar"
@@ -320,8 +398,38 @@ def test_handle_archive_extracted_log_line_matches_object_line_style(tmp_path):
     walker = m.SourceWalker(cfg, log=lines.append)
     list(walker.walk())
 
-    assert any("[archive] " in ln and "распаковано, найдено медиафайлов 1" in ln for ln in lines)
+    assert not any("распаковано, найдено медиафайлов" in ln for ln in lines)
     assert not any(": archive_extracted" in ln for ln in lines)  # old "status note" style is gone
+    # archives.log/n_archives_found по-прежнему видят событие -- silent тушит только консоль.
+    assert any(status == "archive_extracted" for _, status, _ in walker.archive_logs)
+
+
+def test_handle_archive_extracted_log_line_shown_when_count_differs_from_listing(tmp_path):
+    # Листинг архива не заглядывает ВНУТРЬ вложенных архивов (info.media_count считает только
+    # ARCHIVE_EXTS-независимые расширения, см. _member_name_is_strict_media()) -- но после
+    # реальной распаковки обход спускается и во вложенный zip тоже, находя больше медиа, чем
+    # предварительно показал write_object_line(). Расхождение -- НЕ повтор, вторая строка
+    # должна печататься с новым, уточнённым числом.
+    source = tmp_path / "source"
+    source.mkdir()
+    nested_zip = tmp_path / "nested.zip"
+    with zipfile.ZipFile(nested_zip, "w") as zf:
+        zf.writestr("b.jpg", b"y" * 10)
+    tar_path = source / "album.tar"
+    with tarfile.open(tar_path, "w") as tf:
+        p = tmp_path / "a.jpg"
+        p.write_bytes(b"x" * 10)
+        tf.add(p, arcname="a.jpg")
+        tf.add(nested_zip, arcname="nested.zip")
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)
+    lines = []
+    walker = m.SourceWalker(cfg, log=lines.append)
+    list(walker.walk())
+
+    assert any("[archive] " in ln and "album.tar: распаковано, найдено медиафайлов 2" in ln
+               for ln in lines)
 
 
 def test_handle_archive_no_media_is_not_printed_twice(tmp_path):
@@ -575,9 +683,9 @@ def test_two_line_status_includes_free_space_when_disk_usage_path_set(tmp_path):
 def test_two_line_status_rate_is_seconds_per_file_not_files_per_second(monkeypatch):
     bar = _two_line_bar()
     bar.count = 10
-    monkeypatch.setattr(bar, "_t0", bar._t0 - 20)  # 20s elapsed, 10 files -> 2.00s/файл
+    monkeypatch.setattr(bar, "_t0", bar._t0 - 20)  # 20s elapsed, 10 files -> 2.00с/файл
     line = bar._build_two_line_status()
-    assert "2.00s/файл" in line
+    assert "2.00с/файл" in line
     bar.close()
 
 
@@ -592,6 +700,22 @@ def test_two_line_status_shows_object_progress_with_total_estimate():
     bar.close()
 
 
+def test_two_line_status_op_field_width_covers_analyze_passport_desc():
+    """REVIEW-HANDOFF.md, Раунд 67, замечание 2: _TWO_LINE_OP_FIELD_WIDTH раньше считался
+    только по паре run_for_source() (34/24 символа) -- desc run_analyze() ("Паспорт архива",
+    51 символ) был длиннее, колонка "| всего медиа" на этом пути уезжала вправо относительно
+    [2]/[3]. Проверяем, что позиция одинакова для короткого (run_for_source) и длинного
+    (run_analyze/Паспорт) desc -- колонки больше не расходятся."""
+    short_bar = _two_line_bar()  # "Разбираю и копирую файлы"
+    long_bar = m.ProgressReporter(total=None, desc=m._ANALYZE_PASSPORT_PROGRESS_DESC,
+                                   unit="файл", two_line=True)
+    short_pos = short_bar._build_two_line_status().index("| всего медиа")
+    long_pos = long_bar._build_two_line_status().index("| всего медиа")
+    assert short_pos == long_pos
+    short_bar.close()
+    long_bar.close()
+
+
 def test_two_line_status_object_progress_without_total_estimate():
     # total_estimate=None (предпересчёт недоступен/не передан) -- показываем голый счётчик
     # без "/Y", не притворяемся, что знаменатель есть.
@@ -599,7 +723,34 @@ def test_two_line_status_object_progress_without_total_estimate():
     bar.add_object_progress(3)
     line = bar._build_two_line_status()
     assert "объектов             3" in line
-    assert "/" not in line.split("объектов")[1].split("s/файл")[0]
+    assert "/" not in line.split("объектов")[1].split("с/файл")[0]
+    bar.close()
+
+
+def test_two_line_status_media_count_defaults_to_processed_count():
+    # media_count_from_objects=False (дефолт, Фаза 2/реальная сборка) -- "всего медиа" по-прежнему
+    # растёт по факту update(), write_object_line() ни на что не влияет.
+    bar = _two_line_bar()
+    bar.write_object_line("folder", "some/folder", 50)
+    bar.update(3)
+    line = bar._build_two_line_status()
+    assert "всего медиа        3" in line
+    bar.close()
+
+
+def test_two_line_status_media_count_from_objects_ignores_batching_lag():
+    # SESSION-HANDOFF.txt п.1: run_analyze()'s бар (media_count_from_objects=True) -- "всего
+    # медиа" растёт по write_object_line()'s n_found ПРИ ВХОДЕ в объект, не дожидаясь update()
+    # -- живой баг был именно в задержке между "объект найден" и "экзифтул батч протегирован".
+    bar = _two_line_bar(media_count_from_objects=True)
+    bar.write_object_line("folder", "some/folder", 50)
+    line = bar._build_two_line_status()
+    assert "всего медиа       50" in line
+    # update() (реальная обработка файлов) не задваивает счётчик отображения -- он по-прежнему
+    # читает self._media_declared, не self.count.
+    bar.update(3)
+    line2 = bar._build_two_line_status()
+    assert "всего медиа       50" in line2
     bar.close()
 
 
@@ -609,6 +760,66 @@ def test_add_object_progress_accumulates_across_calls():
     bar.add_object_progress(1)
     bar.add_object_progress(1)
     assert bar._obj_count == 3
+    bar.close()
+
+
+# ---------------------------------------------------------------------------
+# note_width -- SESSION-HANDOFF.txt п.13 (2026-08-05, боевой прогон): однострочный
+# (не two_line) бар Фазы 1 визуально "гулял" влево-вправо -- set_description() меняло длину
+# desc в зависимости от наличия note, tqdm пересчитывал позицию |###| каждый раз заново.
+# ---------------------------------------------------------------------------
+
+class _FakeTqdmBar:
+    """Минимальная замена _tqdm -- перехватывает set_description()/update(), не рисует
+    ничего реального (тесты не имеют настоящего терминала, is_tty=False под pytest)."""
+    def __init__(self):
+        self.descriptions = []
+
+    def set_description(self, d):
+        self.descriptions.append(d)
+
+    def update(self, n):
+        pass
+
+    def set_postfix_str(self, s):
+        pass
+
+    def close(self):
+        pass
+
+
+def _single_line_bar_with_fake_tqdm(**overrides):
+    bar = m.ProgressReporter(total=10, desc="Просматриваю уже собранный архив", unit="файл",
+                              **overrides)
+    bar._bar = _FakeTqdmBar()
+    return bar
+
+
+def test_note_width_keeps_description_length_constant_with_and_without_note():
+    bar = _single_line_bar_with_fake_tqdm(note_width=len("большое видео"))
+    bar.update(1, note=None)
+    bar.update(1, note="большое видео")
+    bar.update(1, note=None)
+    lengths = {len(d) for d in bar._bar.descriptions}
+    assert len(lengths) == 1  # ни разу не поменялась длина -- |###| не сдвигается
+    bar.close()
+
+
+def test_note_width_none_keeps_old_variable_length_behavior():
+    # note_width не передан (все остальные однострочные бары) -- поведение не меняется, длина
+    # description по-прежнему растёт/падает вместе с note.
+    bar = _single_line_bar_with_fake_tqdm()
+    bar.update(1, note=None)
+    bar.update(1, note="большое видео")
+    lengths = {len(d) for d in bar._bar.descriptions}
+    assert len(lengths) == 2  # старое поведение -- длина реально разная
+    bar.close()
+
+
+def test_note_width_pads_note_shorter_than_reserved_width():
+    bar = _single_line_bar_with_fake_tqdm(note_width=20)
+    bar.update(1, note="повтор")
+    assert bar._bar.descriptions[0] == "Просматриваю уже собранный архив — повтор              "
     bar.close()
 
 
@@ -857,6 +1068,46 @@ def test_video_hashing_note_heavy_time_excluded_from_ema_rate(monkeypatch):
     bar.close()
 
 
+def test_batch_rate_hint_used_instead_of_wall_clock(monkeypatch):
+    """2026-08-06, боевой прогон ("скорость всегда 0"): _pending_heavy_time-исключение верно
+    для распаковки/хеширования (одноразовая пауза, не цена файла), но НЕВЕРНО для батч-чтения
+    EXIF -- там время батча И ЕСТЬ реальная цена N файлов. set_batch_rate_hint(per_item, N)
+    должен подставить per_item как instantaneous для N ближайших update(), не пересчитывать
+    по wall-clock (тот, между мгновенными yield'ами уже готового батча, дал бы ~0)."""
+    bar = _two_line_bar()
+    clock = _FakeClock(bar._t0)
+    monkeypatch.setattr(m.time, "time", clock)
+
+    bar.set_batch_rate_hint(3.0, 2)  # batch of 2 files, 3.0s/файл в среднем
+    # Yield'ы внутри батча идут мгновенно -- wall-clock тут дал бы ~0, если бы не хинт.
+    clock.advance(0.001)
+    bar.update(1)
+    assert bar._ema_rate == pytest.approx(3.0)
+    clock.advance(0.001)
+    bar.update(1)
+    assert bar._ema_rate == pytest.approx(3.0)
+
+    # Хинт исчерпан после 2 update() -- следующий файл снова меряется по wall-clock как обычно
+    # (обычный EMA-блендинг с уже накопленным 3.0, не застрявшее значение хинта).
+    clock.advance(5.0)
+    bar.update(1)
+    assert bar._ema_rate == pytest.approx(0.3 * 5.0 + 0.7 * 3.0)
+    bar.close()
+
+
+def test_batch_rate_hint_discards_stale_pending_heavy_time():
+    """set_transient_op("работаю")/set_transient_op(None) вокруг батча копит то же самое
+    время в _pending_heavy_time, что уже учтено хинтом -- update() должен ОТБРОСИТЬ его при
+    потреблении хинта, не вычесть ещё раз поверх (задвоение)."""
+    bar = _two_line_bar()
+    bar._pending_heavy_time = 999.0  # искусственно "протекшее" значение, как будто от set_transient_op
+    bar.set_batch_rate_hint(2.0, 1)
+    bar.update(1)
+    assert bar._ema_rate == pytest.approx(2.0)
+    assert bar._pending_heavy_time == 0.0
+    bar.close()
+
+
 # ---------------------------------------------------------------------------
 # ProgressReporter(two_line=True) -- троттлинг перерисовки статус-строки (живой репорт
 # пользователя, 2026-08-01: "не нужно обновлять по каждому тику, достаточно раз в 10-20").
@@ -935,3 +1186,89 @@ def test_bare_n_zero_precursor_does_not_bypass_throttle(monkeypatch):
         bar.update(1, note=None)
     assert calls["n"] < 20  # ~200/15 (throttled), not 200 (one per file, bug behavior)
     bar.close()
+
+
+def _narrow_terminal(monkeypatch, columns: int):
+    monkeypatch.setattr(m.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(m.shutil, "get_terminal_size",
+                         lambda fallback=(80, 24): m.os.terminal_size((columns, 24)))
+
+
+def test_log_menu_line_wrapped_fits_on_one_line(monkeypatch):
+    _narrow_terminal(monkeypatch, 80)
+    lines = []
+    m._log_menu_line_wrapped("    [1] Диск C:  →  C:\\__PhotoArchive__", "   ",
+                              "(папка уже есть)", lines.append)
+    assert lines == ["    [1] Диск C:  →  C:\\__PhotoArchive__   (папка уже есть)"]
+
+
+def test_log_menu_line_wrapped_single_tail_wraps_to_second_line(monkeypatch):
+    """SESSION-HANDOFF.txt, 2026-08-05 (боевой прогон п.7) -- первый уровень фикса: tail,
+    не помещающийся на одну строку с head, переносится ЦЕЛИКОМ на новую строку с отступом."""
+    _narrow_terminal(monkeypatch, 60)
+    lines = []
+    m._log_menu_line_wrapped("    [1] Диск C:  →  C:\\__PhotoArchive__", "   ",
+                              "(папки пока нет — возможное место для архива)", lines.append)
+    assert lines == [
+        "    [1] Диск C:  →  C:\\__PhotoArchive__",
+        "    (папки пока нет — возможное место для архива)",
+    ]
+
+
+def test_log_menu_line_wrapped_list_tail_fits_together(monkeypatch):
+    _narrow_terminal(monkeypatch, 100)
+    lines = []
+    m._log_menu_line_wrapped("    [1] Диск C:  →  C:\\__PhotoArchive__", "   ",
+                              ["(папка уже есть)", "(тот же диск, что и источник)"],
+                              lines.append)
+    assert lines == [
+        "    [1] Диск C:  →  C:\\__PhotoArchive__   (папка уже есть)  "
+        "(тот же диск, что и источник)"
+    ]
+
+
+def test_log_menu_line_wrapped_list_tail_splits_into_three_lines_on_narrow_terminal(monkeypatch):
+    """Живой боевой прогон 2026-08-06: узкий терминал ломал даже уже перенесённый tail ЕЩЁ
+    раз, потому что status+suffix считались одним неразрывным куском ("...добавилось" /
+    "бы)  (тот же диск...)" -- разрыв терминалом, не нашим кодом, посреди фразы). tail-список
+    из 2 независимых кусков (status, suffix) должен упаковываться жадно -- каждый кусок цел,
+    третья строка появляется, только если оба куска вместе не помещаются даже на отдельной
+    строке под отступом."""
+    _narrow_terminal(monkeypatch, 60)
+    lines = []
+    m._log_menu_line_wrapped(
+        "    [1] Диск C:  →  C:\\__PhotoArchive__", "   ",
+        ["(уже есть — проверю, что добавилось бы)", "(тот же диск, что и источник)"],
+        lines.append,
+    )
+    assert lines == [
+        "    [1] Диск C:  →  C:\\__PhotoArchive__",
+        "    (уже есть — проверю, что добавилось бы)",
+        "    (тот же диск, что и источник)",
+    ]
+    # Ни одна строка не должна содержать оборванное слово/скобку самим терминалом -- каждая
+    # строка либо head целиком, либо один целый tail-кусок с отступом.
+    for line in lines:
+        assert line == "    [1] Диск C:  →  C:\\__PhotoArchive__" or line.startswith("    (")
+
+
+def test_log_menu_line_wrapped_single_piece_longer_than_terminal_wraps_by_words(monkeypatch):
+    """REVIEW-HANDOFF.md, Раунд 69, замечание 2: жадная упаковка списка кусков не защищала от
+    ОДНОГО куска, который сам по себе длиннее доступной ширины (columns - len(indent)) -- он
+    уходил в log() одной строкой длиннее терминала, терминал переносил её ещё раз посреди
+    фразы. Терминал в 40 колонок (тот же случай, что нашёл ревизор реальным вызовом) -- ни
+    одна строка не должна превышать 40 символов."""
+    _narrow_terminal(monkeypatch, 40)
+    lines = []
+    m._log_menu_line_wrapped(
+        "    [1] Диск C:  →  C:\\__PhotoArchive__", "   ",
+        ["(папки пока нет — возможное место для архива)"],
+        lines.append,
+    )
+    assert lines == [
+        "    [1] Диск C:  →  C:\\__PhotoArchive__",
+        "    (папки пока нет — возможное место",
+        "    для архива)",
+    ]
+    for line in lines:
+        assert len(line) <= 40

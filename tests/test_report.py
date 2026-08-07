@@ -64,17 +64,22 @@ def test_sheet2_shows_exact_dup_type_breakdown_caption():
     assert "Дубли, в т.ч.: фото — 1 файл, RAW — 1 файл, видео — 1 файл" in html_out
 
 
-def test_year_hbar_chart_fills_gap_years_with_zero():
-    """SESSION-HANDOFF.txt, "большой разбор report.html", пункт B.7: живая находка
-    пользователя на реальном архиве (18 разных лет, 1973 + 2003-2019, 30-летний пробел) --
-    раньше вертикальная _svg_bar_chart() просто пропускала отсутствующий год в списке
-    столбцов. Диапазон 1973-2019 = 47 лет, меньше _YEAR_HBAR_MAX_SPAN -- заполняется
-    полностью, включая явные "0 файлов" для каждого года пробела."""
+def test_year_hbar_chart_collapses_gap_years_into_one_row():
+    """SESSION-HANDOFF.txt п.3 (2026-08-05, боевой прогон): раньше каждый год пробела получал
+    отдельную нулевую строку (2026-07-31, пункт B.7) -- пользователь решил, что раз у каждого
+    построенного года и так есть подпись, сама последовательность ("1973" -> "2003") уже
+    показывает разрыв. Диапазон 1973-2019 = 47 лет, меньше _YEAR_HBAR_MAX_SPAN -- непрерывный
+    пробег 1974-2002 схлопывается в ОДНУ строку-разрыв, не в 29 нулевых строк."""
     years = Counter({1973: 1, **{y: 10 for y in range(2003, 2020)}})
     svg = r._svg_year_hbar_chart(years)
-    for y in (1973, *range(1974, 2003), *range(2003, 2020)):
-        assert f">{y}<" in svg  # каждый год диапазона подписан, включая пустые
-    assert svg.count(">0 файлов<") == 29  # 2003-1973 - 1 = 29 пустых лет
+    assert ">1973<" in svg
+    for y in range(2003, 2020):
+        assert f">{y}<" in svg
+    for y in range(1974, 2003):
+        assert f">{y}<" not in svg  # больше не подписан индивидуально
+    assert svg.count(">0 файлов<") == 0  # ни одной построчной нулевой строки
+    assert "1974–2002: нет фото" in svg
+    assert svg.count("нет фото") == 1  # ровно одна строка-разрыв, не 29
 
 
 def test_year_hbar_chart_shows_every_year_when_no_gaps():
@@ -105,6 +110,51 @@ def test_year_hbar_chart_extreme_span_does_not_zero_fill():
     assert svg.count("<rect") == 3  # только три реальных года, не 124-строчный график
     assert ">1902<" in svg and ">2024<" in svg and ">2025<" in svg
     assert ">1950<" not in svg  # пропуски НЕ заполнены выше порога
+
+
+def test_year_hbar_chart_single_year_gap_uses_singular_wording():
+    years = Counter({2020: 5, 2022: 3})  # 2021 -- пробел ровно из одного года
+    svg = r._svg_year_hbar_chart(years)
+    assert "2021: нет фото" in svg
+    assert "2021–2021" not in svg  # не диапазон из одного и того же года
+
+
+def test_year_hbar_chart_multiple_separate_gaps_each_get_own_row():
+    years = Counter({2000: 1, 2010: 1, 2020: 1})  # два отдельных пробега: 2001-2009, 2011-2019
+    svg = r._svg_year_hbar_chart(years)
+    assert "2001–2009: нет фото" in svg
+    assert "2011–2019: нет фото" in svg
+    assert svg.count("нет фото") == 2
+
+
+def test_year_gap_ranges_finds_all_contiguous_zero_runs():
+    # SESSION-HANDOFF.txt п.3: в отличие от _find_year_gap() (только САМЫЙ заметный провал),
+    # этот хелпер находит ВСЕ непрерывные нулевые пробеги, для строк-разрывов графика.
+    years = Counter({2000: 1, 2010: 1, 2020: 1})
+    assert r._year_gap_ranges(2000, 2020, years) == [(2001, 2009), (2011, 2019)]
+
+
+def test_year_gap_ranges_empty_when_no_gaps():
+    years = Counter({2020: 5, 2021: 3, 2022: 9})
+    assert r._year_gap_ranges(2020, 2022, years) == []
+
+
+def test_covered_year_span_excludes_empty_years():
+    # SESSION-HANDOFF.txt п.5 (2026-08-05, боевой прогон): живой пример пользователя --
+    # диапазон 2015-2026 (12 календарных лет), но снимки только в 2015/2024/2025/2026 --
+    # плитка "N лет истории" раньше показывала 12 (буквальный max-min+1), должна показывать 4
+    # (только реально покрытые годы).
+    years = Counter({2015: 1, 2024: 40, 2025: 113, 2026: 3})
+    assert r._covered_year_span(years) == 4
+
+
+def test_covered_year_span_equals_calendar_span_without_gaps():
+    years = Counter({2020: 5, 2021: 3, 2022: 9})
+    assert r._covered_year_span(years) == 3
+
+
+def test_covered_year_span_single_year():
+    assert r._covered_year_span(Counter({2020: 5})) == 1
 
 
 def test_parse_target_logs_reads_rotated_csv_files_too(tmp_path):
@@ -448,6 +498,21 @@ def test_render_this_run_hides_free_disk_when_absent():
     assert "свободно на диске сейчас" not in html_out
 
 
+def test_render_this_run_shows_encrypted_archive_even_when_source_otherwise_empty():
+    """2026-08-07, найдено в разговоре с пользователем: если SOURCE -- это ТОЛЬКО запароленный
+    архив и больше ничего (appended/skipped/disputed/unreadable все по нулям), ранний
+    `return ""` срабатывал раньше, чем функция вообще доходила до блока encrypted_archives --
+    секция пропадала целиком, отчёт выглядел неотличимо от "SOURCE был пуст", хотя на самом
+    деле важное предупреждение было потеряно."""
+    run_stats = {
+        "appended_images": 0, "appended_videos": 0,
+        "encrypted_archives": ["D:/Фото/секретный.zip"],
+    }
+    html_out = r._render_this_run(run_stats, level="target")
+    assert html_out != ""
+    assert "защищены паролем" in html_out or "защищённые паролем" in html_out
+
+
 def test_render_this_run_shows_processed_count_as_comparison_base():
     """Раунд 32, задача 4 (REVIEW-HANDOFF.md): "всего найдено на источнике" -- база для
     сверки, что отчёт ничего не потерял молча."""
@@ -578,11 +643,123 @@ def test_render_this_run_album_merge_destination_is_a_path_from_archive_root():
     архива ("Albums\\дедушка"), не голое имя альбома -- иначе неотличимо от "откуда"."""
     run_stats = {
         "appended_images": 1, "appended_videos": 0,
-        "album_merge_events": [("дедушка", r"Users\HTPC\Desktop\старые фото")],
+        "album_merge_events": [("дедушка", r"Users\HTPC\Desktop\старые фото", False)],
     }
     html_out = r._render_this_run(run_stats, level="target")
     assert "«Albums\\дедушка» ←" in html_out
     assert "«дедушка» ←" not in html_out
+
+
+def test_render_this_run_album_merge_advice_shown_for_two_unique_sources_in_preview():
+    """Задача C1 (SESSION-HANDOFF.txt): совет "возможно, это разные альбомы" -- только когда
+    >=2 источника дали РЕАЛЬНО разное (is_dup=False) содержимое, и только в [2] Пробный прогон
+    (level=="workdir"), где структуру ещё дёшево пересобрать по-другому."""
+    run_stats = {
+        "appended_images": 2, "appended_videos": 0,
+        "album_merge_events": [
+            ("дедушка", r"Люди\дедушка", False),
+            ("дедушка", r"Природа\дедушка", False),
+        ],
+    }
+    html_out = r._render_this_run(run_stats, level="workdir")
+    assert "возможно, это на самом деле разные альбомы" in html_out
+
+
+def test_render_this_run_album_merge_advice_hidden_when_second_source_is_only_a_dup():
+    """Второй источник, давший ТОЛЬКО повторный дубль (is_dup=True) -- не в счёт "разных
+    источников" для совета C1, объединение в этом случае безобидно."""
+    run_stats = {
+        "appended_images": 1, "appended_videos": 0,
+        "album_merge_events": [
+            ("дедушка", r"Люди\дедушка", False),
+            ("дедушка", r"Природа\дедушка", True),
+        ],
+    }
+    html_out = r._render_this_run(run_stats, level="workdir")
+    assert "«Albums\\дедушка» ←" in html_out
+    assert "возможно, это на самом деле разные альбомы" not in html_out
+
+
+def test_render_this_run_album_merge_advice_hidden_outside_preview():
+    """level=="target" (настоящая сборка) -- совет C1 не показывается, реальная переделка уже
+    дороже, чем во время [2] Пробный прогон (см. докстринг _render_this_run())."""
+    run_stats = {
+        "appended_images": 2, "appended_videos": 0,
+        "album_merge_events": [
+            ("дедушка", r"Люди\дедушка", False),
+            ("дедушка", r"Природа\дедушка", False),
+        ],
+    }
+    html_out = r._render_this_run(run_stats, level="target")
+    assert "«Albums\\дедушка» ←" in html_out
+    assert "возможно, это на самом деле разные альбомы" not in html_out
+
+
+def _cloudlike_profile(n=40, years=4, cameras=3, date_subdirs=0, name="Отпуск"):
+    return {
+        "name": name, "n": n,
+        "years": set(range(2015, 2015 + years)),
+        "cameras": {f"Camera{i}" for i in range(cameras)},
+        "date_subdirs": {f"2020-0{i + 1}" for i in range(date_subdirs)},
+    }
+
+
+def test_dryrun_structure_recommendations_flags_album_with_two_of_four_signals():
+    """Задача B (SESSION-HANDOFF.txt): >=2 из 4 структурных признаков + n >= REC_MIN_FILES --
+    здесь years>=4 и cameras>=3 (2 признака), n=40 >= REC_MIN_FILES=30."""
+    run_stats = {"album_profiles": {"src/Отпуск": _cloudlike_profile()}}
+    html_out = r._render_dryrun_structure_recommendations(run_stats)
+    assert "«Отпуск» похож на папку облачной синхронизации" in html_out
+    assert "~Отпуск" in html_out
+
+
+def test_dryrun_structure_recommendations_hides_album_with_only_one_signal():
+    profile = _cloudlike_profile(years=4, cameras=1, date_subdirs=0)
+    run_stats = {"album_profiles": {"src/Отпуск": profile}}
+    html_out = r._render_dryrun_structure_recommendations(run_stats)
+    assert html_out == ""
+
+
+def test_dryrun_structure_recommendations_hides_small_album_below_min_files():
+    """n < REC_MIN_FILES -- не показывать, даже если структурные признаки набрались."""
+    profile = _cloudlike_profile(n=5, years=4, cameras=3)
+    run_stats = {"album_profiles": {"src/Отпуск": profile}}
+    html_out = r._render_dryrun_structure_recommendations(run_stats)
+    assert html_out == ""
+
+
+def test_dryrun_structure_recommendations_name_hint_counts_as_one_signal():
+    """Имя-намёк (CLOUDLIKE_ALBUM_HINTS) + всего 1 числовой признак -- тоже >=2 сигнала."""
+    profile = _cloudlike_profile(years=4, cameras=1, date_subdirs=0, name="Google Photos")
+    run_stats = {"album_profiles": {"src/Google Photos": profile}}
+    html_out = r._render_dryrun_structure_recommendations(run_stats)
+    assert "«Google Photos» похож на папку облачной синхронизации" in html_out
+
+
+def test_dryrun_structure_recommendations_caps_at_rec_struct_max():
+    profiles = {
+        f"src/Альбом{i}": _cloudlike_profile(n=100 - i, name=f"Альбом{i}")
+        for i in range(r.REC_STRUCT_MAX + 3)
+    }
+    run_stats = {"album_profiles": profiles}
+    html_out = r._render_dryrun_structure_recommendations(run_stats)
+    assert html_out.count("<li>") == r.REC_STRUCT_MAX
+
+
+def test_dryrun_structure_recommendations_empty_when_no_profiles():
+    assert r._render_dryrun_structure_recommendations({}) == ""
+    assert r._render_dryrun_structure_recommendations({"album_profiles": {}}) == ""
+
+
+def test_generate_workdir_report_includes_structure_recommendations(tmp_path):
+    """Проводка через _generate_from_model(): level=="workdir" (не full_workdir) должен
+    показывать карточку, level=="target" -- не должен (тот же принцип, что у C1)."""
+    run_stats = {"appended_images": 1, "appended_videos": 0,
+                 "album_profiles": {"src/Отпуск": _cloudlike_profile()}}
+    out_path = tmp_path / "report.html"
+    r.generate_report({}, str(out_path), level="workdir", run_stats=run_stats)
+    html_out = out_path.read_text(encoding="utf-8")
+    assert "похож на папку облачной синхронизации" in html_out
 
 
 def test_render_this_run_shows_encrypted_archive_paths():
@@ -619,18 +796,20 @@ def test_render_this_run_nested_encrypted_archive_shows_readable_text_not_orphan
     assert '<a href="file:///C:/Source/family.zip" target="_blank" rel="noopener">C:\\Source\\family.zip</a>' in html_out
 
 
-def test_render_this_run_shows_dvd_folder_paths():
-    # Живой репорт пользователя (2026-08-01): DVD-Video (VIDEO_TS) обнаружен, но не
-    # скопирован -- тот же паттерн отображения, что у запароленных архивов выше.
+def test_render_this_run_shows_dvd_units_copied():
+    # 2026-08-07: DVD-Video (VIDEO_TS) теперь копируется целиком как один юнит -- см.
+    # SourceWalker._handle_dvd_unit()/_process_dvd_item() в photosort_win.py.
     run_stats = {
-        "appended_images": 1, "appended_videos": 0,
-        "dvd_folders": [r"D:\Source\Some_Movie_DVD5"],
+        "appended_images": 1, "appended_videos": 3,
+        "dvd_units_copied": [{"name": "Some_Movie_DVD5",
+                               "dest_path": r"D:\Target\Albums\Some_Movie_DVD5\VIDEO_TS",
+                               "n_files": 3, "total_bytes": 900, "fingerprint": "abc"}],
     }
     html_out = r._render_this_run(run_stats, level="target")
     assert "DVD-видео" in html_out
-    assert "не скопировано" in html_out
-    assert '<a href="file:///D:/Source/Some_Movie_DVD5" target="_blank" rel="noopener">D:\\Source\\Some_Movie_DVD5</a>' in html_out
-    assert "скопируйте видео в архив вручную" in html_out
+    assert "скопировано целиком" in html_out
+    assert ('<a href="file:///D:/Target/Albums/Some_Movie_DVD5/VIDEO_TS" '
+            'target="_blank" rel="noopener">Some_Movie_DVD5</a>') in html_out
 
 
 def test_render_this_run_no_dvd_section_when_empty():
@@ -639,15 +818,18 @@ def test_render_this_run_no_dvd_section_when_empty():
     assert "DVD-видео" not in html_out
 
 
-def test_render_this_run_dvd_folders_deduplicated():
-    # Пути могут повторяться (напр. VIDEO_TS встречена странной структурой дважды) -- список в
-    # отчёте не должен дублировать одну и ту же папку.
+def test_render_this_run_shows_dvd_units_skipped_duplicate():
+    # "Объединение DVD-папок недопустимо" (требование пользователя) -- уже архивированный
+    # диск пропускается ЦЕЛИКОМ, отчёт должен явно сказать, что это не потерянные файлы, а
+    # намеренный пропуск дубля.
     run_stats = {
         "appended_images": 1, "appended_videos": 0,
-        "dvd_folders": [r"D:\Source\Disc1", r"D:\Source\Disc1"],
+        "dvd_units_skipped_duplicate": [{"name": "Disc1",
+                                          "dest_path": r"D:\Target\Albums\Disc1\VIDEO_TS"}],
     }
     html_out = r._render_this_run(run_stats, level="target")
-    assert html_out.count("<a href") == 1  # one link, not two (href+text both contain "Disc1")
+    assert "уже в архиве, пропущено" in html_out
+    assert "Disc1" in html_out
 
 
 def test_render_analyze_recommendations_shows_encrypted_archive_paths():
@@ -692,10 +874,15 @@ def test_page_shell_checkmark_css_not_corrupted_by_escape_parsing():
 
 def test_trust_block_banner_and_checklist():
     """4.1/4.3 (PROMPT_report_marketing.md): баннер доверия + компактный чек-лист, самая
-    частая рекомендация всех источников маркетингового ТЗ -- отсутствовала в HTML полностью."""
+    частая рекомендация всех источников маркетингового ТЗ -- отсутствовала в HTML полностью.
+
+    2026-08-06, живой репорт пользователя: чек-лист больше НЕ повторяет дословно то, что уже
+    сказано в баннере строкой выше ("Файлы не удалялись."/"Оригиналы сохранены на своих
+    местах." убраны) -- для чистого target без нечитаемых файлов добавить нечего, чек-лист
+    (<ul>) не рендерится вовсе, остаётся только баннер."""
     target_html = r._render_trust_block("target")
     assert "Оригиналы не изменены и не удалены" in target_html
-    assert "Файлы не удалялись." in target_html
+    assert "<ul" not in target_html
     assert "Реальных изменений на диске нет" not in target_html
 
     workdir_html = r._render_trust_block("workdir")
@@ -1525,24 +1712,97 @@ def test_cta_block_analyze_with_archives_uses_vulnerable_protected_framing():
     """Раунд 33 (REVIEW-HANDOFF.md): при найденных внутри источника архивах (zip/rar) --
     рамка "уязвимо/защищено", не нейтральная "можно запустить сборку". Уменьшенная версия
     (только внутри одного источника, не "M мест" по нескольким прогонам)."""
-    model = {"years": Counter({2015: 2, 2020: 1}), "archives_found": 3, "total_bytes": 1000}
+    model = {"years": Counter({2015: 2, 2020: 1}), "archives_with_media": 3, "total_bytes": 1000}
     html_out = r._render_cta_block("analyze", model=model)
     assert "3 отдельных архивах" in html_out
     assert "испортиться независимо" in html_out
     assert "Нравится результат" not in html_out
 
 
+def test_cta_block_analyze_with_archives_and_no_loose_files_omits_scatter_claim():
+    # SESSION-HANDOFF.txt п.4 (2026-08-05, боевой прогон): раньше "не только россыпью"
+    # утверждалось безусловно при archives_found>0 -- источник может состоять ЦЕЛИКОМ из
+    # архивов (files_by_location без root/folder), тогда "россыпи" вообще нет.
+    model = {
+        "years": Counter({2020: 1}), "archives_with_media": 2, "total_bytes": 1000,
+        "files_by_location": Counter({"archive": 50}),
+    }
+    html_out = r._render_cta_block("analyze", model=model)
+    assert "россыпью" not in html_out
+    assert "2 отдельных архивах" in html_out
+
+
+def test_cta_block_analyze_with_archives_and_loose_files_keeps_scatter_claim():
+    model = {
+        "years": Counter({2020: 1}), "archives_with_media": 2, "total_bytes": 1000,
+        "files_by_location": Counter({"root": 5, "archive": 50}),
+    }
+    html_out = r._render_cta_block("analyze", model=model)
+    assert "не только россыпью" in html_out
+
+
 def test_cta_block_analyze_without_archives_uses_single_source_framing():
-    model = {"years": Counter({2020: 1}), "archives_found": 0, "total_bytes": 500 * 1024**2}
+    model = {"years": Counter({2020: 1}), "archives_with_media": 0, "total_bytes": 500 * 1024**2}
     html_out = r._render_cta_block("analyze", model=model)
     assert "хранятся на одном источнике" in html_out
     assert "500 МБ" in html_out
     assert "отдельных архивах" not in html_out
 
 
+def test_cta_block_analyze_archives_found_without_media_omits_archive_claim():
+    """Живой боевой прогон 2026-08-06: источник (папка веб-проекта) содержал 108 архивов
+    (archives_found, RAW-счётчик, считает любой статус archive_*, в т.ч. archive_no_media/
+    battered/encrypted), но НИ ОДИН не дал ни одного медиафайла (все 237 файлов -- в папках,
+    files_by_location без "archive"). CTA раньше писал "108 отдельных архивов ... сборка
+    соберёт всё это", хотя собирать было нечего -- вводило в заблуждение. archives_found
+    (raw) в модели намеренно большой, archives_with_media=0 -- функция должна ориентироваться
+    именно на последнее."""
+    model = {
+        "years": Counter({2020: 1}), "archives_found": 108, "archives_with_media": 0,
+        "total_bytes": 500 * 1024**2, "files_by_location": Counter({"folder": 237}),
+    }
+    html_out = r._render_cta_block("analyze", model=model)
+    assert "отдельных архивах" not in html_out
+    assert "испортиться независимо" not in html_out
+    assert "хранятся на одном источнике" in html_out
+
+
 def test_cta_block_analyze_empty_model_falls_back_to_generic_text():
-    html_out = r._render_cta_block("analyze", model={"years": Counter(), "archives_found": 0, "total_bytes": 0})
+    html_out = r._render_cta_block(
+        "analyze", model={"years": Counter(), "archives_with_media": 0, "total_bytes": 0})
     assert "Нравится результат" in html_out
+
+
+def test_cta_block_analyze_shows_album_date_grouping_line():
+    """SESSION-HANDOFF.txt, 2026-08-07 (группировка альбом/дата в analyze-отчёте): агрегат
+    "найдено XX папок-альбомов с YY медиафайлами и ZZ обычных папок... с QQ файлами"."""
+    model = {
+        "years": Counter({2020: 1}), "archives_with_media": 0, "total_bytes": 0,
+        "n_albums_detected": 2, "n_media_in_albums": 30,
+        "n_regular_folders": 3, "n_media_by_date": 7,
+    }
+    html_out = r._render_cta_block("analyze", model=model)
+    assert "Найдено 2 папки-альбома с 30 медиафайлами" in html_out
+    assert "3 обычные папки, которые разложатся по дате, с 7 файлами" in html_out
+
+
+def test_cta_block_analyze_album_date_grouping_singular_folder_agreement():
+    """Ровно 1 обычная папка -- согласование "которая разложится", не "которые разложатся"."""
+    model = {
+        "years": Counter(), "archives_with_media": 0, "total_bytes": 0,
+        "n_albums_detected": 0, "n_media_in_albums": 0,
+        "n_regular_folders": 1, "n_media_by_date": 4,
+    }
+    html_out = r._render_cta_block("analyze", model=model)
+    assert "1 обычная папка, которая разложится по дате" in html_out
+    assert "которые разложатся" not in html_out
+
+
+def test_cta_block_analyze_omits_album_date_grouping_line_when_both_zero():
+    model = {"years": Counter(), "archives_with_media": 0, "total_bytes": 0}
+    html_out = r._render_cta_block("analyze", model=model)
+    assert "папок-альбомов" not in html_out
+    assert "разложатся по дате" not in html_out
 
 
 class _FakeAnalyzeStats:
@@ -1560,6 +1820,10 @@ class _FakeAnalyzeStats:
         self.n_broken_or_zero = 0
         self.total_bytes = 54321
         self.predicted_unique_bytes = 12345
+        # SESSION-HANDOFF.txt п.4 -- общее число объектов + разбивка файлов по месту.
+        self.n_objects_total = 0
+        self.files_by_location = Counter()
+        self.bytes_by_location = Counter()
         self.dates_by_year = Counter({2026: 3})
         self.dates_by_year_month = Counter({"2026-07": 3})
         self.tier_counts = Counter({"C": 2, "D": 1})
@@ -1570,14 +1834,27 @@ class _FakeAnalyzeStats:
         self.exact_dup_edges = []
         self.n_tier_cd_bydate = 3
         self.n_archives_found = 0
+        self.n_archives_with_media = 0
         self.found_archive_top_level = []
-        self.excluded_found_archives = []
+        # SESSION-HANDOFF.txt п.9: "Объём по категориям" -- пусто здесь (n_images/n_raw/
+        # n_videos выше тоже не имеют байтовых партнёров в этом фейке).
+        self.bytes_by_kind = Counter()
+        # "analyze" (не "analyze-quick") -- near_dup/exact_dup/predicted_unique_count выше уже
+        # заполнены как настоящий полный проход (Паспорт архива), см. п.8: is_analyze_quick
+        # должен остаться False, иначе "Итог решений программы" скрылась бы, ломая существующие
+        # тесты на decisions ниже.
+        self.mode = "analyze"
         # generate_passport_report()/_render_passport_integrity() -- не читаются
         # build_model_from_analyze_stats(), нужны только паспорту (см. test_passport ниже).
         self.total_files = self.n_images + self.n_raw + self.n_videos
         self.n_signature_mismatch = 0
         self.n_dump_items = 0
         self.n_albums_detected = 1
+        # SESSION-HANDOFF.txt, 2026-08-07 (группировка альбом/дата) -- YY/ZZ/QQ, см.
+        # AnalyzeStats.n_media_in_albums/bydate_media_by_folder/n_media_by_date.
+        self.n_media_in_albums = 0
+        self.bydate_media_by_folder = Counter()
+        self.n_media_by_date = 0
         self.cities = Counter()
         # Пункт E -- "Топ камер/устройств съёмки".
         self.cameras = Counter()
@@ -1603,36 +1880,86 @@ def test_build_model_from_analyze_stats_tier_counts_not_affected_by_the_target_l
     assert model["total_bytes"] == 54321
 
 
+def test_build_model_from_analyze_stats_uses_stats_bytes_by_kind():
+    # SESSION-HANDOFF.txt п.9 (2026-08-05, боевой прогон): раньше bytes_by_kind в модели всегда
+    # был пустым Counter() -- "Объём по категориям" никогда не рендерилась для analyze-отчётов.
+    stats = _FakeAnalyzeStats()
+    stats.bytes_by_kind = Counter({"image": 1000, "raw": 2000, "video": 3000})
+    model = r.build_model_from_analyze_stats(stats)
+    assert model["bytes_by_kind"] == Counter({"image": 1000, "raw": 2000, "video": 3000})
+
+
+def test_build_model_from_analyze_stats_wires_album_date_grouping_fields():
+    """SESSION-HANDOFF.txt, 2026-08-07 (группировка альбом/дата): n_regular_folders в модели --
+    len() Counter'а bydate_media_by_folder, не сам Counter -- ZZ считает РАЗНЫЕ папки."""
+    stats = _FakeAnalyzeStats()
+    stats.n_albums_detected = 4
+    stats.n_media_in_albums = 40
+    stats.bydate_media_by_folder = Counter({"a": 2, "b": 5})
+    stats.n_media_by_date = 7
+    model = r.build_model_from_analyze_stats(stats)
+    assert model["n_albums_detected"] == 4
+    assert model["n_media_in_albums"] == 40
+    assert model["n_regular_folders"] == 2
+    assert model["n_media_by_date"] == 7
+
+
+def test_render_sheet2_hides_decisions_pie_for_analyze_quick_mode():
+    # SESSION-HANDOFF.txt п.8: CLI `analyze` (внутренний mode=="analyze-quick") никогда не
+    # делает дедуп-проход -- decisions всегда вырождена (всё 0, кроме "Не прочитано"),
+    # показывать её как честную диаграмму означало бы соврать про "100% дублей/новых файлов".
+    stats = _FakeAnalyzeStats()
+    stats.mode = "analyze-quick"
+    stats.n_near_dupes = 0
+    stats.predicted_unique_count = 0
+    stats.n_exact_dupes = 0
+    stats.n_broken_or_zero = 2  # unreadable ненулевой -- общий механизм "пустая скрывается сама" не сработал бы
+    model = r.build_model_from_analyze_stats(stats)
+    html_out = r._render_sheet2(model)
+    assert "Итог решений программы" not in html_out
+
+
+def test_render_sheet2_shows_decisions_pie_for_full_analyze_mode():
+    # Паспорт архива (self-scan, внутренний mode=="analyze" буквально) -- дедуп-проход реально
+    # идёт, диаграмма остаётся осмысленной и должна рендериться как раньше.
+    stats = _FakeAnalyzeStats()
+    stats.mode = "analyze"
+    model = r.build_model_from_analyze_stats(stats)
+    html_out = r._render_sheet2(model)
+    assert "Итог решений программы" in html_out
+
+
 def test_render_analyze_recommendations_empty_model_returns_nothing():
     """Все источники данных пусты/нулевые (например analyze-quick с совсем короткой
     историей) -- секция не должна рендериться вообще, не пустая карточка."""
     html_out = r._render_analyze_recommendations({
-        "total_bytes": 0, "years": Counter(), "found_archive_count": 0,
+        "total_bytes": 0, "years": Counter(), "found_archive_paths": [],
         "near_dup_clusters": [], "tier_counts": Counter(),
     })
     assert html_out == ""
 
 
-def test_render_analyze_recommendations_shows_disk_space_and_approx_dates_even_in_quick_mode():
-    """REVIEW-HANDOFF.md, Раунд 36: total_bytes/tier_counts всегда считаются, даже в
-    analyze-quick -- эти два пункта должны появляться независимо от near-dup/found-archive."""
+def test_render_analyze_recommendations_no_longer_duplicates_approx_dates():
+    """Живой боевой прогон 2026-08-06: "Что стоит проверить" (152, Tier B+C) и "Рекомендации"
+    (73, Tier C) показывали два разных числа под почти одинаковой формулировкой "приблизительно"
+    -- не баг подсчёта (79 Tier B + 73 Tier C = 152), но вводит в заблуждение при чтении рядом.
+    По решению пользователя -- убрать дублирующий пункт из "Рекомендаций" целиком (tier_counts
+    уже полностью покрыт "Что стоит проверить"/_build_checklist_items), а не просто
+    переформулировать. tier_counts=Counter({"C": 7}) с пустыми остальными полями -- секция не
+    должна рендериться вообще (тот же случай, что test_render_analyze_recommendations_empty_
+    model_returns_nothing, но явно проверяет именно tier_counts, не просто "все поля нулевые")."""
     html_out = r._render_analyze_recommendations({
-        "total_bytes": 5 * 1024**3, "years": Counter(), "found_archive_count": 0,
+        "total_bytes": 5 * 1024**3, "years": Counter(), "found_archive_paths": [],
         "near_dup_clusters": [], "tier_counts": Counter({"C": 7}),
     })
-    assert "Рекомендации" in html_out
-    assert "5.0 ГБ" in html_out
-    assert "приблизительно" in html_out
-    # near-dup/found-archive пункты не должны попасть, если данных нет.
-    assert "серию" not in html_out and "серии" not in html_out and "серий" not in html_out
-    assert "собранный архив" not in html_out
+    assert html_out == ""
 
 
 def test_render_analyze_recommendations_shows_year_gap_found_archive_and_near_dup_series():
     model = {
         "total_bytes": 0,
         "years": Counter({2016: 40, 2017: 40, 2018: 1, 2019: 40, 2020: 40}),
-        "found_archive_count": 1,
+        "found_archive_paths": [r"D:\Old\PhotoArchive"],
         "near_dup_clusters": [["a", "b"], ["c", "d", "e"]],
         "tier_counts": Counter(),
     }
@@ -1676,6 +2003,45 @@ def test_render_sheet1_analyze_level_does_not_claim_an_archive_exists():
     assert "Ваш архив" in target_html and "пополнении" in target_html
     assert "Ваш архив" not in analyze_html and "пополнении" not in analyze_html
     assert "Что нашлось на этом диске" in analyze_html
+
+
+def test_render_sheet1_analyze_shows_object_count_tile():
+    # SESSION-HANDOFF.txt п.4 (2026-08-05, боевой прогон): плитка "объектов (папок и архивов)"
+    # -- только для analyze (build_model_from_rows() для реальной сборки её не считает вовсе).
+    stats = _FakeAnalyzeStats()
+    stats.n_objects_total = 42
+    model = r.build_model_from_analyze_stats(stats)
+    html_out = r._render_sheet1(model, "analyze")
+    assert "42" in html_out
+    assert "объектов" in html_out
+
+
+def test_render_sheet1_target_level_omits_object_count_tile():
+    model = r.build_model_from_rows({"appended": [_appended_row(r"C:\T\dst\Albums\A\a.jpg")]})
+    html_out = r._render_sheet1(model, "target")
+    assert "объектов (папок и архивов)" not in html_out
+
+
+def test_render_sheet1_analyze_shows_files_by_location_breakdown():
+    stats = _FakeAnalyzeStats()
+    stats.files_by_location = Counter({"root": 5, "folder": 10, "archive": 3})
+    # Разбор накопления п.3а (2026-08-05, боевой прогон): объём рядом со штуками.
+    stats.bytes_by_location = Counter({"root": 1 * 1024**3, "folder": 2 * 1024**3,
+                                        "archive": 512 * 1024**2})
+    model = r.build_model_from_analyze_stats(stats)
+    html_out = r._render_sheet1(model, "analyze")
+    assert "5 файлов в корне источника (1.0 ГБ)" in html_out
+    assert "10 файлов в папках (2.0 ГБ)" in html_out
+    assert "3 файла внутри архивов (512 МБ)" in html_out
+
+
+def test_render_sheet1_analyze_omits_breakdown_when_single_location():
+    # Один-единственный непустой бакет -- разбивка была бы бесполезным повтором общего числа.
+    stats = _FakeAnalyzeStats()
+    stats.files_by_location = Counter({"folder": 10})
+    model = r.build_model_from_analyze_stats(stats)
+    html_out = r._render_sheet1(model, "analyze")
+    assert "Из них" not in html_out
 
 
 def test_render_sheet3_single_analyze_has_no_stale_stub():
@@ -2180,3 +2546,17 @@ def test_split_rows_by_time_returns_only_new_rows():
     assert [row["dest"] for row in result["appended"]] == ["new.jpg"]
     # категории, отсутствующие в data вовсе -- пустой список, не KeyError.
     assert result["disputes"] == []
+
+
+def test_page_shell_includes_brand_header_with_logo_and_landing_link():
+    """2026-08-06, согласовано с пользователем: логотип PhotoArchive + ссылка на лендинг в
+    шапке каждой страницы отчёта (_page_shell(), общая для report.html/passport.html/сверок
+    дублей) -- регрессионный тест, чтобы случайная правка _page_shell() не потеряла шапку."""
+    doc = r._page_shell("Тест", "<div class=\"card\"><h1>Тест</h1></div>")
+    assert 'class="report-brand"' in doc
+    assert '<svg role="img" aria-label="PhotoArchive"' in doc
+    assert f'href="{r._LANDING_URL}"' in doc
+    assert r._LANDING_URL_DISPLAY in doc
+    # ссылка на лендинг встречается дважды -- на самом лого (клик) и на видимом тексте URL
+    # (клик/копирование выделением, без JS -- см. докстринг _render_brand_header()).
+    assert doc.count(f'href="{r._LANDING_URL}"') == 2

@@ -36,6 +36,58 @@ COLOR_TEXT_MUTED = "#6B6B5E"
 CATEGORY_PALETTE = [COLOR_ACCENT, COLOR_ACCENT_SECONDARY, "#6E8C74", "#C9A063", "#9AA593"]
 
 # ============================================================================
+# Бренд-шапка отчёта (SESSION-HANDOFF.txt, 2026-08-05/06: логотип в report.html)
+# ============================================================================
+
+# Лого встроено как инлайн SVG (не файл/data-URI) — report.html самодостаточный HTML без
+# внешних ассетов, а report.py не импортирует photosort_win (см. докстринг модуля), поэтому
+# путь к файлу логотипа взять неоткуда. Разметка — 1:1 копия assets/logo.svg из публичного
+# репозитория (vo1012/PhotoArchive), цвета которого (#24544A/#A85A2A) совпадают с
+# COLOR_ACCENT/COLOR_ACCENT_SECONDARY выше — общий бренд-набор с сайтом. Инверсный вариант
+# (assets/logo-inverse.svg, светлый на тёмном фоне) не нужен — фон report.html везде светлый
+# (COLOR_BG), тёмных секций (в отличие от футера сайта) нет.
+_LANDING_URL = "https://vo1012.github.io/PhotoArchive/"
+_LANDING_URL_DISPLAY = "vo1012.github.io/PhotoArchive"
+
+_LOGO_SVG = ('<svg role="img" aria-label="PhotoArchive" xmlns="http://www.w3.org/2000/svg" '
+             'viewBox="69 247 1240 245">'
+             '<path fill="#24544A" d="M217.766 257.515C236.668 256.396 238.047 272.721 238.552 287.131C231.295 289.414 222.083 291.346 214.616 292.865C214.538 290.824 214.555 286.886 213.662 285.2C212.831 283.668 211.372 282.574 209.668 282.206C205.701 281.365 112.207 305.655 105.91 309.695C104.723 311.245 103.509 315.064 103.465 316.951C102.711 349.347 101.528 382.191 102.714 414.591C103.149 426.483 104.16 429.815 115.601 433.284C133.974 438.855 152.785 443.171 171.328 448.17C183.083 450.788 195.518 456.839 207.4 457.926C217.287 458.831 214.725 441.448 214.41 435.933C201.162 433.052 160.331 425.436 151.118 420.448C148.915 419.256 148.047 418.238 147.354 415.796C146.482 412.72 146.11 409.421 145.941 406.232C145.422 396.432 144.595 324.48 147.313 320.102C149.67 316.305 154.326 314.033 158.329 312.474C170.903 307.576 185.193 305.436 198.318 302.301L268.24 285.099C277.053 282.65 296.386 275.367 303.201 283.235C306.782 293.822 305.573 319.941 305.562 332.33L305.469 396.996C305.46 412.997 306.233 429.641 305.054 445.492C304.127 457.95 283.7 452.149 276.601 450.579C263.765 447.741 251.086 444.3 238.423 440.979C238.533 449.781 240.061 466.306 235.521 473.788C230.948 481.327 221.927 483.604 213.659 481.402C174.472 470.962 135.43 459.921 96.3845 448.98C76.6695 443.456 79.1011 425.03 79.2176 408.863L79.4179 376.099L79.209 335.907C79.1305 323.293 76.4228 295.711 90.9296 289.864C97.1259 287.366 106.644 285.091 113.247 283.371L152.45 273.512C170.698 268.955 200.094 260.41 217.766 257.515ZM165.376 329.188C163.169 345.182 164.353 383.218 164.593 400.712C177.518 388.249 190.368 375.708 203.142 363.092C206.995 363.449 223.685 381.015 227.627 384.91L237.753 375.481C254.271 390.714 270.355 406.329 287.01 421.484L286.997 349.256C287.019 341.907 288.4 303.683 285.215 299.646C283.351 298.68 282.578 298.915 280.479 299.045L210.386 316.64C199.416 319.359 174.614 324.929 165.376 329.188ZM210.071 401.359L216.091 395.631C218.012 393.899 220.44 391.583 222.405 390.009C217.733 385.402 211.041 378.419 206.008 374.602C207.333 382.991 209.154 393.052 210.071 401.359Z"/>'
+             '<path fill="#24544A" d="M249.721 324.857C258.677 323.037 267.412 328.822 269.234 337.778C271.055 346.733 265.273 355.471 256.318 357.294C247.361 359.118 238.621 353.333 236.799 344.375C234.977 335.417 240.763 326.678 249.721 324.857Z"/>'
+             '<path fill="#24544A" d="M427.039 316.155L427.514 316.136C450.662 315.29 480.502 314.655 487.21 342.958C487.773 345.336 488.041 347.947 488.077 350.388C488.307 359.814 484.741 368.937 478.181 375.708C465.818 388.296 448.734 386.692 432.52 386.683L426.459 386.657L426.554 421.313L406.485 421.295L406.393 316.477L427.039 316.155ZM426.567 369.687C439.205 369.809 451.881 371.394 462.644 364.333C468.66 356.488 470.512 345.544 461.812 338.791C453.811 332.58 436.309 333.758 426.553 334.306L426.567 369.687Z"/>'
+             '<path fill="#24544A" d="M613.719 345.677C635.34 343.179 654.952 358.53 657.72 380.119C660.489 401.709 645.385 421.512 623.833 424.551C609.65 426.55 595.487 420.766 586.758 409.409C578.029 398.052 576.083 382.877 581.664 369.685C587.245 356.492 599.49 347.321 613.719 345.677ZM622.523 406.818C634.38 404.478 642.094 392.969 639.755 381.111C637.416 369.254 625.909 361.538 614.052 363.876C602.193 366.214 594.476 377.724 596.816 389.583C599.155 401.442 610.665 409.159 622.523 406.818Z"/>'
+             '<path fill="#24544A" d="M750.441 346.263C772.043 343.238 791.981 358.369 794.882 379.989C797.783 401.609 782.538 421.461 760.903 424.237C739.443 426.992 719.788 411.897 716.911 390.452C714.033 369.006 729.014 349.263 750.441 346.263ZM758.877 406.512C770.6 404.849 778.778 394.03 777.181 382.297C775.583 370.564 764.81 362.325 753.069 363.857C741.236 365.401 732.917 376.279 734.527 388.105C736.138 399.931 747.061 408.188 758.877 406.512Z"/>'
+             '<path fill="#A85A2A" d="M858.662 316.135L867.39 316.102C871.238 323.63 874.81 332.871 877.974 340.729C888.852 367.749 901.137 394.384 911.879 421.439C905.115 421.499 898.35 421.514 891.586 421.486C879.963 394.318 869.01 366.556 857.235 339.676C845.434 365.82 834.567 394.604 822.809 421.38L802.296 421.329C817.594 386.444 832.63 351.445 847.403 316.335L858.662 316.135Z"/>'
+             '<path fill="#24544A" d="M495.912 316.488L514.568 316.506C514.907 329.734 514.667 344.021 514.698 357.335C522.547 350.397 528.457 346.861 539.155 346.582C565.716 345.892 566.06 370.174 565.791 389.949C565.649 400.37 565.621 410.945 565.51 421.274L546.952 421.28L546.975 393.911C547.052 382.694 549.16 363.917 532.988 363.837C527.945 363.798 523.092 365.766 519.501 369.307C511.801 377.035 514.538 408.713 514.477 421.299L495.871 421.356L495.912 316.488Z"/>'
+             '<path fill="#A85A2A" d="M1257.09 347.53C1259.27 347.346 1261.46 347.228 1263.65 347.177C1290.08 346.49 1298.83 367.857 1299.37 390.455L1245.11 390.51C1251.97 412.543 1268.65 412.433 1285.44 400.324L1296.19 410.916C1273.34 430.63 1239.32 428.953 1229.09 397.822C1225.74 387.694 1226.63 376.645 1231.54 367.177C1237.2 356.33 1245.84 351.006 1257.09 347.53ZM1245.08 377.871L1269.21 377.766L1282.09 377.704C1276.7 364.956 1272.95 361.146 1258.37 362.291C1250.48 366.368 1248.11 369.365 1245.08 377.871Z"/>'
+             '<path fill="#A85A2A" d="M1040.68 316.469L1058.71 316.426L1058.86 357.01C1069.76 346.625 1089.23 341.476 1099.96 353.084C1112.13 366.256 1108.11 404.142 1107.96 421.315L1090.48 421.337L1090.42 392.708L1090.43 391.884C1090.52 385.035 1090.64 369.628 1085.73 366.979C1065.07 355.823 1056.88 373.247 1058.02 390.707C1058.76 402 1058.1 412.598 1058.15 421.307L1040.76 421.365C1040.52 386.4 1040.49 351.434 1040.68 316.469Z"/>'
+             '<path fill="#A85A2A" d="M328.581 295.646C339.189 295.431 341.166 299.229 341.175 309.705C341.214 352.095 341.962 394.73 340.891 437.082C340.825 439.693 336.68 442.401 334.62 443.767C324.059 444.523 322.032 439.624 321.909 430.032C321.443 393.689 321.619 357.312 321.555 320.964C321.545 315.13 321.609 309.034 322.283 303.253C322.728 299.496 325.776 297.607 328.581 295.646Z"/>'
+             '<path fill="#A85A2A" d="M1147.39 348.717L1166.82 348.613C1173.54 363.377 1181.21 384.713 1187.31 400.225C1194.06 387.299 1202.98 363.129 1208.73 348.762L1227.94 348.746L1221.17 364.681C1213.35 383.677 1205.22 402.542 1196.77 421.267L1178.4 421.329C1167.78 397.824 1157.51 372.57 1147.39 348.717Z"/>'
+             '<path fill="#24544A" d="M674.568 330.086L693.307 330.108L693.386 348.805L712.371 348.739C712.574 353.858 712.447 359.509 712.428 364.677C706.047 364.566 699.666 364.543 693.285 364.607C693.326 373.52 692.823 382.432 692.717 391.347C692.661 396.066 692.949 401.778 697.349 404.628C701.959 407.614 706.993 405.927 711.941 404.883L712.236 414.247L712.328 414.856C714.55 429.997 684.149 423.191 680.101 417.45C672.034 406.012 674.371 378.28 674.528 364.835L663.314 364.699L663.191 348.836L674.6 348.699L674.568 330.086Z"/>'
+             '<path fill="#A85A2A" d="M1000.92 346.925C1013.3 344.942 1022.93 351.82 1031.63 359.396C1027.97 363.176 1024.33 367.435 1020.83 371.4C1018.88 369.818 1016.92 368.299 1014.89 366.823C998.87 355.188 979.398 373.255 983.968 390.756C985.628 397.111 988.237 401.443 993.798 405.207C1002.99 411.428 1012.52 404.445 1020.95 400.736C1021.37 400.555 1022.54 401.585 1023.05 401.951C1025.74 404.981 1029.03 408.001 1031.98 410.83C1025.1 417.3 1019.01 421.784 1009.28 423.33C999.111 425.018 988.691 422.542 980.368 416.46C953.289 396.305 963.683 351.79 1000.92 346.925Z"/>'
+             '<path fill="#B9C2B2" d="M361.379 315.244C362.919 315.41 364.427 315.796 365.858 316.389C367.896 317.211 369.569 318.625 370.326 320.733C372.557 326.942 372.39 417.383 369.762 422.168C368.36 424.72 365.026 425.34 362.448 425.945C361.275 425.831 360.151 425.546 359.027 425.196C357.226 424.634 355.268 423.55 354.454 421.752C352.396 417.206 352.257 326.757 354.367 321.013C355.564 317.756 358.447 316.528 361.379 315.244Z"/>'
+             '<path fill="#A85A2A" d="M951.301 348.192C954.892 347.998 959.374 348.103 963.036 348.087C962.942 353.937 962.918 359.787 962.965 365.637C926.995 361.205 936.811 395.762 936.381 421.412L926.012 421.468C923.601 421.505 920.912 421.773 918.716 420.91C918.057 415.491 918.418 401.364 918.422 395.359L918.296 348.739L935.904 348.691L935.987 356.72C941.481 351.425 943.899 349.838 951.301 348.192Z"/>'
+             '<path fill="#A85A2A" d="M1122.01 348.726L1140.22 348.623L1140.18 421.339L1122.09 421.385C1122.33 397.357 1122.04 372.798 1122.01 348.726Z"/>'
+             '<path fill="#24544A" d="M853.487 379.306C857.953 378.08 862.734 379.352 866.001 382.635C869.267 385.918 870.515 390.706 869.266 395.166C868.017 399.626 864.466 403.069 859.969 404.179C853.141 405.864 846.227 401.748 844.453 394.942C842.68 388.136 846.705 381.168 853.487 379.306Z"/>'
+             '<path fill="#24544A" d="M1128.97 312.835C1135.72 311.203 1142.52 315.317 1144.21 322.052C1145.89 328.787 1141.84 335.623 1135.12 337.367C1128.32 339.132 1121.38 335.016 1119.67 328.202C1117.97 321.387 1122.14 314.487 1128.97 312.835Z"/>'
+             '</svg>')
+
+
+def _render_brand_header() -> str:
+    """Логотип (слева) + ссылка на лендинг (справа) — общая для всех страниц шапка
+    report.html, симметрична футеру внизу (см. _page_shell()). Ссылка — обычный видимый
+    текст <a>, не JS-кнопка "копировать": report.html часто открывают напрямую как локальный
+    файл (file://), где Clipboard API может быть недоступен без HTTPS-контекста — видимый
+    текст кликается (переход) и копируется правым кликом/выделением без JS."""
+    return (
+        '<div class="report-brand">'
+        f'<a class="report-brand-logo" href="{_LANDING_URL}" '
+        f'aria-label="PhotoArchive — сайт программы">{_LOGO_SVG}</a>'
+        f'<a class="report-brand-url" href="{_LANDING_URL}">{_LANDING_URL_DISPLAY}</a>'
+        '</div>'
+    )
+
+
+# ============================================================================
 # Локальные копии констант photosort_win.py (см. докстринг модуля — НЕ импортировать)
 # ============================================================================
 
@@ -50,6 +102,21 @@ CSV_NAMES = ("appended", "skipped", "disputes", "dates_review", "albums_merged",
              "unreadable", "rejected_noise", "near_dup_edges", "undated_media")
 
 TOP_N = 10  # PROMPT_archive_report.md, раздел 0: топ-N + отсылка к полному CSV, не всё целиком
+
+# Задача B (SESSION-HANDOFF.txt, "проактивные советы для [2] Пробный прогон"): эвристика
+# "альбом похож на папку облачной синхронизации, не на курируемый альбом" --
+# см. _render_dryrun_structure_recommendations(). Консервативные стартовые значения, рабочая
+# гипотеза -- калибровка по факту боевого прогона на реальном архиве, не точная наука.
+REC_MIN_FILES = 30  # альбом меньше этого размера не стоит беспокоить советом
+REC_STRUCT_MAX = 5  # не больше N альбомов в одном отчёте -- не заваливать пользователя
+
+# Название альбома, намекающее на облачную синхронизацию -- тот же класс папок, что FAQ.md
+# уже приводит примером для ручного "~"-переименования ("Как заставить программу принудительно
+# НЕ считать конкретную папку альбомом?"). Подстрока, без учёта регистра.
+CLOUDLIKE_ALBUM_HINTS = (
+    "icloud", "google photos", "onedrive", "dropbox", "yandex.disk",
+    "яндекс.диск", "яндекс диск", "backup", "резервная копия", "синхронизац", "cloud",
+)
 
 # Пункт D ("большой разбор report.html", SESSION-HANDOFF.txt): ISO 3166-1 alpha-2 -> русское
 # название страны -- для остального мира на диаграмме "География" ("Город, CC" -> "Город
@@ -851,31 +918,88 @@ def _fmt_run_duration(total_seconds: float) -> str:
 _YEAR_HBAR_MAX_SPAN = 80
 
 
+def _year_gap_ranges(min_y: int, max_y: int, counter: Counter) -> list:
+    """[(start, end), ...] -- границы каждого непрерывного пробега лет БЕЗ снимков внутри
+    [min_y, max_y] (годы с counter.get(y, 0) == 0). Не то же самое, что _find_year_gap() --
+    та ищет только ОДИН самый заметный провал (для текста-подсказки в «Рекомендациях»), здесь
+    нужны ВСЕ пробеги (для строк-разрывов графика, SESSION-HANDOFF.txt п.3, 2026-08-05)."""
+    ranges = []
+    gap_start = None
+    for y in range(min_y, max_y + 1):
+        if counter.get(y, 0) == 0:
+            if gap_start is None:
+                gap_start = y
+        elif gap_start is not None:
+            ranges.append((gap_start, y - 1))
+            gap_start = None
+    if gap_start is not None:
+        ranges.append((gap_start, max_y))
+    return ranges
+
+
+def _covered_year_span(years: Counter) -> int:
+    """Число реально "покрытых" (хотя бы один снимок) лет в диапазоне [min(years), max(years)]
+    -- SESSION-HANDOFF.txt п.5 (2026-08-05, боевой прогон): плитка "N лет истории" считала
+    буквальный календарный охват крайних точек (max-min+1), не вычитая пустые годы внутри --
+    живой пример пользователя: диапазон 2015-2026 (12 лет) при реальных снимках только в 3-4 из
+    них, соседний график "Медиафайлы по годам" на той же странице честно показывает пробел
+    строкой-разрывом, а плитка вверху делала вид, что история сплошная. Переиспользует
+    _year_gap_ranges() -- тот же хелпер, что уже считает пробеги для графика, не отдельная
+    оценка. years без снимков вовсе -- 0 (вызывающий код уже проверяет `if years:` до вызова)."""
+    min_y, max_y = min(years), max(years)
+    calendar_span = max_y - min_y + 1
+    empty_years = sum(end - start + 1 for start, end in _year_gap_ranges(min_y, max_y, years))
+    return calendar_span - empty_years
+
+
 def _svg_year_hbar_chart(counter: Counter, width=680, bar_h=22, gap=8, color=COLOR_ACCENT) -> str:
     """Горизонтальные столбики "Медиафайлы по годам" (SESSION-HANDOFF.txt, "большой разбор
     report.html", пункт B.7) -- та же форма, что "Топ альбомов" (_svg_hbar_chart), но
-    хронологический порядок (не по убыванию значения) и явные нулевые строки для каждого года
-    БЕЗ снимков внутри диапазона архива (см. _YEAR_HBAR_MAX_SPAN про исключение). Раньше
-    вертикальная _svg_bar_chart() просто пропускала отсутствующий год в списке столбцов --
-    неотличимо на глаз от "программа потеряла данные за этот год", хотя снимков за него
-    действительно нет. Замена прежней _svg_bar_chart() -- та же единственная область
-    применения (эта диаграмма и в обычном report.html Sheet2, и в passport.html), горизонтальная
-    форма не нуждается в прореживании подписей (как у вертикальной при большом n) -- у каждого
-    года и так своя строка."""
+    хронологический порядок (не по убыванию значения). Замена прежней _svg_bar_chart() -- та же
+    единственная область применения (эта диаграмма и в обычном report.html Sheet2, и в
+    passport.html), горизонтальная форма не нуждается в прореживании подписей (как у
+    вертикальной при большом n) -- у каждого года со снимками и так своя строка.
+
+    SESSION-HANDOFF.txt п.3 (2026-08-05, боевой прогон): раньше каждый год БЕЗ снимков внутри
+    диапазона архива (см. _YEAR_HBAR_MAX_SPAN про исключение выше порога) получал свою
+    отдельную нулевую строку ("1974", "1975", ..., "2002" — по одной на год) -- решение
+    2026-07-31, чтобы разрыв не читался как "программа потеряла данные". Теперь у каждого
+    построенного года и так есть явная числовая подпись -- сама последовательность подписей
+    ("1973" → "2003") уже показывает разрыв без построчных нулей. Один непрерывный 0-участок
+    -- ОДНА компактная строка-разрыв («1974–2002: нет фото»), не N нулевых строк."""
     if not counter:
         return ""
     min_y, max_y = min(counter), max(counter)
+    # (label, value, is_gap) -- is_gap-строки не рисуют бар/год-подпись/счётчик, только один
+    # приглушённый текст на всю строку (см. цикл рендера ниже).
     if max_y - min_y + 1 <= _YEAR_HBAR_MAX_SPAN:
-        items = [(str(y), counter.get(y, 0)) for y in range(min_y, max_y + 1)]
+        gap_ends = dict(_year_gap_ranges(min_y, max_y, counter))  # start -> end
+        items = []
+        y_cursor = min_y
+        while y_cursor <= max_y:
+            if y_cursor in gap_ends:
+                end = gap_ends[y_cursor]
+                label = (f"{y_cursor}: нет фото" if y_cursor == end
+                         else f"{y_cursor}–{end}: нет фото")
+                items.append((label, 0, True))
+                y_cursor = end + 1
+            else:
+                items.append((str(y_cursor), counter.get(y_cursor, 0), False))
+                y_cursor += 1
     else:
-        items = [(str(y), v) for y, v in sorted(counter.items())]
-    max_v = max(v for _, v in items) or 1
+        items = [(str(y), v, False) for y, v in sorted(counter.items())]
+    max_v = max((v for _, v, is_gap in items if not is_gap), default=0) or 1
     margin_left, margin_right = 54, 68
     plot_w = width - margin_left - margin_right
     height = len(items) * (bar_h + gap) + gap
     parts = []
     y = gap
-    for label, v in items:
+    for label, v, is_gap in items:
+        if is_gap:
+            parts.append(f'<text x="{margin_left}" y="{y + bar_h * 0.68:.1f}" font-size="12" '
+                          f'font-style="italic" fill="{COLOR_TEXT_MUTED}">{html.escape(label)}</text>')
+            y += bar_h + gap
+            continue
         w = plot_w * (v / max_v) if v else 0.0
         parts.append(f'<text x="{margin_left - 8}" y="{y + bar_h * 0.68:.1f}" font-size="12" '
                       f'text-anchor="end" fill="{COLOR_TEXT}">{label}</text>')
@@ -977,7 +1101,13 @@ def _fmt_bytes(n: int) -> str:
     return f"{mb:.0f} МБ"
 
 
-def _page_shell(title: str, body_html: str) -> str:
+def _page_shell(title: str, body_html: str, app_version: str = None) -> str:
+    """app_version (SESSION-HANDOFF.txt, 2026-08-05, боевой прогон, п.4): номер версии
+    программы в футере -- report.py не импортирует photosort_win.__version__ напрямую
+    (PROMPT_archive_report.md, граница модулей: report.py ничего не импортирует из
+    photosort_win) -- каждый публичный generate_*() выше передаёт его явным параметром, эта
+    функция только форматирует. None (старые вызовы/тесты без параметра) -- строка футера как
+    раньше, без версии."""
     return f"""<!doctype html>
 <html lang="ru">
 <head>
@@ -1056,6 +1186,14 @@ p {{ margin: 8px 0; }}
    -- заменён на var(--muted), тот же цвет, что и остальной вспомогательный текст (4.79:1 на
    --bg / 5.4:1 на белом фоне карточек -- оба проходят). */
 .footer {{ text-align: center; color: var(--muted); font-size: 13px; margin: 16px 0 24px; }}
+.report-brand {{
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  gap: 6px 16px; margin: 0 0 18px;
+}}
+.report-brand-logo {{ display: block; line-height: 0; }}
+.report-brand-logo svg {{ display: block; height: 28px; width: auto; }}
+.report-brand-url {{ color: var(--muted); font-size: 14px; text-decoration: none; }}
+.report-brand-url:hover {{ text-decoration: underline; }}
 /* 4.1/4.3 (PROMPT_report_marketing.md): баннер доверия -- одна строка, не карточка, чтобы не
    раздувать первый экран; чек-лист рядом -- компактный, с нейтральными зелёными отметками. */
 .trust-banner {{ font-size: 17px; font-weight: 600; color: var(--accent); margin: 4px 0 8px; }}
@@ -1116,8 +1254,9 @@ p {{ margin: 8px 0; }}
 </head>
 <body>
 <div class="sheet">
+{_render_brand_header()}
 {body_html}
-<div class="footer">Сформировано PhotoArchive · {time.strftime("%Y-%m-%d %H:%M")}</div>
+<div class="footer">Сформировано PhotoArchive{f" {app_version}" if app_version else ""} · {time.strftime("%Y-%m-%d %H:%M")}</div>
 </div>
 </body>
 </html>"""
@@ -1148,7 +1287,8 @@ def _render_interrupted_banner() -> str:
 
 
 def generate_placeholder_report(reason: str, out_path: str, program_name: str = "PhotoArchive",
-                                 interrupted: bool = False, suggest_other_location: bool = False) -> None:
+                                 interrupted: bool = False, suggest_other_location: bool = False,
+                                 app_version: str = None) -> None:
     """suggest_other_location (Раунд 34, REVIEW-HANDOFF.md): пустой/недоступный источник --
     сегодня сухая заглушка ("подробности в консоли"), хотя почти всегда означает одно из
     двух: пользователь указал не тот диск/папку, либо архив уже собран в другое место раньше
@@ -1181,7 +1321,7 @@ def generate_placeholder_report(reason: str, out_path: str, program_name: str = 
   <p class="muted">{html.escape(detail)}</p>
 </div>
 """
-    _write(out_path, _page_shell(f"{program_name} — отчёт", body))
+    _write(out_path, _page_shell(f"{program_name} — отчёт", body, app_version=app_version))
 
 
 # ============================================================================
@@ -1208,13 +1348,21 @@ def _render_sheet1(model: dict, level: str = "target") -> str:
                       f'<div class="label">{"занимает на диске" if is_scan else "занимает архив"}</div></div>')
 
     if years:
-        span = max(years) - min(years) + 1
+        span = _covered_year_span(years)
         stats.append(f'<div class="stat"><div class="value">{span}</div>'
                       f'<div class="label">{"год" if span == 1 else "лет"} истории</div></div>')
 
     if model["bytes_saved"]:
         stats.append(f'<div class="stat"><div class="value">{_fmt_bytes(model["bytes_saved"])}</div>'
                       f'<div class="label">сэкономлено на дублях</div></div>')
+
+    # SESSION-HANDOFF.txt п.4 (2026-08-05, боевой прогон): общее число объектов (папка+архив)
+    # -- только для analyze (build_model_from_rows() для реальной сборки этого не считает,
+    # ключ отсутствует в модели вовсе, .get() ниже безопасен).
+    n_objects_total = model.get("n_objects_total", 0)
+    if is_scan and n_objects_total:
+        stats.append(f'<div class="stat"><div class="value">{n_objects_total}</div>'
+                      f'<div class="label">объектов (папок и архивов)</div></div>')
 
     if is_scan:
         heading, subtitle = "Что нашлось на этом диске", (
@@ -1232,6 +1380,31 @@ def _render_sheet1(model: dict, level: str = "target") -> str:
     parts = ['<div class="card">', f"<h1>{heading}</h1>",
              f'<p class="subtitle">{subtitle}</p>',
              '<div class="stat-row">'] + stats + ["</div>"]
+
+    # SESSION-HANDOFF.txt п.4: разбивка файлов по месту -- только ненулевые части, "и"/","
+    # между ними по числу непустых категорий (root/folder/archive), не жёсткий шаблон на три
+    # слота (одна из категорий может отсутствовать полностью -- например, источник целиком
+    # состоит из архивов, без единого файла-россыпи).
+    # Разбор накопления п.3а (2026-08-05, боевой прогон): объём (не только штуки) для каждой
+    # части -- bytes_by_location считается тем же проходом, что и files_by_location (см.
+    # AnalyzeStats/run_analyze()), .get() безопасен (0 -- не отрендерится в _fmt_bytes лишним
+    # текстом, т.к. категория с 0 файлов сюда и не попадает).
+    files_by_location = model.get("files_by_location") or Counter()
+    bytes_by_location = model.get("bytes_by_location") or Counter()
+    if is_scan and sum(files_by_location.values()):
+        location_bits = []
+        if files_by_location.get("root"):
+            location_bits.append(f"{_n_files(files_by_location['root'])} в корне источника "
+                                  f"({_fmt_bytes(bytes_by_location['root'])})")
+        if files_by_location.get("folder"):
+            location_bits.append(f"{_n_files(files_by_location['folder'])} в папках "
+                                  f"({_fmt_bytes(bytes_by_location['folder'])})")
+        if files_by_location.get("archive"):
+            location_bits.append(f"{_n_files(files_by_location['archive'])} внутри архивов "
+                                  f"({_fmt_bytes(bytes_by_location['archive'])})")
+        if len(location_bits) > 1:
+            location_text = ", ".join(location_bits[:-1]) + " и " + location_bits[-1]
+            parts.append(f'<p class="muted">Из них: {location_text}.</p>')
 
     oldest = model["oldest"]
     if oldest:
@@ -1291,21 +1464,26 @@ def _render_trust_block(level: str, unreadable_count: int = 0) -> str:
 
     unreadable_count (пункт B.1, "большой разбор report.html", SESSION-HANDOFF.txt): пункт про
     ошибки чтения раньше выводился безусловно -- на чистом архиве без единого нечитаемого
-    файла звучал как ответ на вопрос, которого никто не задавал ("а что, были ошибки?")."""
-    items = [
-        "Файлы не удалялись.",
-        "Оригиналы сохранены на своих местах.",
-    ]
+    файла звучал как ответ на вопрос, которого никто не задавал ("а что, были ошибки?").
+
+    2026-08-06, живой репорт пользователя ("Зачем 2 раза писать одно и то же?"): чек-лист
+    раньше безусловно открывался пунктами "Файлы не удалялись."/"Оригиналы сохранены на своих
+    местах." -- дословный повтор факта, который уже сообщает баннер строкой выше ("Оригиналы
+    не изменены и не удалены..."). Убраны -- чек-лист теперь только для фактов, которых в
+    баннере ещё нет (ошибки чтения/предпросмотр), и не рендерится вовсе, если добавить нечего."""
+    items = []
     if unreadable_count:
         items.append("Ошибки чтения показаны отдельно, не смешаны с остальным.")
     if level != "target":
         items.append("Реальных изменений на диске нет — это предпросмотр.")
-    li = "".join(f"<li>{html.escape(t)}</li>" for t in items)
-    return (
+    banner = (
         '<p class="trust-banner">Оригиналы не изменены и не удалены — программа работает '
         'только с копиями.</p>'
-        f'<ul class="trust-list">{li}</ul>'
     )
+    if not items:
+        return banner
+    li = "".join(f"<li>{html.escape(t)}</li>" for t in items)
+    return f'{banner}<ul class="trust-list">{li}</ul>'
 
 
 def _render_this_run(run_stats: dict, level: str = "target") -> str:
@@ -1344,8 +1522,22 @@ def _render_this_run(run_stats: dict, level: str = "target") -> str:
     # без него в "any(...)" ниже такой прогон молча ушёл бы в пустую секцию, а отчёт выглядел
     # бы неотличимо от "SOURCE был пуст".
     stopped_for_space = bool(run_stats.get("stopped_for_space"))
+    # Найдено 2026-08-07: секция "encrypted"/"dvd_folders" ниже по функции (список запароленных
+    # архивов/DVD-Video) читается ПОСЛЕ этого раннего выхода -- SOURCE, в котором вообще ничего
+    # не добавилось/не пропустилось/не оспорилось (например, source == один запароленный архив и
+    # больше ничего) молча схлопывался в "" вместе с этим предупреждением, отчёт выглядел
+    # неотличимо от по-настоящему пустого SOURCE. encrypted_archives -- тот же список, что
+    # `encrypted` чуть ниже (двойное чтение run_stats безвредно, не стоит того, чтобы поднимать
+    # вычисление `encrypted` выше и разрывать его с местом использования).
+    has_encrypted = bool(run_stats.get("encrypted_archives"))
+    # 2026-08-07: DVD-юнит-дубль (уже архивированный диск, см. dvd_units_skipped_duplicate) --
+    # тот же класс пробела, что и has_encrypted выше. Новый (не дубль) DVD-юнит сюда не
+    # нужен -- его файлы уже увеличили appended_videos/n_new_total обычным путём
+    # (_process_dvd_item()), any(...) и так не пустой.
+    has_dvd_duplicate = bool(run_stats.get("dvd_units_skipped_duplicate"))
 
-    if not any((n_new_total, n_skipped, n_disputed, n_unreadable, stopped_for_space)):
+    if not any((n_new_total, n_skipped, n_disputed, n_unreadable, stopped_for_space,
+                has_encrypted, has_dvd_duplicate)):
         return ""  # SOURCE был пуст/всё уже было в архиве -- нет смысла в пустой секции
 
     preview = level != "target"
@@ -1536,16 +1728,25 @@ def _render_this_run(run_stats: dict, level: str = "target") -> str:
             'Они не потеряны — лежат в _Unsorted для проверки вручную.</p>'
         )
 
-    # Куда И откуда -- album_merge_events это пары (альбом, prefix), prefix -- реальный путь
-    # от корня SOURCE до места, откуда пришли файлы (см. photosort_win.py:find_album()/
-    # _note_album_source()). Раньше показывалось только имя альбома (только "куда"), prefix
-    # отбрасывался -- по прямой просьбе пользователя 2026-07-20 показываем оба конца.
+    # Куда И откуда -- album_merge_events это тройки (альбом, prefix, is_dup), prefix --
+    # реальный путь от корня SOURCE до места, откуда пришли файлы, is_dup -- пришёл ли этот
+    # merge от точки вызова "дубль уже лежит в альбоме" (photosort_win.py:_process_record(),
+    # decision.decision=="skipped_present") или от точки вызова "в альбом реально дописан
+    # файл" (см. photosort_win.py:find_album()/_note_album_source()). Раньше показывалось
+    # только имя альбома (только "куда"), prefix отбрасывался -- по прямой просьбе
+    # пользователя 2026-07-20 показываем оба конца.
     merge_events = run_stats.get("album_merge_events") or []
     if merge_events:
         merge_heading = "Альбомы бы пополнились из нескольких мест:" if preview else "Альбомы пополнились из нескольких мест:"
         by_album = {}
-        for album, prefix in merge_events:
+        # C1 (SESSION-HANDOFF.txt): источники, давшие РЕАЛЬНО НОВОЕ содержимое (is_dup=False)
+        # -- отдельно от by_album выше, который остаётся тем же полным набором мест (в т.ч.
+        # мест, давших только повторный дубль) для факт-строки, не трогаем её.
+        unique_sources_by_album = {}
+        for album, prefix, is_dup in merge_events:
             by_album.setdefault(album, set()).add(prefix)
+            if not is_dup:
+                unique_sources_by_album.setdefault(album, set()).add(prefix)
         parts.append(f'<p><b>{merge_heading}</b></p>')
         for album in sorted(by_album)[:TOP_N]:
             sources = "; ".join(html.escape(p) for p in sorted(by_album[album]))
@@ -1553,6 +1754,18 @@ def _render_this_run(run_stats: dict, level: str = "target") -> str:
             # корня архива ("Albums\дедушка"), не голое имя альбома -- однозначно отличимо от
             # "откуда" (полный путь от корня SOURCE, уже показан справа, не трогаем).
             parts.append(f'<p class="muted">«Albums\\{html.escape(album)}» ← {sources}</p>')
+            # C1: совет -- только для [2] Пробный прогон (level=="workdir", ещё можно
+            # пересобрать по-другому без переделки готового архива), только когда РЕАЛЬНО
+            # разное содержимое (не просто повторный дубль) пришло минимум из 2 разных мест --
+            # иначе совет ложно сработал бы даже на безобидном случае "второй источник дал
+            # только уже существующие файлы".
+            if level == "workdir" and len(unique_sources_by_album.get(album, ())) >= 2:
+                parts.append(
+                    '<p class="muted">Из этих мест в альбом попадают разные, не повторяющиеся '
+                    'файлы — возможно, это на самом деле разные альбомы. Стоит проверить и, '
+                    'если нужно, развести их по отдельности до реальной сборки — потом это '
+                    'будет уже переделкой готовой структуры.</p>'
+                )
 
     # Пункт B.2 ("большой разбор report.html", SESSION-HANDOFF.txt): список запароленных
     # архивов с полным путём -- раньше был только счётчик (см. print_analyze_report()/
@@ -1566,18 +1779,32 @@ def _render_this_run(run_stats: dict, level: str = "target") -> str:
         parts.append(f'<p class="muted">{paths}{more}. Программа не подбирает пароли -- '
                       'распакуйте вручную и запустите сборку ещё раз, чтобы попало и содержимое.</p>')
 
-    # Живой репорт пользователя (2026-08-01): классическая DVD-Video-структура (VIDEO_TS/*.vob)
-    # не распознаётся программой как медиа вообще (см. SESSION-HANDOFF.txt, отложенная идея про
-    # полноценную поддержку) -- не молчим про это, тот же паттерн, что и у запароленных архивов
-    # чуть выше.
-    dvd_folders = run_stats.get("dvd_folders") or []
-    if dvd_folders:
-        parts.append('<p><b>DVD-видео (VIDEO_TS) — не скопировано:</b></p>')
-        dvd_paths = "; ".join(_file_link_or_text(html.escape(p), p) for p in sorted(set(dvd_folders))[:TOP_N])
-        dvd_more = (f" и ещё {len(set(dvd_folders)) - TOP_N}"
-                    if len(set(dvd_folders)) > TOP_N else "")
-        parts.append(f'<p class="muted">{dvd_paths}{dvd_more}. Формат DVD-Video сейчас не '
-                      'поддерживается -- при желании скопируйте видео в архив вручную.</p>')
+    # 2026-08-07: DVD-Video (VIDEO_TS) теперь копируется целиком как один юнит
+    # (Albums/<имя>/VIDEO_TS/...), не просто упоминается как "не скопировано" -- см. секцию
+    # "DVD-VIDEO UNITS" в photosort_win.py. dvd_units_copied -- новые диски этого прогона (их
+    # файлы уже учтены в appended_videos/n_new_total выше -- здесь только явное упоминание,
+    # что это именно DVD-диски, не обычные видео). dvd_units_skipped_duplicate -- диски, уже
+    # архивированные раньше, пропущены целиком -- "объединение недопустимо" (прямое
+    # требование пользователя), либо копируется весь диск, либо не копируется вовсе.
+    dvd_copied = run_stats.get("dvd_units_copied") or []
+    if dvd_copied:
+        parts.append('<p><b>DVD-видео (VIDEO_TS) — скопировано целиком:</b></p>')
+        items_html = "; ".join(
+            f'{_file_link_or_text(html.escape(u["name"]), u["dest_path"])} '
+            f'({_n_files(u["n_files"])})'
+            for u in sorted(dvd_copied, key=lambda u: u["name"])[:TOP_N]
+        )
+        more = f" и ещё {len(dvd_copied) - TOP_N}" if len(dvd_copied) > TOP_N else ""
+        parts.append(f'<p class="muted">{items_html}{more}.</p>')
+
+    dvd_dup = run_stats.get("dvd_units_skipped_duplicate") or []
+    if dvd_dup:
+        parts.append('<p><b>DVD-видео (VIDEO_TS) — уже в архиве, пропущено:</b></p>')
+        dup_names = "; ".join(html.escape(u["name"])
+                               for u in sorted(dvd_dup, key=lambda u: u["name"])[:TOP_N])
+        more = f" и ещё {len(dvd_dup) - TOP_N}" if len(dvd_dup) > TOP_N else ""
+        parts.append(f'<p class="muted">{dup_names}{more} — такой же диск уже есть в архиве, '
+                      'повторно скопирован не был.</p>')
 
     # "Альбом умер" -- источник целиком совпал с уже существующим содержимым архива: столько
     # файлов встретилось (source_album_seen), сколько реально дописалось (source_album_appended,
@@ -1762,16 +1989,11 @@ def _render_sheet2(model: dict) -> str:
         parts.append(years_svg)
     else:
         parts.append('<p class="muted">Недостаточно данных для графика.</p>')
-    gap_year = _find_year_gap(model["years"])
-    if gap_year is not None:
-        # Тон -- нейтральное наблюдение с намёком, НЕ утверждение и НЕ "проблема архива"
-        # (раздел 6 ТЗ, антипримеры) -- та же дисциплина тона, что уже принята для
-        # unreadable.csv/disputes.csv в остальном отчёте.
-        parts.append(
-            f'<p class="muted">Похоже, за {gap_year} год сохранилось заметно меньше снимков, '
-            f'чем за соседние годы — возможно, часть этих воспоминаний ждёт на другом диске '
-            f'или карте памяти.</p>'
-        )
+    # SESSION-HANDOFF.txt п.10 (2026-08-05, боевой прогон): раньше здесь же дублировался тот же
+    # сигнал (_find_year_gap()), что уже показывает пункт «Рекомендаций» в конце отчёта
+    # (_render_analyze_recommendations(), формулировка с конкретным действием "стоит
+    # проанализировать и его перед реальной сборкой") -- убрана именно ЭТА копия, под графиком,
+    # вторая (в «Рекомендациях») уместнее там (конец отчёта, «что делать дальше»).
     parts.append("</div>")
 
     # 2026-07-26, по просьбе пользователя: "Дубли" на диаграмме "Итог решений
@@ -1802,13 +2024,25 @@ def _render_sheet2(model: dict) -> str:
             ("Видео", model["bytes_by_kind"]["video"], CATEGORY_PALETTE[1]),
             ("RAW", model["bytes_by_kind"]["raw"], CATEGORY_PALETTE[2]),
         ], _fmt_bytes, ""),
-        ("Итог решений программы", [
-            ("Новые файлы", model["decisions"]["appended"], CATEGORY_PALETTE[0]),
-            ("Дубли", model["decisions"]["skipped_present"], CATEGORY_PALETTE[1]),
-            ("Похожие кадры сохранены", model["decisions"]["near_dup"], CATEGORY_PALETTE[2]),
-            ("Не прочитано", model["decisions"]["unreadable"], CATEGORY_PALETTE[3]),
-            ("Спорные", model["decisions"]["disputed"], CATEGORY_PALETTE[4]),
-        ], _n_files, dup_type_caption),
+    ]
+    # SESSION-HANDOFF.txt п.8 (2026-08-05, боевой прогон): "Итог решений программы" требует
+    # реального прохода дедупа (predicted_unique_count/n_exact_dupes/n_near_dupes) -- CLI
+    # `analyze` маппится на внутренний mode=="analyze-quick" (см. _CLI_ANALYZE_MODE_MAP в
+    # photosort_win.py), который его не делает: "Новые файлы"/"Дубли"/"Похожие кадры"/"Спорные"
+    # были бы всегда 0, диаграмма вырождалась в обманчивые "100% Не прочитано" вместо честного
+    # скрытия (unreadable может быть ненулевым даже в quick-режиме, общий механизм "пустая
+    # категория скрывается сама" здесь не срабатывает). Паспорт архива (self-scan, внутренний
+    # mode=="analyze" буквально) не задет -- там дедуп-проход реально идёт.
+    if not model.get("is_analyze_quick"):
+        pie_charts.append((
+            "Итог решений программы", [
+                ("Новые файлы", model["decisions"]["appended"], CATEGORY_PALETTE[0]),
+                ("Дубли", model["decisions"]["skipped_present"], CATEGORY_PALETTE[1]),
+                ("Похожие кадры сохранены", model["decisions"]["near_dup"], CATEGORY_PALETTE[2]),
+                ("Не прочитано", model["decisions"]["unreadable"], CATEGORY_PALETTE[3]),
+                ("Спорные", model["decisions"]["disputed"], CATEGORY_PALETTE[4]),
+            ], _n_files, dup_type_caption))
+    pie_charts.extend([
         # REVIEW-HANDOFF.md, Раунд 32, задача 1: RAW-файлы не участвуют в tier-расчёте
         # (dated_media_count = counts["image"]+counts["video"] выше, tier для raw_mirrored
         # реально вычисляется в photosort_win.py, но не персистируется -- осознанное
@@ -1828,7 +2062,7 @@ def _render_sheet2(model: dict) -> str:
             ("Маленькие фото", model["quality_flags"].get("small_image", 0), CATEGORY_PALETTE[1]),
             ("Низкая уверенность", model["quality_flags"].get("low_confidence_photo", 0), CATEGORY_PALETTE[3]),
         ], _n_files, ""),
-    ]
+    ])
 
     # Раскладка по типу подачи, не просто "рядом чтобы компактно" (решение пользователя
     # 2026-07-20): круговые диаграммы -- у всех подпись сбоку (circle+legend, одна визуальная
@@ -2382,7 +2616,8 @@ def _render_dedup_verification_page(data: dict) -> str:
 
 
 def generate_dedup_verification_page(data: dict, report_out_path: str,
-                                      program_name: str = "PhotoArchive") -> str:
+                                      program_name: str = "PhotoArchive",
+                                      app_version: str = None) -> str:
     """Пишет файл-сосед report_out_path (тот же каталог, DEDUP_VERIFICATION_FILENAME) --
     полная построчная сверка "какой файл в архиве откуда, какие файлы источника были его
     дублями" (см. _cluster_exact_dup_full()), для пользователя, который не принимает
@@ -2394,7 +2629,7 @@ def generate_dedup_verification_page(data: dict, report_out_path: str,
     if not body:
         return None
     out_path = os.path.join(os.path.dirname(report_out_path), DEDUP_VERIFICATION_FILENAME)
-    _write(out_path, _page_shell(f"{program_name} — сверка дублей", body))
+    _write(out_path, _page_shell(f"{program_name} — сверка дублей", body, app_version=app_version))
     return DEDUP_VERIFICATION_FILENAME
 
 
@@ -2528,7 +2763,18 @@ def build_model_from_analyze_stats(stats) -> dict:
 
     return {
         "counts": counts,
-        "bytes_by_kind": Counter(),  # AnalyzeStats не хранит байты по типу медиа
+        # SESSION-HANDOFF.txt п.9 (2026-08-05, боевой прогон): раньше AnalyzeStats не хранил
+        # байты по типу медиа вовсе (пустой Counter -- "Объём по категориям" всегда скрыта) --
+        # stats.bytes_by_kind теперь считается тем же проходом, что и n_images/n_raw/n_videos.
+        "bytes_by_kind": Counter(stats.bytes_by_kind),
+        # SESSION-HANDOFF.txt п.8 (2026-08-05, боевой прогон): predicted_unique_count/
+        # n_exact_dupes/n_near_dupes (decisions ниже) заполняются только при mode=="analyze"
+        # (Паспорт архива/self-scan) -- CLI analyze маппится на "analyze-quick" (см.
+        # _CLI_ANALYZE_MODE_MAP), для него это условие никогда не истинно, "Итог решений
+        # программы" вырождается (всё 0, кроме "Не прочитано"). _render_sheet2() скрывает эту
+        # диаграмму целиком, когда is_analyze_quick=True -- не полагается на общий механизм
+        # "пустая категория скрывается сама", т.к. unreadable может быть ненулевым.
+        "is_analyze_quick": stats.mode == "analyze-quick",
         # Пакет п.2 (SESSION-HANDOFF.txt): stats.total_bytes -- реальный объём просканированного
         # SOURCE (уже пишется в analyze_report.csv на каждый [1]/analyze* прогон), не
         # stats.predicted_unique_bytes -- та величина считает "что добавилось бы после дедупа"
@@ -2540,6 +2786,14 @@ def build_model_from_analyze_stats(stats) -> dict:
         # источника для кумулятивной длительности видео здесь нет, плашка просто не появится.
         "video_duration_seconds": 0.0,
         "total_media": stats.n_images + stats.n_videos + stats.n_raw,
+        # SESSION-HANDOFF.txt п.4 (2026-08-05, боевой прогон): общее число объектов
+        # (папка+архив) + разбивка файлов по месту (root/folder/archive) -- см.
+        # AnalyzeStats.n_objects_total/files_by_location за тем, как считается.
+        "n_objects_total": stats.n_objects_total,
+        "files_by_location": Counter(stats.files_by_location),
+        # SESSION-HANDOFF.txt (2026-08-05, боевой прогон, разбор накопления п.3а): та же
+        # разбивка, но байтами -- см. AnalyzeStats.bytes_by_location.
+        "bytes_by_location": Counter(stats.bytes_by_location),
         "years": Counter(stats.dates_by_year),
         "year_months": Counter(stats.dates_by_year_month),
         # 2026-07-31: analyze/analyze-quick/analyze-full теперь тоже резолвят GPS -> место
@@ -2572,6 +2826,10 @@ def build_model_from_analyze_stats(stats) -> dict:
         # перезаписывает WORKDIR\report.html, "один слот, не персистентно per-источник",
         # см. photosort_win.py:_main()) -- честно ограничиться тем, что реально измеримо.
         "archives_found": stats.n_archives_found,
+        # 2026-08-06, боевой прогон: archives_found считает ЛЮБОЙ архив-контейнер (в т.ч. пустые
+        # от медиа/битые/запароленные) -- для текста "часть памяти лежит в архивах" (см.
+        # _render_cta_block()) нужно именно то, что реально дало хоть один медиафайл.
+        "archives_with_media": stats.n_archives_with_media,
         # Пункт B.2 ("большой разбор report.html", SESSION-HANDOFF.txt): полные пути
         # запароленных архивов, не только счётчик выше.
         "encrypted_archive_paths": list(stats.encrypted_archive_paths),
@@ -2582,12 +2840,20 @@ def build_model_from_analyze_stats(stats) -> dict:
         # для отдельного блока "На этом диске найден архив", теперь этот блок для analyze не
         # рендерится вообще (см. photosort_win.py:_finalize_analyze_report()) -- поле здесь
         # используется только для рекомендации ниже.
-        "found_archive_count": len(stats.found_archive_top_level),
-        # 2026-07-31, пункт I: (root_path, n_files) -- реально исключено из ЭТОЙ статистики
-        # (SourceWalker.excluded_found_archives) -- пусто, если cfg.
-        # include_found_archives_in_analyze включён явно (тогда используется found_archive_count
-        # выше, старая формулировка).
-        "excluded_found_archives": list(stats.excluded_found_archives),
+        # SESSION-HANDOFF.txt п.7 (2026-08-05, боевой прогон): analyze больше не исключает
+        # содержимое найденного архива из статистики (SourceWalker больше не умеет это делать
+        # вовсе, см. photosort_win.py) -- пути нужны рекомендации, чтобы указать, ГДЕ архив
+        # найден, "excluded_found_archives"/"found_archive_count" (старые, взаимоисключающие
+        # формулировки "исключено"/"дублирования не будет") больше не нужны.
+        "found_archive_paths": list(stats.found_archive_top_level),
+        # SESSION-HANDOFF.txt, 2026-08-07 (группировка альбом/дата): XX -- уже исправленный
+        # n_albums_detected (см. AnalyzeStats/фикс точности по album_prefix), YY/QQ --
+        # медиафайлы в альбомах/по дате, ZZ -- число РАЗНЫХ обычных (не-альбомных) папок,
+        # содержащих медиа (len() Counter, не сам Counter -- см. _render_cta_block()).
+        "n_albums_detected": stats.n_albums_detected,
+        "n_media_in_albums": stats.n_media_in_albums,
+        "n_regular_folders": len(stats.bydate_media_by_folder),
+        "n_media_by_date": stats.n_media_by_date,
     }
 
 
@@ -2601,13 +2867,9 @@ def _render_analyze_recommendations(model: dict) -> str:
     что у остальных необязательных карточек отчёта."""
     items = []
 
-    total_bytes = model.get("total_bytes", 0)
-    if total_bytes:
-        items.append(_li(
-            f"Архиву потребуется примерно {_fmt_bytes(total_bytes)}",
-            "Проверьте, что на диске назначения есть столько свободного места.",
-        ))
-
+    # SESSION-HANDOFF.txt п.6 (2026-08-05, боевой прогон): "Архиву потребуется примерно N ГБ"
+    # убран целиком -- прямой дубликат total_bytes, который уже показан плиткой статистики в
+    # самом верху отчёта (см. _render_sheet1()) -- пользователь явно попросил не повторять.
     gap_year = _find_year_gap(model.get("years") or Counter())
     if gap_year is not None:
         items.append(_li(
@@ -2616,29 +2878,21 @@ def _render_analyze_recommendations(model: dict) -> str:
             "и его перед реальной сборкой.",
         ))
 
-    # 2026-07-31, пункт I: excluded_found_archives -- по умолчанию (cfg.
-    # include_found_archives_in_analyze не включён явно) содержимое найденного архива
-    # исключается из этой статистики, старая формулировка ("дублирования не будет") тогда
-    # вводила бы в заблуждение -- эта статистика его вообще не видела. Взаимоисключающе с
-    # found_archive_count ниже -- одно и то же событие, разное объяснение в зависимости от
-    # того, что реально произошло с этим содержимым.
-    excluded = model.get("excluded_found_archives") or []
-    if excluded:
-        n_files = sum(n for _, n in excluded)
-        if len(excluded) == 1:
-            where = f" ({html.escape(excluded[0][0])})"
+    # SESSION-HANDOFF.txt п.7 (2026-08-05, боевой прогон): раньше это содержимое исключалось из
+    # статистики (excluded_found_archives/found_archive_count -- две взаимоисключающие
+    # формулировки для "исключено"/"не исключено"), теперь analyze всегда считает ВСЁ
+    # содержимое SOURCE, включая найденный архив -- единственная оставшаяся формулировка просто
+    # называет путь(и) и подсказывает, где посмотреть детали именно ЭТОГО архива.
+    found_paths = model.get("found_archive_paths") or []
+    if found_paths:
+        if len(found_paths) == 1:
+            where = f" ({html.escape(found_paths[0])})"
         else:
-            where = f" в {len(excluded)} {_plural(len(excluded), 'месте', 'местах', 'местах')}"
+            where = f" в {len(found_paths)} {_plural(len(found_paths), 'месте', 'местах', 'местах')}"
         items.append(_li(
-            f"На источнике уже есть собранный архив{where} — исключён из этой статистики",
-            f"{_n_files(n_files)} не учтены в числах этого анализа, чтобы не искажать картину "
-            "по тому, что реально анализируется. Чтобы проверить сам этот архив — "
-            "используйте «Паспорт архива» отдельно.",
-        ))
-    elif model.get("found_archive_count", 0):
-        items.append(_li(
-            "На этом источнике уже есть собранный архив",
-            "Новые файлы просто добавятся к уже собранному архиву — дублирования не будет.",
+            f"На источнике уже есть собранный архив{where}",
+            "Новые файлы просто добавятся к нему — дублирования не будет. Чтобы детально "
+            "проверить сам этот архив — используйте «Паспорт архива» отдельно.",
         ))
 
     n_series = len(model.get("near_dup_clusters") or [])
@@ -2648,13 +2902,6 @@ def _render_analyze_recommendations(model: dict) -> str:
             "похожих кадров",
             "При сборке ни один из них не удалится — программа сохраняет оба варианта, "
             "если сомневается.",
-        ))
-
-    approx = model.get("tier_counts", Counter()).get("C", 0)
-    if approx:
-        items.append(_li(
-            f"У {_n_files(approx)} дата определена приблизительно",
-            "При сборке они всё равно попадут в архив.",
         ))
 
     # Пункт B.2: полные пути запароленных архивов, не только счётчик.
@@ -2668,6 +2915,54 @@ def _render_analyze_recommendations(model: dict) -> str:
             "чтобы попало и содержимое.",
         ))
 
+    return _render_checklist_card("Рекомендации", items)
+
+
+def _render_dryrun_structure_recommendations(run_stats: dict) -> str:
+    """Задача B (SESSION-HANDOFF.txt, "проактивные советы для [2] Пробный прогон"): подсказка
+    для альбома, чья внутренняя структура (широкий разброс по годам/камерам/дата-подпапкам,
+    имя-намёк на облачную синхронизацию) больше похожа на автоматически синхронизированный
+    накопитель, чем на курируемый пользователем альбом -- тот же класс папок, что уже решается
+    ручным переименованием с "~" (см. FAQ.md, "Как заставить программу принудительно НЕ
+    считать конкретную папку альбомом?"), просто без того, чтобы пользователь САМ заметил
+    такую папку среди остальных.
+
+    run_stats["album_profiles"] (photosort_win.py:_process_record()) пишется БЕЗУСЛОВНО для
+    любого альбома, порог/лимит (REC_MIN_FILES/REC_STRUCT_MAX) и сам список
+    CLOUDLIKE_ALBUM_HINTS применяются только здесь, на рендере -- см. их же докстринг про
+    "рабочая гипотеза, калибровка по факту боевого прогона"."""
+    profiles = run_stats.get("album_profiles") or {}
+    flagged = []
+    for profile in profiles.values():
+        n = profile.get("n", 0)
+        if n < REC_MIN_FILES:
+            continue
+        name = profile.get("name") or ""
+        signals = 0
+        if len(profile.get("years") or ()) >= 4:
+            signals += 1
+        if len(profile.get("date_subdirs") or ()) >= 3:
+            signals += 1
+        if len(profile.get("cameras") or ()) >= 3:
+            signals += 1
+        lname = name.lower()
+        if any(hint in lname for hint in CLOUDLIKE_ALBUM_HINTS):
+            signals += 1
+        if signals >= 2:
+            flagged.append((n, name))
+    if not flagged:
+        return ""
+    flagged.sort(key=lambda t: -t[0])
+    items = [
+        _li(
+            f'«{name}» похож на папку облачной синхронизации, а не на один альбом',
+            f'{_n_files(n)}, разбросанных по нескольким годам/камерам/датам — если это '
+            f'накопленная свалка, а не отдельный альбом, переименуйте папку-источник, добавив '
+            f'«~» в начало имени («~{html.escape(name)}»), и содержимое разложится по дате при '
+            'реальной сборке. Если это осознанно один большой альбом — ничего делать не нужно.',
+        )
+        for n, name in flagged[:REC_STRUCT_MAX]
+    ]
     return _render_checklist_card("Рекомендации", items)
 
 
@@ -2731,19 +3026,57 @@ def _render_cta_block(level: str, target_path: str = None, model: dict = None) -
         )
     elif level == "analyze" and model is not None:
         years = model.get("years") or Counter()
-        span = (max(years) - min(years) + 1) if years else 0
+        # 2026-08-06, боевой прогон: этот блок использовал сырой календарный охват
+        # (max-min+1), не учитывающий пустые годы внутри диапазона -- тот же баг, что уже
+        # исправлен для плитки "N лет истории" (Sheet1) и Паспорта архива (см.
+        # _covered_year_span()/п.5 накопления 2026-08-05), но здесь пропущен при том фиксе.
+        span = _covered_year_span(years) if years else 0
         years_label = f'{span} {_plural(span, "год", "года", "лет")}' if span else "Эта"
-        archives_found = model.get("archives_found", 0)
+        # 2026-08-06, боевой прогон: archives_found (n_archives_found) считает ЛЮБОЙ архив-
+        # контейнер, включая пустые от медиа/битые/запароленные -- живой пример поймал случай,
+        # когда источник (папка веб-проекта) содержал 108 таких архивов, ни один из которых не
+        # дал ни одного медиафайла (все files_by_location легли в "папки") -- этот текст говорил
+        # "108 отдельных архивов ... сборка соберёт всё это", хотя собирать было нечего. Здесь
+        # нужно именно archives_with_media (только archive_extracted, см. AnalyzeStats).
+        archives_found = model.get("archives_with_media", 0)
         total_bytes = model.get("total_bytes", 0)
+        # SESSION-HANDOFF.txt, 2026-08-07 (группировка альбом/дата в analyze-отчёте): агрегат
+        # без дерева/списка имён альбомов -- сколько папок-альбомов нашлось и сколько медиа в
+        # них, отдельно сколько обычных (не-альбомных) папок разложится по дате и сколько в них
+        # медиа. n_albums_detected (см. AnalyzeStats) считается по album_prefix (полный путь),
+        # не по голому имени -- см. фикс точности того же дня.
+        n_albums = model.get("n_albums_detected", 0)
+        n_media_albums = model.get("n_media_in_albums", 0)
+        n_regular_folders = model.get("n_regular_folders", 0)
+        n_media_by_date = model.get("n_media_by_date", 0)
+        if n_albums or n_regular_folders:
+            which = "которая разложится" if n_regular_folders == 1 else "которые разложатся"
+            parts.append(
+                f'<p class="muted">Найдено {n_albums} '
+                f'{_plural(n_albums, "папка-альбом", "папки-альбома", "папок-альбомов")} с '
+                f'{n_media_albums} '
+                f'{_plural(n_media_albums, "медиафайлом", "медиафайлами", "медиафайлами")} '
+                f'и {n_regular_folders} '
+                f'{_plural(n_regular_folders, "обычная папка", "обычные папки", "обычных папок")}, '
+                f'{which} по дате, с {n_media_by_date} '
+                f'{_plural(n_media_by_date, "файлом", "файлами", "файлами")}.</p>'
+            )
         if archives_found:
             # Уменьшенная версия предложения ревизора: считаем архивы (zip/rar) ТОЛЬКО внутри
-            # этого источника (AnalyzeStats.n_archives_found) -- report.html для analyze
+            # этого источника (AnalyzeStats.n_archives_with_media) -- report.html для analyze
             # архитектурно не помнит предыдущие источники, "M мест" по нескольким прогонам не
             # посчитать честно (см. докстринг build_model_from_analyze_stats()).
             arch_label = _plural(archives_found, "отдельном архиве", "отдельных архивах", "отдельных архивах")
+            # SESSION-HANDOFF.txt п.4 (2026-08-05, боевой прогон): "не только россыпью" считает,
+            # что что-то лежит ВНЕ архивов -- раньше это предполагалось безусловно, просто по
+            # archives_found>0, без проверки. files_by_location (см. AnalyzeStats) теперь честно
+            # различает случай "источник целиком состоит из архивов" (россыпи нет вообще).
+            files_by_location = model.get("files_by_location") or Counter()
+            has_loose_files = bool(files_by_location.get("root") or files_by_location.get("folder"))
+            scatter_clause = "лежат не только россыпью, но ещё и" if has_loose_files else "лежат"
             parts.append(
                 f'<p class="muted">Прямо сейчас {years_label.lower()} памяти на этом диске '
-                f'лежат не только россыпью, но ещё и в {archives_found} {arch_label} (zip/rar) '
+                f'{scatter_clause} в {archives_found} {arch_label} (zip/rar) '
                 '— каждый из них может испортиться независимо от остальных, и вы не узнаете об '
                 'этом, пока не станет поздно. Сборка соберёт всё это в одном месте, которое '
                 'проще защитить одним действием, чем следить за несколькими.</p>'
@@ -2770,7 +3103,8 @@ def _generate_from_model(model: dict, out_path: str, level: str, program_name: s
                           run_stats: dict = None, checklist_new: dict = None,
                           found_archives: tuple = None,
                           target_path: str = None, interrupted: bool = False,
-                          full_workdir: bool = False, verify_link: str = None) -> None:
+                          full_workdir: bool = False, verify_link: str = None,
+                          app_version: str = None) -> None:
     # level=="workdir" (CLI --dry-run/интерактивный [2], решение пользователя 2026-07-20,
     # третий заход) -- по умолчанию ТОЛЬКО часть 1 ("Пробный прогон" + рекомендации по нему),
     # без "Ваш архив"/диаграмм: и содержательно нечего показывать (для [2] данные чисто
@@ -2793,7 +3127,9 @@ def _generate_from_model(model: dict, out_path: str, level: str, program_name: s
     # значения, а передаётся явным параметром.
     if level == "workdir" and not full_workdir:
         fields = checklist_new if checklist_new is not None else model
-        body = _render_this_run(run_stats, level) + _render_sheet3_single(fields, level)
+        body = (_render_this_run(run_stats, level)
+                + _render_dryrun_structure_recommendations(run_stats or {})
+                + _render_sheet3_single(fields, level))
     # level=="analyze" (никогда не передаёт run_start, checklist_new всегда None здесь) --
     # единственный оставшийся потребитель полной кумулятивной картины (Sheet1/Sheet2, "Что
     # нашлось на этом диске") -- это ОДНОразовый скан SOURCE, не история архива, "паспорт"
@@ -2847,13 +3183,14 @@ def _generate_from_model(model: dict, out_path: str, level: str, program_name: s
     # целиком, по прямой просьбе пользователя), не после него.
     if interrupted:
         body = _render_interrupted_banner() + body
-    _write(out_path, _page_shell(f"{program_name} — отчёт архива", body))
+    _write(out_path, _page_shell(f"{program_name} — отчёт архива", body, app_version=app_version))
 
 
 def generate_report(data: dict, out_path: str, level: str = "target",
                      program_name: str = "PhotoArchive", run_stats: dict = None,
                      run_start: str = None, target_path: str = None,
-                     interrupted: bool = False, full_workdir: bool = False) -> None:
+                     interrupted: bool = False, full_workdir: bool = False,
+                     app_version: str = None) -> None:
     """level: "target" (полный archive-прогон) | "workdir" ([2]/--dry-run) — оба читают
     dict[str, list[dict]] (CSV TARGET или CollectingRunLogs.rows). Для
     analyze/analyze-full/analyze-quick см. generate_report_from_analyze_stats().
@@ -2895,22 +3232,32 @@ def generate_report(data: dict, out_path: str, level: str = "target",
     # 2026-07-26: только level=="target" -- реальный архив на диске, единственный случай,
     # где "полная сверка дублей" (путь+имя каждого файла) вообще что-то значит для
     # пользователя (workdir/analyze -- in-memory прогон, файлы ещё не скопированы).
-    verify_link = generate_dedup_verification_page(data, out_path, program_name) if level == "target" else None
+    verify_link = (generate_dedup_verification_page(data, out_path, program_name,
+                                                      app_version=app_version)
+                   if level == "target" else None)
     _generate_from_model(model, out_path, level, program_name, run_stats=run_stats,
                           checklist_new=checklist_new,
                           target_path=target_path, interrupted=interrupted,
-                          full_workdir=full_workdir, verify_link=verify_link)
+                          full_workdir=full_workdir, verify_link=verify_link,
+                          app_version=app_version)
 
 
 def generate_report_from_analyze_stats(stats, out_path: str, level: str = "analyze",
                                         program_name: str = "PhotoArchive",
-                                        found_archives: tuple = None) -> None:
+                                        found_archives: tuple = None,
+                                        interrupted: bool = False,
+                                        app_version: str = None) -> None:
     """found_archives: (top_level: list[str], nested: dict[str, list[str]]) -- уже
     классифицированные photosort_win.classify_found_archives() пути найденных архивов внутри
     просканированного SOURCE (ROADMAP.md, analyze как "2 части"). None/([], {}) -- часть 2 не
-    рендерится вообще (ничего не найдено, либо старые вызовы без этого параметра)."""
+    рендерится вообще (ничего не найдено, либо старые вызовы без этого параметра).
+
+    interrupted (2026-08-07, Ctrl+C-пакет распространён с архивного report.generate_report()
+    на analyze-отчёты): stats -- снимок на момент прерывания (photosort_win.py:run_analyze()),
+    та же семантика, что и у interrupted= там."""
     model = build_model_from_analyze_stats(stats)
-    _generate_from_model(model, out_path, level, program_name, found_archives=found_archives)
+    _generate_from_model(model, out_path, level, program_name, found_archives=found_archives,
+                          interrupted=interrupted, app_version=app_version)
 
 
 # ============================================================================
@@ -2952,7 +3299,7 @@ def _render_passport_summary(stats, target_path: str = None) -> str:
                            f'<div class="label">{_plural(n, "альбом", "альбома", "альбомов")}</div></div>')
     years = stats.dates_by_year
     if years:
-        span = max(years) - min(years) + 1
+        span = _covered_year_span(years)
         stat_items.append(f'<div class="stat"><div class="value">{span}</div>'
                            f'<div class="label">{_plural(span, "год", "года", "лет")} истории</div></div>')
     parts.append('<div class="stat-row">' + "".join(stat_items) + '</div>')
@@ -3249,7 +3596,8 @@ def _render_passport_verification_page(exact_multi: list, near_multi: list, targ
 
 
 def generate_passport_verification_page(stats, out_path: str, target_path: str = None,
-                                         program_name: str = "PhotoArchive") -> str:
+                                         program_name: str = "PhotoArchive",
+                                         app_version: str = None) -> str:
     """Пишет файл-сосед out_path (PASSPORT_VERIFICATION_FILENAME) -- полная построчная сверка
     дублей/похожих серий, найденных внутри архива этим сканированием. Возвращает имя файла
     (относительный href для ссылки из паспорта) или None, если показывать нечего (только
@@ -3263,7 +3611,8 @@ def generate_passport_verification_page(stats, out_path: str, target_path: str =
     if not body:
         return None
     verify_out_path = os.path.join(os.path.dirname(out_path), PASSPORT_VERIFICATION_FILENAME)
-    _write(verify_out_path, _page_shell(f"{program_name} — полная сверка паспорта", body))
+    _write(verify_out_path, _page_shell(f"{program_name} — полная сверка паспорта", body,
+                                         app_version=app_version))
     return PASSPORT_VERIFICATION_FILENAME
 
 
@@ -3322,7 +3671,9 @@ def _render_passport_charts(stats) -> str:
 
 
 def generate_passport_report(stats, out_path: str, target_path: str = None,
-                              program_name: str = "PhotoArchive") -> None:
+                              program_name: str = "PhotoArchive",
+                              interrupted: bool = False,
+                              app_version: str = None) -> None:
     """[4] Паспорт архива (photosort_win.py:run_passport()) -- отдельный формат "с нуля", НЕ
     наследует _generate_from_model()/Sheet1-3 (SESSION-HANDOFF.txt, design-сессия 2026-07-31):
     паспорт не про "что сделал этот прогон" (нечего делать, read-only), а про "насколько цел
@@ -3333,14 +3684,20 @@ def generate_passport_report(stats, out_path: str, target_path: str = None,
     что уже питает generate_report_from_analyze_stats(), здесь просто другой рендер поверх тех
     же данных, без found_archives/checklist-инфраструктуры обычного отчёта (архивы, найденные
     ВНУТРИ TARGET, у паспорта — сами по себе строка целостности, см.
-    _render_passport_integrity(), не отдельная "часть 2")."""
-    body = _render_trust_block("target", stats.n_broken_or_zero)
+    _render_passport_integrity(), не отдельная "часть 2").
+
+    interrupted (2026-08-07, Ctrl+C-пакет): _generate_from_model() не участвует в этом рендере
+    (см. выше), баннер прерывания здесь прикладывается вручную, тем же принципом ("самая первая
+    строка отчёта", см. _generate_from_model())."""
+    body = _render_interrupted_banner() if interrupted else ""
+    body += _render_trust_block("target", stats.n_broken_or_zero)
     body += _render_passport_summary(stats, target_path)
     # Задачи 4/5, речь пользователя 2026-08-02: страница "Полная сверка" пишется ДО основного
     # тела (тот же порядок, что уже использует _finalize_target_report() для обычного
     # пополнения, photosort_win.py) -- verify_link должен быть уже готов к моменту рендера
     # "Целостности архива" ниже, не задним числом.
-    verify_link = generate_passport_verification_page(stats, out_path, target_path, program_name)
+    verify_link = generate_passport_verification_page(stats, out_path, target_path, program_name,
+                                                        app_version=app_version)
     body += _render_passport_integrity(stats, target_path, verify_link)
     if stats.dates_by_year:
         svg = _svg_year_hbar_chart(Counter(stats.dates_by_year))
@@ -3353,4 +3710,4 @@ def generate_passport_report(stats, out_path: str, target_path: str = None,
     # паспорт получает диаграмму без похода в историю CSV-логов, тем же принципом "с нуля".
     body += _render_geo_card(stats.cities)
     body += _render_archive_tree_card(stats.tree_folder_counts, stats.tree_folder_bytes)
-    _write(out_path, _page_shell(f"{program_name} — паспорт архива", body))
+    _write(out_path, _page_shell(f"{program_name} — паспорт архива", body, app_version=app_version))

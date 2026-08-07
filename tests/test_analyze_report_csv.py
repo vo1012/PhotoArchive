@@ -14,7 +14,6 @@ def test_write_analyze_report_csv_skips_structural_fields(tmp_path):
     stats.dump_items_by_folder = Counter({"foo": 2})
     stats.near_dup_edges = [{"source": "a.jpg"}]
     stats.found_archive_top_level = ["/some/archive"]
-    stats.found_archive_nested = {"/some/archive": ["/some/archive/Albums/x"]}
 
     out_path = tmp_path / "analyze_report.csv"
     m.write_analyze_report_csv(str(out_path), stats)
@@ -25,7 +24,7 @@ def test_write_analyze_report_csv_skips_structural_fields(tmp_path):
     assert rows["total_files"] == "5"
     assert rows["mode"] == "analyze"
     for structural_field in ("dump_items_by_folder", "near_dup_edges",
-                              "found_archive_top_level", "found_archive_nested"):
+                              "found_archive_top_level"):
         assert structural_field not in rows
 
 
@@ -45,7 +44,7 @@ def test_write_dryrun_report_csv_skips_structural_fields(tmp_path):
     stats = {
         "appended_images": 3, "appended_videos": 1, "bytes_appended": 12345,
         "free_disk_bytes": 999,
-        "album_merge_events": [("Album", "prefix")],
+        "album_merge_events": [("Album", "prefix", False)],
         "source_album_seen": {"Album": 2},
     }
     out_path = tmp_path / "dryrun_report.csv"
