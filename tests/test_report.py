@@ -574,6 +574,31 @@ def test_render_this_run_raw_included_in_new_files_total_with_breakdown():
     assert "в т.ч.: фото — 5 файлов, RAW — 3 файла, видео — 2 файла" in html_out
 
 
+def test_render_this_run_new_files_tile_excludes_near_dup_matches_chart_number():
+    """Пакет B п.9 (SESSION-HANDOFF.txt, живая находка при чтении реального report.html):
+    тайл "N новых файлов добавлено" раньше включал near-dup (appended_near_dup/better/crop),
+    а диаграмма ниже ("Новые файлы — в архиве") их исключала -- два разных числа без
+    объяснения разницы, хотя математически согласованы. Тайл теперь показывает СТРОГО новое
+    число (без near-dup) -- совпадает с диаграммой; near-dup уходит в отдельную сноску."""
+    run_stats = {
+        "appended_images": 5, "appended_videos": 0,
+        "appended_near_dup": 2, "near_dup_image": 2,
+    }
+    html_out = r._render_this_run(run_stats, level="target")
+    # 5 - 2 = 3, не 5 -- тайл и диаграмма читают одно и то же число.
+    assert '<div class="value">3</div>' in html_out
+    assert '<div class="value">5</div>' not in html_out
+    assert "Новые файлы — в архиве — 3 файла" in html_out
+    assert "2 похожих кадра сохранены отдельно, см. диаграмму ниже" in html_out
+
+
+def test_render_this_run_new_files_tile_no_footnote_without_near_dup():
+    """Без near-dup вообще -- сноска не появляется (нечего пояснять)."""
+    run_stats = {"appended_images": 5, "appended_videos": 0}
+    html_out = r._render_this_run(run_stats, level="target")
+    assert "сохранены отдельно, см. диаграмму ниже" not in html_out
+
+
 def test_render_this_run_new_files_breakdown_hidden_when_single_type():
     """Если весь прирост -- одного типа (например, только фото), разбивка не добавляет
     ничего нового к уже показанному числу -- но всё равно рендерится (простое и
@@ -636,63 +661,6 @@ def test_render_this_run_legend_and_summary_hypothetical_in_preview():
     assert "Спорные — были бы сохранены отдельно, не в архиве (_Unsorted)" in html_out
     assert ("Итого: 6 файлов легло бы физически (новые + похожие + спорные), "
             "3 файла не было бы скопировано (дубли + не прочитано).") in html_out
-
-
-def test_render_this_run_album_merge_destination_is_a_path_from_archive_root():
-    """Пункт B.4 ("большой разбор report.html", SESSION-HANDOFF.txt): "куда" -- путь от корня
-    архива ("Albums\\дедушка"), не голое имя альбома -- иначе неотличимо от "откуда"."""
-    run_stats = {
-        "appended_images": 1, "appended_videos": 0,
-        "album_merge_events": [("дедушка", r"Users\HTPC\Desktop\старые фото", False)],
-    }
-    html_out = r._render_this_run(run_stats, level="target")
-    assert "«Albums\\дедушка» ←" in html_out
-    assert "«дедушка» ←" not in html_out
-
-
-def test_render_this_run_album_merge_advice_shown_for_two_unique_sources_in_preview():
-    """Задача C1 (SESSION-HANDOFF.txt): совет "возможно, это разные альбомы" -- только когда
-    >=2 источника дали РЕАЛЬНО разное (is_dup=False) содержимое, и только в [2] Пробный прогон
-    (level=="workdir"), где структуру ещё дёшево пересобрать по-другому."""
-    run_stats = {
-        "appended_images": 2, "appended_videos": 0,
-        "album_merge_events": [
-            ("дедушка", r"Люди\дедушка", False),
-            ("дедушка", r"Природа\дедушка", False),
-        ],
-    }
-    html_out = r._render_this_run(run_stats, level="workdir")
-    assert "возможно, это на самом деле разные альбомы" in html_out
-
-
-def test_render_this_run_album_merge_advice_hidden_when_second_source_is_only_a_dup():
-    """Второй источник, давший ТОЛЬКО повторный дубль (is_dup=True) -- не в счёт "разных
-    источников" для совета C1, объединение в этом случае безобидно."""
-    run_stats = {
-        "appended_images": 1, "appended_videos": 0,
-        "album_merge_events": [
-            ("дедушка", r"Люди\дедушка", False),
-            ("дедушка", r"Природа\дедушка", True),
-        ],
-    }
-    html_out = r._render_this_run(run_stats, level="workdir")
-    assert "«Albums\\дедушка» ←" in html_out
-    assert "возможно, это на самом деле разные альбомы" not in html_out
-
-
-def test_render_this_run_album_merge_advice_hidden_outside_preview():
-    """level=="target" (настоящая сборка) -- совет C1 не показывается, реальная переделка уже
-    дороже, чем во время [2] Пробный прогон (см. докстринг _render_this_run())."""
-    run_stats = {
-        "appended_images": 2, "appended_videos": 0,
-        "album_merge_events": [
-            ("дедушка", r"Люди\дедушка", False),
-            ("дедушка", r"Природа\дедушка", False),
-        ],
-    }
-    html_out = r._render_this_run(run_stats, level="target")
-    assert "«Albums\\дедушка» ←" in html_out
-    assert "возможно, это на самом деле разные альбомы" not in html_out
 
 
 def _cloudlike_profile(n=40, years=4, cameras=3, date_subdirs=0, name="Отпуск"):
@@ -1195,7 +1163,10 @@ def test_cluster_checklist_item_multi_folder_with_verify_link_uses_summary_not_p
     assert title == "Похожая серия из 2 кадров"
     assert "a.jpg" not in detail  # построчного списка путей больше нет
     assert "b.jpg" not in detail
-    assert (f'<a href="{r.DEDUP_VERIFICATION_FILENAME}" target="_blank" rel="noopener">'
+    # #dedup-near -- Пакет A п.4 (SESSION-HANDOFF.txt): без фрагмента ссылка открывала верх
+    # страницы (секцию точных дублей, если она есть), не секцию похожих серий, к которой
+    # относится эта подпись.
+    assert (f'<a href="{r.DEDUP_VERIFICATION_FILENAME}#dedup-near" target="_blank" rel="noopener">'
             "полная сверка похожих серий →</a>") in detail
 
 
@@ -1209,9 +1180,11 @@ def test_cluster_checklist_item_folder_is_a_clickable_file_link():
 
 
 def test_render_near_dup_verification_section_lists_full_cluster_without_truncation():
+    # 2026-08-08 (альбомный редизайн, вёрстка): таблица вместо карточки-на-кластер --
+    # "Кадров в серии" колонка, не заголовок "Похожая серия из N кадров".
     clusters = [[rf"C:\T\dst\Albums\A{i}\f.jpg" for i in range(7)]]  # 7 разных папок, >5
     html_out = r._render_near_dup_verification_section(clusters)
-    assert "Похожая серия из 7 кадров" in html_out
+    assert "<td>7</td>" in html_out
     for i in range(7):
         assert f"A{i}\\f.jpg" in html_out  # ни один файл не обрезан "и ещё N"
 
@@ -1229,7 +1202,7 @@ def test_render_near_dup_verification_section_excludes_single_folder_clusters():
 
     multi_folder = [[r"C:\T\dst\Albums\A\f1.jpg", r"C:\T\dst\Albums\B\f2.jpg"]]
     html_out = r._render_near_dup_verification_section(multi_folder)
-    assert "Похожая серия из 2 кадров" in html_out
+    assert "<td>2</td>" in html_out
 
 
 def test_render_dedup_verification_page_empty_when_only_single_folder_near_dup():
@@ -1261,6 +1234,44 @@ def test_render_dedup_verification_page_includes_near_dup_clusters_without_exact
     assert "a.jpg" in html_out and "b.jpg" in html_out
 
 
+def test_render_dedup_verification_page_both_sections_have_distinct_anchors(tmp_path):
+    """Пакет A п.4 (SESSION-HANDOFF.txt, живая находка из реального report.html): когда на
+    странице есть И точные дубли, И похожие серии в разных папках, "Полная сверка дублей"
+    всегда идёт ПЕРВОЙ секцией (_render_dedup_verification_page()), "Полная сверка похожих
+    серий" -- ниже. Без #id/#fragment обе ссылки-подписи из основного отчёта вели бы на верх
+    страницы (секцию дублей), даже подпись "полная сверка похожих серий →"."""
+    data = {
+        "appended": [
+            {"timestamp": "2026-01-01 00:00:01", "source": r"F:\orig\a.jpg",
+             "dest": r"C:\T\dst\Albums\Отпуск\a.jpg", "reason": "appended_new", "flags": ""},
+            {"timestamp": "2026-01-01 00:00:01", "source": "s0",
+             "dest": r"C:\T\dst\ByDate\2024\2024-06\c.jpg", "reason": "appended_new", "flags": ""},
+            {"timestamp": "2026-01-01 00:00:01", "source": "s1",
+             "dest": r"C:\T\dst\ByDate\2024\2024-07\d.jpg", "reason": "appended_near_dup", "flags": ""},
+        ],
+        "skipped": [
+            {"timestamp": "2026-01-01 00:00:01", "source": r"F:\dup\a_copy.jpg",
+             "matched_with": r"C:\T\dst\Albums\Отпуск\a.jpg", "reason": "already_present"},
+        ],
+        "near_dup_edges": [
+            {"timestamp": "2026-01-01 00:00:01", "dest": r"C:\T\dst\ByDate\2024\2024-07\d.jpg",
+             "matched_dest": r"C:\T\dst\ByDate\2024\2024-06\c.jpg"},
+        ],
+    }
+    html_out = r._render_dedup_verification_page(data)
+    assert '<h1 id="dedup-exact">Полная сверка дублей</h1>' in html_out
+    assert '<h1 id="dedup-near">Полная сверка похожих серий</h1>' in html_out
+    # Порядок секций -- дубли первой, похожие серии второй -- ровно тот случай, где отсутствие
+    # якорей раньше молча ломало ссылку "похожие серии".
+    assert html_out.index('id="dedup-exact"') < html_out.index('id="dedup-near"')
+
+    out_path = tmp_path / "report.html"
+    r.generate_report(data, str(out_path), level="target", run_start="2026-01-01 00:00:00")
+    main_html = out_path.read_text(encoding="utf-8")
+    assert f"{r.DEDUP_VERIFICATION_FILENAME}#dedup-exact" in main_html
+    assert f"{r.DEDUP_VERIFICATION_FILENAME}#dedup-near" in main_html
+
+
 def test_generate_report_target_level_near_dup_multi_folder_links_to_verification_page(tmp_path):
     """Сквозная проверка: похожая серия в разных папках на level="target" должна и ссылаться
     на "Полную сверку", и сама страница должна реально содержать её полный список."""
@@ -1284,7 +1295,7 @@ def test_generate_report_target_level_near_dup_multi_folder_links_to_verificatio
     assert "полная сверка похожих серий →" in html_out
     assert "Кадры лежат в разных папках" in html_out
     verify_out = (tmp_path / r.DEDUP_VERIFICATION_FILENAME).read_text(encoding="utf-8")
-    assert "Похожая серия из 2 кадров" in verify_out
+    assert "<td>2</td>" in verify_out  # "Кадров в серии" -- вёрстка-таблица, не карточка
     assert "2024-06\\a.jpg" in verify_out and "2024-07\\b.jpg" in verify_out
 
 
@@ -1399,7 +1410,7 @@ def test_render_dedup_verification_page_groups_visually_by_folder():
     assert "Albums\\Отпуск" in html_out
     assert "скопировано из F:\\orig\\a.jpg" in html_out
     assert "F:\\dup\\a_copy.jpg" in html_out
-    assert "отклонён" in html_out
+    assert "1 дубль" in html_out
 
 
 def test_render_dedup_verification_page_lists_each_duplicate_on_its_own_line():
@@ -1422,6 +1433,63 @@ def test_render_dedup_verification_page_lists_each_duplicate_on_its_own_line():
 
 def test_render_dedup_verification_page_empty_returns_nothing():
     assert r._render_dedup_verification_page({"appended": [], "skipped": []}) == ""
+
+
+def test_render_dedup_verification_page_sorted_by_dup_count_descending():
+    """2026-08-08 (альбомный редизайн, вёрстка): сортировка по убыванию числа дублей внутри
+    карточки папки -- "b.jpg" (3 дубля) должен идти раньше "a.jpg" (2 дубля) в основной
+    таблице, хотя по алфавиту порядок обратный. Оба >1, чтобы не попасть под сворачивание
+    "без повторов" (см. отдельный тест ниже) -- проверяем чистый сорт, не взаимодействие с ним."""
+    data = {
+        "appended": [
+            {"timestamp": "t", "source": r"F:\orig\a.jpg",
+             "dest": r"C:\T\dst\Albums\Отпуск\a.jpg", "reason": "appended_new", "flags": ""},
+            {"timestamp": "t", "source": r"F:\orig\b.jpg",
+             "dest": r"C:\T\dst\Albums\Отпуск\b.jpg", "reason": "appended_new", "flags": ""},
+        ],
+        "skipped": [
+            {"source": r"F:\dup\a_copy1.jpg", "matched_with": r"C:\T\dst\Albums\Отпуск\a.jpg",
+             "reason": "already_present"},
+            {"source": r"F:\dup\a_copy2.jpg", "matched_with": r"C:\T\dst\Albums\Отпуск\a.jpg",
+             "reason": "already_present"},
+            {"source": r"F:\dup\b_copy1.jpg", "matched_with": r"C:\T\dst\Albums\Отпуск\b.jpg",
+             "reason": "already_present"},
+            {"source": r"F:\dup\b_copy2.jpg", "matched_with": r"C:\T\dst\Albums\Отпуск\b.jpg",
+             "reason": "already_present"},
+            {"source": r"F:\dup\b_copy3.jpg", "matched_with": r"C:\T\dst\Albums\Отпуск\b.jpg",
+             "reason": "already_present"},
+        ],
+    }
+    html_out = r._render_dedup_verification_page(data)
+    main_table = html_out.split("<details>")[0]
+    assert main_table.index(">b.jpg<") < main_table.index(">a.jpg<")
+
+
+def test_render_dedup_verification_page_collapses_single_dup_rows_under_details():
+    """Строки с ровно одним дублем (обычный случай, не путаница) сворачиваются под общий
+    `<details>` в конце карточки папки, не показываются сразу вместе с "настоящими" находками."""
+    data = {
+        "appended": [
+            {"timestamp": "t", "source": r"F:\orig\a.jpg",
+             "dest": r"C:\T\dst\Albums\Отпуск\a.jpg", "reason": "appended_new", "flags": ""},
+            {"timestamp": "t", "source": r"F:\orig\b.jpg",
+             "dest": r"C:\T\dst\Albums\Отпуск\b.jpg", "reason": "appended_new", "flags": ""},
+        ],
+        "skipped": [
+            {"source": r"F:\dup\a_copy.jpg", "matched_with": r"C:\T\dst\Albums\Отпуск\a.jpg",
+             "reason": "already_present"},
+            {"source": r"F:\dup\b_copy1.jpg", "matched_with": r"C:\T\dst\Albums\Отпуск\b.jpg",
+             "reason": "already_present"},
+            {"source": r"F:\dup\b_copy2.jpg", "matched_with": r"C:\T\dst\Albums\Отпуск\b.jpg",
+             "reason": "already_present"},
+        ],
+    }
+    html_out = r._render_dedup_verification_page(data)
+    main_table, _, rest = html_out.partition("<details>")
+    assert ">b.jpg<" in main_table
+    assert ">a.jpg<" not in main_table  # только 1 дубль -- свёрнут
+    assert "ещё 1 файл без повторов" in rest
+    assert ">a.jpg<" in rest
 
 
 def test_generate_dedup_verification_page_writes_sibling_file_and_links_back(tmp_path):

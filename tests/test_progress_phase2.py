@@ -110,6 +110,66 @@ def test_walk_dir_object_line_cb_not_called_for_excluded_dirs(tmp_path):
     assert not any("node_modules" in c[1] for c in calls)
 
 
+def test_object_line_cb_deferred_stray_folder_announces_at_processing_not_discovery(tmp_path):
+    # Живой боевой прогон, речь пользователя 2026-08-07 ("[папка] F:\\1: найдено медиафайлов
+    # 62... но в архиве альбом не создан, в ByDate ещё не легло -- он считает, что то, что
+    # прошло через экран, уже обработано"): "BBB_loose" ниже -- папка без узнаваемого альбома,
+    # её файлы откладываются на Фазу 3 (_deferred_stray_files) -- строка "[папка] ...: найдено
+    # медиафайлов 2" не должна печататься раньше, чем Фаза 3 реально возьмётся за первый её
+    # файл (принцип "начинает отрабатывать", согласован с пользователем -- НЕ "увидели при
+    # обходе Фазы 1", но и не "все файлы папки уже обработаны").
+    #
+    # "downloads" -- узнаваемое dump-имя (find_album() отдаёт None для него, в отличие от
+    # обычного альбома, см. is_dump_segment()) -- её файлы откладываются на Фазу 3. Третья
+    # папка ("zzz_album2", тоже настоящий альбом) НУЖНА для теста, не для сценария
+    # пользователя: без неё проверка не различала бы старое и новое поведение -- Фаза 1 в
+    # любом случае не успевает объявить "downloads" РАНЬШЕ, чем выдаст единственный файл
+    # ПРЕДЫДУЩЕЙ папки (тот уже выдан до того, как обход дошёл до "downloads" в стеке). С
+    # третьей папкой разница видна: под СТАРЫМ кодом Фаза 1 успевает объявить "downloads"
+    # (просто увидев её при обходе) ДО того, как выдаст файл ИЗ СЛЕДУЮЩЕЙ папки "zzz_album2" --
+    # хотя ни один файл "downloads" ещё не тронут. Алфавитный порядок имён -- "aaa" < "downloads"
+    # < "zzz" -- гарантирует именно такой порядок обхода (sorted(os.listdir())).
+    source = tmp_path / "source"
+    (source / "aaa_album1").mkdir(parents=True)
+    (source / "aaa_album1" / "photo1.jpg").write_bytes(b"x")
+    (source / "downloads").mkdir()
+    (source / "downloads" / "a.jpg").write_bytes(b"x")
+    (source / "downloads" / "b.jpg").write_bytes(b"x")
+    (source / "zzz_album2").mkdir()
+    (source / "zzz_album2" / "photo2.jpg").write_bytes(b"x")
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)
+    calls = []
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None,
+                             object_line_cb=lambda tag, path, n: calls.append((tag, path, n)))
+
+    def loose_already_announced():
+        return any(c[1].endswith("downloads") for c in calls)
+
+    seen = []
+    for item in walker.walk():
+        seen.append((item.rel_path, loose_already_announced()))
+
+    names = [n for n, _ in seen]
+    assert names == ["aaa_album1/photo1.jpg", "zzz_album2/photo2.jpg",
+                      "downloads/a.jpg", "downloads/b.jpg"], names
+
+    # Ключевая проверка: в момент выдачи photo2.jpg (СЛЕДУЮЩАЯ после downloads папка,
+    # обойдённая Фазой 1) "downloads" ЕЩЁ НЕ должна быть объявлена -- ни один её файл не
+    # тронут, Фаза 3 ещё даже не началась.
+    assert seen[0][1] is False, seen  # photo1.jpg -- до downloads в обходе, тем более рано
+    assert seen[1][1] is False, seen  # photo2.jpg -- ПОСЛЕ downloads в обходе, но объявления быть не должно
+    # К моменту выдачи ПЕРВОГО файла downloads -- объявление уже появилось (Фаза 3 реально
+    # взялась за эту папку).
+    assert seen[2][1] is True, seen
+    assert seen[3][1] is True, seen  # второй файл той же папки, повторного объявления нет
+
+    loose_calls = [c for c in calls if c[1].endswith("downloads")]
+    assert len(loose_calls) == 1  # ровно один раз на папку, не на каждый файл
+    assert loose_calls[0] == ("folder", str(source / "downloads"), 2)
+
+
 # ---------------------------------------------------------------------------
 # SourceWalker: DVD-юниты (VIDEO_TS) -- 2026-08-07, по итогам боевого прогона (домашнее видео
 # на DVD не попадало в архив) целая папка VIDEO_TS теперь копируется как один неделимый юнит
@@ -638,6 +698,87 @@ def test_object_progress_single_file_source_ticks_once(tmp_path):
     assert sum(ticks) == 1
 
 
+# 2026-08-07, живой боевой прогон пользователя (F:→D:, "объектов 5577/27918 | всего медиа
+# 2476 -- а что в остальных?"): тик должен происходить в момент ЗАВЕРШЕНИЯ разбора объекта
+# (сразу после yield/yield-from, когда вызывающий код уже полностью его обработал и вернулся
+# за следующим), не в момент, когда walker впервые увидел имя при обходе -- иначе объекты,
+# отложенные Фазой 1 на Фазу 2/3 (тильда-архивы/файлы без альбома), тикают ДО того, как их
+# реально обработали, и счётчик убегает далеко вперёд "всего медиа". Ниже -- тесты именно на
+# ПОРЯДОК/МОМЕНТ тика (не только итоговую сумму, ту уже проверяют тесты выше и она не менялась).
+
+def test_object_progress_deferred_stray_file_ticks_after_yield_not_before(tmp_path):
+    source = tmp_path / "source"
+    (source / "Album").mkdir(parents=True)
+    (source / "Album" / "photo1.jpg").write_bytes(b"x")
+    (source / "stray.jpg").write_bytes(b"x")  # корень SOURCE -- альбом не находится, откладывается
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)
+    ticks = []
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None, object_progress_cb=ticks.append)
+
+    seen = []
+    for item in walker.walk():
+        seen.append((item.rel_path, sum(ticks)))
+
+    names = [n for n, _ in seen]
+    assert names == ["Album/photo1.jpg", "stray.jpg"], names  # альбомный контент первым (Фаза 1)
+    # В момент выдачи КАЖДОГО item тик за НЕГО САМОГО ещё не должен был сработать -- он
+    # срабатывает только после того, как вызывающий код заберёт item и генератор продолжится.
+    assert seen[0][1] == 0, seen  # photo1.jpg выдан -- ни один тик ещё не произошёл
+    assert seen[1][1] == 1, seen  # stray.jpg выдан -- тик есть только за photo1.jpg, НЕ за себя
+    assert sum(ticks) == 2  # оба тика в итоге случились
+
+
+def test_object_progress_deferred_tilde_archive_ticks_once_after_its_content_not_during_phase1(tmp_path):
+    source = tmp_path / "source"
+    album = source / "RealAlbum"
+    album.mkdir(parents=True)
+    (album / "normal.jpg").write_bytes(b"x")
+    with zipfile.ZipFile(album / "~backup.zip", "w") as zf:
+        for name in ("p1.jpg", "p2.jpg", "p3.jpg"):
+            zf.writestr(name, b"x")
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)
+    ticks = []
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None, object_progress_cb=ticks.append)
+
+    seen = []
+    for item in walker.walk():
+        seen.append((item.rel_path, sum(ticks)))
+
+    names = [n for n, _ in seen]
+    assert names[0] == "RealAlbum/normal.jpg", names  # альбомный файл первым (Фаза 1)
+    archive_item_names = names[1:]
+    assert len(archive_item_names) == 3  # p1/p2/p3 -- все три из ~backup.zip, отложены на Фазу 2
+
+    assert seen[0][1] == 0, seen  # normal.jpg выдан -- тиков ещё нет
+    # Пока идут файлы ИЗ архива -- тика за сам архив ещё быть не должно (архив тикает как ОДНО
+    # целое, только когда его контент полностью обработан, не по файлам внутри и не заранее).
+    for name, ticks_so_far in seen[1:]:
+        assert ticks_so_far == 1, (name, ticks_so_far, seen)
+    assert sum(ticks) == 2  # normal.jpg (1) + ~backup.zip как единое целое (1), не 4
+
+
+def test_object_progress_dvd_unit_ticks_once_as_a_whole(tmp_path):
+    # DVD-юниты раньше вообще не тикали "объектов" (не проходили через общий цикл по именам
+    # файлов -- см. _walk_dir()) -- теперь тикают тем же принципом, что и архив: одна единица
+    # целиком, после того как весь её контент обработан.
+    source = tmp_path / "source"
+    disc = source / "Video"
+    (disc / "VIDEO_TS").mkdir(parents=True)
+    (disc / "VIDEO_TS" / "VTS_01_0.VOB").write_bytes(b"v" * 200)
+    (disc / "VIDEO_TS" / "VIDEO_TS.IFO").write_bytes(b"i" * 20)
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)
+    ticks = []
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None, object_progress_cb=ticks.append)
+    list(walker.walk())
+    assert sum(ticks) == 1
+
+
 # ---------------------------------------------------------------------------
 # ProgressReporter(two_line=True)
 # ---------------------------------------------------------------------------
@@ -686,6 +827,37 @@ def test_two_line_status_rate_is_seconds_per_file_not_files_per_second(monkeypat
     monkeypatch.setattr(bar, "_t0", bar._t0 - 20)  # 20s elapsed, 10 files -> 2.00с/файл
     line = bar._build_two_line_status()
     assert "2.00с/файл" in line
+    bar.close()
+
+
+def test_two_line_status_shows_elapsed_time_before_rate(monkeypatch):
+    # 2026-08-07, речь пользователя ("зачем это выводить в статусе, я этого не просил" про
+    # старый текстовый transient_op "чтение метаданных, файлов: N…" во время батч-чтения EXIF
+    # -- см. photosort_win.py:_walk_with_exif_prefetch()): убран, заменён общим "занято"
+    # временем текущей фазы -- показывает "не зависло" без привязки к конкретной операции,
+    # позиция -- между "объектов X/Y" и скоростью "с/файл", как попросил пользователь.
+    bar = _two_line_bar()
+    monkeypatch.setattr(bar, "_t0", bar._t0 - 20)  # 20s elapsed -> tqdm.format_interval "00:20"
+    line = bar._build_two_line_status()
+    assert "00:20" in line
+    assert line.index("занято") < line.index("с/файл")
+    bar.close()
+
+
+def test_two_line_status_drops_elapsed_field_when_terminal_too_narrow(monkeypatch):
+    # Речь пользователя, 2026-08-07 ("нужно не допустить переноса строки статуса"): "занято" --
+    # единственное поле, добавленное этой правкой, не часть уже проверенного пользователем на
+    # практике формата -- если целиком не влезает в реальную ширину терминала, просто не
+    # показывается (перенос сломал бы самообновление строки через \r), вместо того чтобы
+    # переноситься на вторую строку. На широком терминале (не-tty/файл/пайп в остальных тестах
+    # этого класса) это никогда не срабатывает -- см. sys.stderr.isatty() guard.
+    bar = _two_line_bar()
+    monkeypatch.setattr(m.sys.stderr, "isatty", lambda: True)
+    monkeypatch.setattr(m.shutil, "get_terminal_size",
+                         lambda fallback=(80, 24): m.os.terminal_size((80, 24)))
+    line = bar._build_two_line_status()
+    assert "занято" not in line
+    assert "с/файл" in line  # остальная строка по-прежнему показывается целиком
     bar.close()
 
 

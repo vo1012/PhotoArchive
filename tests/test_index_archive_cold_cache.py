@@ -81,3 +81,49 @@ def test_index_archive_no_warning_when_suppress_logs(tmp_path, monkeypatch):
     m.index_archive(cfg, conn, log=lines.append)
     conn.close()
     assert not any("ещё не в кэше" in ln for ln in lines)
+
+
+# ---------------------------------------------------------------------------
+# Речь пользователя, 2026-08-07: "при создании нового архива (не пополнения), когда
+# индексировать нечего, выводится 'Просматриваю уже собранный архив...: всего обработано
+# файлов: 0 [00:00, ?файл/с]'. Если архива нет, то индексировать нечего, можно строку не
+# выводить." -- entries==[] на новом (только что созданном, пустом) TARGET раньше всё равно
+# конструировал ProgressReporter (total=len(entries) or None -- 0 превращалось в None,
+# indeterminate-режим), печатался один "пустой" кадр бара без единой реальной итерации.
+# ---------------------------------------------------------------------------
+
+def test_index_archive_empty_target_does_not_create_progress_bar(tmp_path, monkeypatch):
+    cfg = _make_cfg(tmp_path)
+    m.ensure_target_layout(cfg)  # пустой скелет архива (Albums/ByDate/RAW), ни одного файла
+    conn = m.db_reset(cfg.index_db)
+
+    created_desc = []
+    real_pr = m.ProgressReporter
+
+    class _SpyProgressReporter(real_pr):
+        def __init__(self, *a, **kw):
+            created_desc.append(kw.get("desc"))
+            super().__init__(*a, **kw)
+
+    monkeypatch.setattr(m, "ProgressReporter", _SpyProgressReporter)
+
+    lines = []
+    result = m.index_archive(cfg, conn, log=lines.append)
+    conn.close()
+
+    assert created_desc == []  # бар вообще не создавался -- индексировать было нечего
+    assert result == (0, 0)
+    assert not any("Фаза 1" in ln for ln in lines)  # ни бара, ни итоговой строки про 0 файлов
+
+
+def test_index_archive_nonempty_target_still_creates_progress_bar_and_summary(tmp_path):
+    # Контрольный случай -- на непустом TARGET (обычное пополнение архива) поведение не
+    # изменилось: бар создаётся, итоговая строка печатается как раньше.
+    cfg = _make_archive_with_images(tmp_path, 2)
+    conn = m.db_reset(cfg.index_db)
+    lines = []
+    result = m.index_archive(cfg, conn, log=lines.append)
+    conn.close()
+
+    assert result == (2, 20)  # 2 файла по 10 байт ("x" * 10 в _make_archive_with_images())
+    assert any("Фаза 1: проиндексировано существующего архива — 2 файлов" in ln for ln in lines)

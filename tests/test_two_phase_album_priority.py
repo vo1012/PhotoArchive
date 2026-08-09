@@ -346,19 +346,26 @@ class TestDeferredRootReportsTransientOp:
         self._assert_calls_are_balanced_open_close_pairs(calls)
 
     def test_ema_rate_not_skewed_across_many_deferred_files(self, tmp_path, monkeypatch):
-        """Сквозная проверка через настоящий ProgressReporter (тот же класс, что рисует
-        статус-строку в проде): реальное время, которое _walk_dir() тратит на классификацию
-        КАЖДОГО файла плоской dump-папки (здесь смоделировано монки-патчем os.stat -- он
-        вызывается ровно один раз на файл в основном цикле files, см. _walk_dir()), не должно
-        попасть в instantaneous ближайшего update(), пока хотя бы один файл уже отложен (гейт
-        открывается на ПЕРВОМ отложенном файле -- см. _open_deferred_gap()'s докстринг: cтоимость
-        именно ЭТОГО первого файла остаётся неисключённой, это осознанный, маленький и
-        ограниченный остаток, не путать с оставшимися N-1). На реальной dump-папке с тысячами
-        файлов доминирует именно эта, N-1-часть -- ровно она и проверяется здесь."""
+        """2026-08-08 (альбомный редизайн): раньше (до ухода позиционных исключений)
+        "DCIM" САМ ПО СЕБЕ не был тупиком -- Фаза 1 спускалась в него нормально, копила все
+        файлы без альбома в self._deferred_stray_files БЕЗ единого yield'а между ними (см.
+        docstring find_album()), и только потом высыпала их все разом в _drain_deferred_
+        phases() -- отсюда была реальная опасность смешать N файлов реальной стоимости в ОДИН
+        тик update(). Теперь "DCIM" сам по себе -- безусловный тупик (см. find_album()),
+        всё поддерево откладывается ЦЕЛИКОМ на Фазу 3 ДО того, как Фаза 1 в него спустится --
+        а в Фазе 3 каждый файл классифицируется и yield'ится НЕМЕДЛЕННО, один за другим (не
+        копится), см. _walk_dir()'s `if self._phase == 1` у _deferred_stray_files.append().
+        Реальный вызывающий код (см. `for item in walker.walk(): ... bar.update(1, ...)`)
+        зовёт update() СРАЗУ на каждый yield, 1-к-1 -- батч-артефакта, который раньше нужно
+        было прятать от EMA, больше нет вовсе для этой ветки. Что всё же нужно проверить:
+        (а) обнаружение самого дамп-поддерева (открытие "DCIM", os.listdir()) всё ещё прячется
+        от EMA (см. _open_deferred_gap(), теперь и в Фазе 3, не только в Фазе 1) -- иначе цена
+        одного лишнего os.listdir() ложно приписалась бы первому файлу дамп-папки; (б) реальная
+        цена КАЖДОГО отдельного файла внутри неё корректно и равномерно видна в EMA (это теперь
+        ПРАВИЛЬНОЕ поведение, не батч-артефакт для сокрытия) -- ни один отдельный update() не
+        показывает кратно больше одного файла (не N файлов, слитых в один тик)."""
         source = tmp_path / "source"
         source.mkdir()
-        # "AlbumReal" sorts before "DCIM" -- gets visited and yielded first, so the deferral
-        # gap opens strictly AFTER our baseline tick, not folded into the same next() call.
         album = source / "AlbumReal"
         album.mkdir()
         _make_jpeg(album / "normal.jpg")
@@ -379,11 +386,12 @@ class TestDeferredRootReportsTransientOp:
 
         real_stat = m.os.stat
         stat_calls_on_dump = []
+        per_file_cost = 30.0
 
         def _slow_stat(path, *a, **kw):
             if "DCIM" in str(path):
                 stat_calls_on_dump.append(path)
-                fake_now[0] += 30.0  # each dump file "costs" 30s of simulated classification
+                fake_now[0] += per_file_cost
             return real_stat(path, *a, **kw)
 
         monkeypatch.setattr(m.os, "stat", _slow_stat)
@@ -395,18 +403,18 @@ class TestDeferredRootReportsTransientOp:
         first_item = next(it)  # AlbumReal/normal.jpg
         fake_now[0] += 0.01
         bar.update(1)
-        baseline = bar._ema_rate
 
-        remaining = [next(it) for _ in range(n_dump_files)]
-        fake_now[0] += 0.01
-        bar.update(1)
+        # Реальный вызывающий код обновляет бар СРАЗУ на каждый next(), не батчем -- см.
+        # докстринг выше. Ни один отдельный тик не должен показать больше, чем разумный запас
+        # сверх одного файла (не 20 файлов, слитых в один, как было бы при старом батчинге).
+        remaining = []
+        for _ in range(n_dump_files):
+            remaining.append(next(it))
+            fake_now[0] += 0.01
+            bar.update(1)
+            assert bar._ema_rate < per_file_cost + 20.0
 
         assert stat_calls_on_dump  # sanity: the hook actually fired on DCIM's content
         assert {first_item.rel_path, *(r.rel_path for r in remaining)} == {
             "AlbumReal/normal.jpg", *(f"DCIM/dump{i}.jpg" for i in range(n_dump_files))}
-        # Without the fix this would jump toward hundreds of s/файл (nearly all of the
-        # simulated per-file cost across 20 dump files misattributed to a single tick) --
-        # with it, only a small, bounded residual (roughly one file's worth, unavoidably
-        # incurred before the gap is even known to be needed -- see docstring) leaks through.
-        assert bar._ema_rate < baseline + 100.0
         bar.close()

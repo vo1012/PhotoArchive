@@ -1179,6 +1179,19 @@ p {{ margin: 8px 0; }}
 .checklist li.expand > details[open] > summary::before {{ content: "▾ "; }}
 .checklist .nested {{ margin: 0 0 10px; }}
 .checklist .nested li {{ padding: 8px 0 8px 18px; }}
+/* "Полная сверка дублей" (2026-08-08, альбомный редизайн): таблица вместо .checklist для
+   exact-dup/near-dup секций -- тот же .card-контейнер, свой минимальный набор правил. */
+.dedup-table {{ width: 100%; border-collapse: collapse; font-size: 14px; overflow-wrap: anywhere; }}
+.dedup-table th {{ text-align: left; padding: 8px 10px; border-bottom: 2px solid var(--line); color: var(--muted); }}
+.dedup-table td {{ padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }}
+.dedup-table tr:last-child td {{ border-bottom: none; }}
+.dedup-table + details {{ margin-top: 10px; }}
+.dedup-table + details > summary {{
+  padding: 6px 0; color: var(--accent); font-weight: 600; cursor: pointer; list-style: none;
+}}
+.dedup-table + details > summary::-webkit-details-marker {{ display: none; }}
+.dedup-table + details > summary::before {{ content: "▸ "; }}
+.dedup-table + details[open] > summary::before {{ content: "▾ "; }}
 .bridge {{ color: var(--accent); font-style: italic; margin-top: 12px; }}
 .muted {{ color: var(--muted); font-size: 14px; }}
 /* Раздел 7 приёмочного чек-листа: свой цвет #8a8a7c на --bg давал контраст 3.1:1, не
@@ -1486,7 +1499,7 @@ def _render_trust_block(level: str, unreadable_count: int = 0) -> str:
     return f'{banner}<ul class="trust-list">{li}</ul>'
 
 
-def _render_this_run(run_stats: dict, level: str = "target") -> str:
+def _render_this_run(run_stats: dict, level: str = "target", verify_link: str = None) -> str:
     """Секция "Пополнение архива"/"Пробный прогон" -- в отличие от остального отчёта
     (кумулятивная история архива из CSV-логов, см. _render_sheet1/build_model_from_rows), эти
     цифры -- только то, что сделал ИМЕННО ЭТОТ вызов программы. `run_stats` -- сумма
@@ -1501,7 +1514,11 @@ def _render_this_run(run_stats: dict, level: str = "target") -> str:
     гипотетические ("было бы", не "было"), чтобы не выдавать предпросмотр за факт.
 
     None/{} -- вызывающий код не передал этот параметр (старые вызовы) -- секция не
-    рендерится вообще, не пустая карточка."""
+    рендерится вообще, не пустая карточка.
+
+    verify_link (2026-08-08, Пакет B п.7): ссылка на "Полную сверку дублей" (см.
+    generate_dedup_verification_page()) -- используется секцией "Дубли из другого места" ниже,
+    None -- строка показывается без ссылки (level!="target", страница не строится)."""
     if not run_stats:
         return ""
 
@@ -1514,6 +1531,21 @@ def _render_this_run(run_stats: dict, level: str = "target") -> str:
     n_new_total = n_appended_images + n_appended_videos + n_appended_raw
     n_near_dup = (run_stats.get("appended_near_dup", 0) + run_stats.get("appended_better", 0)
                   + run_stats.get("appended_crop", 0))
+    # 2026-08-08 (Пакет B п.9, SESSION-HANDOFF.txt, живая находка при чтении реального
+    # report.html): n_new_total (тайл ниже) и "Новые файлы — в архиве" (диаграмма/легенда,
+    # использует ровно эту же формулу) читались как два РАЗНЫХ числа без объяснения разницы --
+    # математически согласовано (n_new_total включает near-dup, "в архиве" -- нет), но нигде не
+    # было сказано словами. Обсуждено с пользователем: тайл показывает СТРОГО новое число
+    # (совпадает с диаграммой), похожие кадры уходят в отдельную сноску под тайлом, не в само
+    # число. Формула -- та же самая, что уже использовалась для диаграммы (не полагаемся на
+    # near_dup_image/near_dup_video отдельно -- это единственный источник истины для агрегата).
+    n_new_strict = max(n_new_total - n_near_dup, 0)
+    # Разбивка по типу под тайлом (photo/raw/video) -- та же поправка на near-dup, но
+    # ПОЭЛЕМЕНТНО, чтобы сумма разбивки совпадала с n_new_strict выше. raw никогда не бывает
+    # near-dup (decide() не возвращает near-dup-семейство для raw, см. near_dup_key ниже по
+    # файлу) -- поправка нужна только image/video.
+    n_strict_images = max(n_appended_images - run_stats.get("near_dup_image", 0), 0)
+    n_strict_videos = max(n_appended_videos - run_stats.get("near_dup_video", 0), 0)
     n_skipped = run_stats.get("skipped_present", 0)
     n_disputed = run_stats.get("disputed", 0)
     n_unreadable = run_stats.get("unreadable_count", 0)
@@ -1554,10 +1586,17 @@ def _render_this_run(run_stats: dict, level: str = "target") -> str:
     saved_label = "было бы сэкономлено на дублях" if preview else "сэкономлено на дублях в этот раз"
 
     new_files_breakdown = _type_breakdown_caption(
-        Counter({"image": n_appended_images, "raw": n_appended_raw, "video": n_appended_videos}))
+        Counter({"image": n_strict_images, "raw": n_appended_raw, "video": n_strict_videos}))
     breakdown_html = f'<div class="breakdown">{new_files_breakdown}</div>' if new_files_breakdown else ""
-    stats_html = [f'<div class="stat"><div class="value">{n_new_total}</div>'
-                  f'<div class="label">{added_label}</div>{breakdown_html}</div>']
+    # Сноска -- только когда near-dup реально были в этом прогоне, указывает на ту же цифру,
+    # что легенда диаграммы "Похожие кадры" ниже по этой же функции показывает отдельно.
+    near_dup_footnote = (
+        f'<div class="breakdown">+ {n_near_dup} '
+        f'{_plural(n_near_dup, "похожий кадр", "похожих кадра", "похожих кадров")} '
+        f'сохранены отдельно, см. диаграмму ниже</div>'
+    ) if n_near_dup else ""
+    stats_html = [f'<div class="stat"><div class="value">{n_new_strict}</div>'
+                  f'<div class="label">{added_label}</div>{breakdown_html}{near_dup_footnote}</div>']
     # Пакет п.2 (SESSION-HANDOFF.txt): объём этого прогона -- есть в run_stats с самого
     # появления секции, просто не рендерился нигде (REPORT_STRUCTURE.md, "известные пробелы").
     bytes_appended = run_stats.get("bytes_appended", 0)
@@ -1663,7 +1702,7 @@ def _render_this_run(run_stats: dict, level: str = "target") -> str:
     disputed_label = ("Спорные — были бы сохранены отдельно, не в архиве (_Unsorted)" if preview else
                        "Спорные — сохранены отдельно, не в архиве (_Unsorted)")
     segments = [
-        (new_label, max(n_new_total - n_near_dup, 0), CATEGORY_PALETTE[0]),
+        (new_label, n_new_strict, CATEGORY_PALETTE[0]),
         (dup_label, n_skipped, CATEGORY_PALETTE[1]),
         (near_dup_label, n_near_dup, CATEGORY_PALETTE[2]),
         (unreadable_label, n_unreadable, CATEGORY_PALETTE[3]),
@@ -1728,45 +1767,6 @@ def _render_this_run(run_stats: dict, level: str = "target") -> str:
             'Они не потеряны — лежат в _Unsorted для проверки вручную.</p>'
         )
 
-    # Куда И откуда -- album_merge_events это тройки (альбом, prefix, is_dup), prefix --
-    # реальный путь от корня SOURCE до места, откуда пришли файлы, is_dup -- пришёл ли этот
-    # merge от точки вызова "дубль уже лежит в альбоме" (photosort_win.py:_process_record(),
-    # decision.decision=="skipped_present") или от точки вызова "в альбом реально дописан
-    # файл" (см. photosort_win.py:find_album()/_note_album_source()). Раньше показывалось
-    # только имя альбома (только "куда"), prefix отбрасывался -- по прямой просьбе
-    # пользователя 2026-07-20 показываем оба конца.
-    merge_events = run_stats.get("album_merge_events") or []
-    if merge_events:
-        merge_heading = "Альбомы бы пополнились из нескольких мест:" if preview else "Альбомы пополнились из нескольких мест:"
-        by_album = {}
-        # C1 (SESSION-HANDOFF.txt): источники, давшие РЕАЛЬНО НОВОЕ содержимое (is_dup=False)
-        # -- отдельно от by_album выше, который остаётся тем же полным набором мест (в т.ч.
-        # мест, давших только повторный дубль) для факт-строки, не трогаем её.
-        unique_sources_by_album = {}
-        for album, prefix, is_dup in merge_events:
-            by_album.setdefault(album, set()).add(prefix)
-            if not is_dup:
-                unique_sources_by_album.setdefault(album, set()).add(prefix)
-        parts.append(f'<p><b>{merge_heading}</b></p>')
-        for album in sorted(by_album)[:TOP_N]:
-            sources = "; ".join(html.escape(p) for p in sorted(by_album[album]))
-            # Пункт B.4 ("большой разбор report.html", SESSION-HANDOFF.txt): "куда" -- путь от
-            # корня архива ("Albums\дедушка"), не голое имя альбома -- однозначно отличимо от
-            # "откуда" (полный путь от корня SOURCE, уже показан справа, не трогаем).
-            parts.append(f'<p class="muted">«Albums\\{html.escape(album)}» ← {sources}</p>')
-            # C1: совет -- только для [2] Пробный прогон (level=="workdir", ещё можно
-            # пересобрать по-другому без переделки готового архива), только когда РЕАЛЬНО
-            # разное содержимое (не просто повторный дубль) пришло минимум из 2 разных мест --
-            # иначе совет ложно сработал бы даже на безобидном случае "второй источник дал
-            # только уже существующие файлы".
-            if level == "workdir" and len(unique_sources_by_album.get(album, ())) >= 2:
-                parts.append(
-                    '<p class="muted">Из этих мест в альбом попадают разные, не повторяющиеся '
-                    'файлы — возможно, это на самом деле разные альбомы. Стоит проверить и, '
-                    'если нужно, развести их по отдельности до реальной сборки — потом это '
-                    'будет уже переделкой готовой структуры.</p>'
-                )
-
     # Пункт B.2 ("большой разбор report.html", SESSION-HANDOFF.txt): список запароленных
     # архивов с полным путём -- раньше был только счётчик (см. print_analyze_report()/
     # build_final_summary() в консоли), путь реально уже есть в walker.archive_logs.
@@ -1805,19 +1805,6 @@ def _render_this_run(run_stats: dict, level: str = "target") -> str:
         more = f" и ещё {len(dvd_dup) - TOP_N}" if len(dvd_dup) > TOP_N else ""
         parts.append(f'<p class="muted">{dup_names}{more} — такой же диск уже есть в архиве, '
                       'повторно скопирован не был.</p>')
-
-    # "Альбом умер" -- источник целиком совпал с уже существующим содержимым архива: столько
-    # файлов встретилось (source_album_seen), сколько реально дописалось (source_album_appended,
-    # 0 -- полностью дубль). См. photosort_win.py:_process_record() -- оба словаря собираются
-    # по find_album() над item.rel_path, независимо от исхода (appended/skipped), суммируются
-    # по всем SOURCE через _sum_stats(). Без этого узнать такое можно было только из logs\.
-    seen = run_stats.get("source_album_seen") or {}
-    appended_by_album = run_stats.get("source_album_appended") or {}
-    fully_duplicate = sorted(a for a, n in seen.items() if n > 0 and not appended_by_album.get(a))
-    if fully_duplicate:
-        names = ", ".join(f"«{html.escape(a)}»" for a in fully_duplicate[:TOP_N])
-        parts.append(f'<p><b>Уже было в архиве:</b> {names} — всё содержимое совпало с уже '
-                      f'существующими файлами, новых файлов не добавилось.</p>')
 
     parts.append("</div>")
     return "".join(parts)
@@ -2251,9 +2238,15 @@ def _cluster_checklist_item(cluster: list, verify_link: str = None) -> tuple:
         # строки читаются, склеенные в одну через точку -- нет.
         detail = f"{folder_line}<br>{action_line}" if folder_line else action_line
     elif verify_link:
+        # 2026-08-08 (SESSION-HANDOFF.txt, Пакет A п.4, живая находка): страница-адресат имеет
+        # ДВЕ секции под своими <h1> -- "Полная сверка дублей" всегда первая (см.
+        # _render_dedup_verification_page()), "Полная сверка похожих серий" (эта ссылка) ниже,
+        # без #fragment ссылка всегда открывала верх страницы, не ту секцию, к которой
+        # относится подпись -- #dedup-near соответствует id у _render_near_dup_verification_
+        # section()'s <h1> ниже в этом же файле.
         detail = (
             "Кадры лежат в разных папках. Полный список — в «Полной сверке»: "
-            f'<a href="{html.escape(verify_link)}" target="_blank" rel="noopener">'
+            f'<a href="{html.escape(verify_link)}#dedup-near" target="_blank" rel="noopener">'
             "полная сверка похожих серий →</a>."
         )
     else:
@@ -2496,9 +2489,12 @@ def _render_exact_dup_examples(fields: dict, heading: str, intro: str = "",
         return ""
     card = _render_checklist_card(heading, _build_exact_dup_items(fields), intro=intro)
     if card and verify_link:
+        # 2026-08-08 (SESSION-HANDOFF.txt, Пакет A п.4): #dedup-exact -- id у <h1>Полная сверка
+        # дублей</h1> в _render_dedup_verification_page() (см. симметричный комментарий у
+        # #dedup-near в _cluster_checklist_item() выше).
         card += (
             '<p class="muted">Показаны только первые несколько — '
-            f'<a href="{html.escape(verify_link)}" target="_blank" rel="noopener">полная сверка построчно, по каждому файлу →</a>.</p>'
+            f'<a href="{html.escape(verify_link)}#dedup-exact" target="_blank" rel="noopener">полная сверка построчно, по каждому файлу →</a>.</p>'
         )
     return card
 
@@ -2509,35 +2505,46 @@ DEDUP_VERIFICATION_FILENAME = "dedup_verification.html"
 def _render_near_dup_verification_section(clusters: list) -> str:
     """Задача 6 (SESSION-HANDOFF.txt, пакет "боевой прогон D:\\"): случай "разные папки" в
     самом отчёте (_cluster_checklist_item()) больше не расписывает построчный список путей на
-    месте -- ссылается сюда, на полный, не обрезанный по топ-N список каждой серии. Та же
-    карточка-на-группу форма, что и exact-dup секция выше на этой же странице.
+    месте -- ссылается сюда, на полный, не обрезанный по топ-N список каждой серии.
 
     REVIEW-HANDOFF.md, Раунд 52 (придирка 2): только кластеры, реально лежащие в разных
     папках (len(dirs)>1, та же проверка, что уже определяет ветку в _cluster_checklist_item())
     -- однопапочные кластеры уже показаны полностью прямо в основном отчёте (компактная ветка
     той же функции), дублировать их здесь ещё раз не нужно, страница обещает именно "разные
-    папки" (см. CHANGELOG.md/её же докстринг у _render_dedup_verification_page())."""
+    папки" (см. CHANGELOG.md/её же докстринг у _render_dedup_verification_page()).
+
+    2026-08-08 (альбомный редизайн, вёрстка "Полной сверки дублей"): `<table>` вместо карточки
+    на кластер -- тот же визуальный паттерн (таблица, сортировка по убыванию), что и у
+    exact-dup секции ниже, хотя колонки другие -- у near-dup нет понятия "выживший файл" (все
+    кадры серии сохраняются), поэтому "Серия"/"Кадров в серии"/"Файлы" вместо "Имя файла"/
+    "Число повторов"/"Куда сохранён". `<details>`-сворачивание не нужно -- кластер размером 1
+    не существует в принципе (multi-folder фильтр выше требует минимум 2 разных папки)."""
     clusters = [c for c in clusters if len({_win_dirname(p) for p in c}) > 1]
     if not clusters:
         return ""
-    cards = []
-    for cluster in clusters:
+    clusters = sorted(clusters, key=lambda c: (-len(c), _win_basename(c[0])))
+    rows = []
+    for i, cluster in enumerate(clusters, start=1):
         names = [_win_basename(p) for p in cluster]
-        rows = "<br>".join(
+        files_html = "<br>".join(
             html.escape((_friendly_target_dir(p) + "\\" if _friendly_target_dir(p) else "") + n)
             for p, n in zip(cluster, names, strict=True)
         )
-        cards.append(
-            f'<div class="card"><h2>Похожая серия из {len(cluster)} кадров</h2>'
-            f'<div class="detail">{rows}</div></div>'
+        rows.append(
+            f'<tr><td>Серия {i}</td><td>{len(cluster)}</td><td>{files_html}</td></tr>'
         )
     n = len(clusters)
     header = (
-        '<div class="card"><h1>Полная сверка похожих серий</h1>'
+        '<div class="card"><h1 id="dedup-near">Полная сверка похожих серий</h1>'
         f'<p class="subtitle">{n} {_plural(n, "серия", "серии", "серий")} похожих кадров — '
         'полный список файлов каждой серии, без сокращения.</p></div>'
     )
-    return header + "".join(cards)
+    table = (
+        '<div class="card"><table class="dedup-table">'
+        '<thead><tr><th>Серия</th><th>Кадров в серии</th><th>Файлы</th></tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody></table></div>'
+    )
+    return header + table
 
 
 def _render_dedup_verification_page(data: dict) -> str:
@@ -2564,39 +2571,62 @@ def _render_dedup_verification_page(data: dict) -> str:
         return ""
     parts = []
     if groups:
+        # 2026-08-08 (альбомный редизайн, вёрстка "Полной сверки дублей"): `<table>` вместо
+        # `<ul class="checklist">` внутри уже существующих карточек-по-папкам (сохраняем
+        # группировку -- прямая просьба пользователя от 2026-07-26, "не гнать всё сплошным
+        # потоком"). Колонки "Имя файла"/"Число дублей"/"Куда сохранён" (как решено с
+        # пользователем -- здесь это рабочая ссылка на конкретный файл, не просто повтор имени
+        # папки из заголовка карточки), плюс отдельная колонка с самим списком путей-дублей --
+        # без неё страница теряла бы свою заявленную цель (недоверчивый пользователь должен
+        # видеть, КАКИЕ именно файлы источника признаны дублями, не только их число).
+        # Внутри каждой папки -- сортировка по убыванию числа дублей, при равенстве по имени;
+        # строки с ровно одним дублем (обычный случай, не путаница) сворачиваются под общий
+        # `<details>` в конце карточки.
+        table_header = (
+            '<thead><tr><th>Имя файла</th><th>Число дублей</th><th>Куда сохранён</th>'
+            '<th>Дубли в источнике</th></tr></thead>'
+        )
         cards = []
         for folder, items in groups:
-            rows = []
-            for matched, origin, sources in items:
+            main_rows, singleton_rows = [], []
+            for matched, origin, sources in sorted(
+                    items, key=lambda it: (-len(it[2]), _win_basename(it[0]))):
                 name = html.escape(_win_basename(matched))
-                origin_line = f" — скопировано из {html.escape(origin)}" if origin else ""
+                location_html = _file_link_or_text(name, matched)
+                origin_line = f"скопировано из {html.escape(origin)}<br>" if origin else ""
                 n = len(sources)
                 dup_word = _plural(n, "дубль", "дубля", "дублей")
-                verb = "отклонён" if n == 1 else "отклонены"
                 # Пункт B.3 ("большой разбор report.html", SESSION-HANDOFF.txt): каждый
-                # путь-дубль с новой строки, визуально отделены -- раньше был один сплошной
-                # comma-separated список, на большом числе дублей (типично для целиком
-                # задублированной папки) превращался в нечитаемую простыню.
+                # путь-дубль с новой строки, визуально отделены -- на большом числе дублей
+                # (типично для целиком задублированной папки) сплошной comma-separated список
+                # превращался в нечитаемую простыню.
                 dup_list = "<br>".join(html.escape(s) for s in sources)
-                rows.append(
-                    f'<li><div class="title">{name}</div>'
-                    f'<div class="detail">В архиве{origin_line}.<br>'
-                    f'{n} {dup_word} {verb}:<br>{dup_list}</div></li>'
+                row_html = (
+                    f'<tr><td>{name}</td><td>{n} {dup_word}</td><td>{location_html}</td>'
+                    f'<td>{origin_line}{dup_list}</td></tr>'
+                )
+                (singleton_rows if n == 1 else main_rows).append(row_html)
+            table_html = (
+                f'<table class="dedup-table">{table_header}<tbody>{"".join(main_rows)}</tbody></table>'
+            )
+            if singleton_rows:
+                n_singleton = len(singleton_rows)
+                table_html += (
+                    f'<details><summary>ещё {_n_files(n_singleton)} без повторов</summary>'
+                    f'<table class="dedup-table">{table_header}<tbody>{"".join(singleton_rows)}'
+                    f'</tbody></table></details>'
                 )
             cards.append(
-                f'<div class="card"><h2>{html.escape(folder or "Корень архива")}</h2>'
-                f'<ul class="checklist">{"".join(rows)}</ul></div>'
+                f'<div class="card"><h2>{html.escape(folder or "Корень архива")}</h2>{table_html}</div>'
             )
         total_files = sum(len(items) for _, items in groups)
         total_dups = sum(len(sources) for _, items in groups for _, _, sources in items)
         header = (
             '<div class="card">'
-            '<h1>Полная сверка дублей</h1>'
+            '<h1 id="dedup-exact">Полная сверка дублей</h1>'
             f'<p class="subtitle">{_n_files(total_files)} в архиве имеют хотя бы один дубль '
             f'в источнике — {_n_files(total_dups)} отклонено как дубли и не попало в '
-            'архив вторично. Список сгруппирован по папкам архива; внутри каждой папки — '
-            'файл в архиве, откуда он скопирован, и какие файлы источника оказались его '
-            'дублями.</p>'
+            'архив вторично. Список сгруппирован по папкам архива.</p>'
             # Тот же принцип честности, что уже применяется к _render_found_archive_block()
             # (photosort_win.py:_finalize_target_report -- "данные взяты из служебных файлов,
             # не из повторной проверки диска"): страница строится из CSV-логов, не сканирует
@@ -3127,7 +3157,7 @@ def _generate_from_model(model: dict, out_path: str, level: str, program_name: s
     # значения, а передаётся явным параметром.
     if level == "workdir" and not full_workdir:
         fields = checklist_new if checklist_new is not None else model
-        body = (_render_this_run(run_stats, level)
+        body = (_render_this_run(run_stats, level, verify_link=verify_link if level == "target" else None)
                 + _render_dryrun_structure_recommendations(run_stats or {})
                 + _render_sheet3_single(fields, level))
     # level=="analyze" (никогда не передаёт run_start, checklist_new всегда None здесь) --
@@ -3135,7 +3165,8 @@ def _generate_from_model(model: dict, out_path: str, level: str, program_name: s
     # нашлось на этом диске") -- это ОДНОразовый скан SOURCE, не история архива, "паспорт"
     # (см. ниже) её не заменяет.
     elif checklist_new is None:
-        body = (_render_this_run(run_stats, level) + _render_sheet1(model, level) + _render_sheet2(model)
+        body = (_render_this_run(run_stats, level, verify_link=verify_link if level == "target" else None)
+                + _render_sheet1(model, level) + _render_sheet2(model)
                 + _render_exact_dup_examples(model, "Дубли — примеры", intro=EXACT_DUP_INTRO,
                                               verify_link=verify_link if level == "target" else None)
                 + _render_sheet3_single(model, level))
@@ -3154,7 +3185,7 @@ def _generate_from_model(model: dict, out_path: str, level: str, program_name: s
                 f"{_plural(n_disp, 'спорный', 'спорных', 'спорных')} — ничего не потеряно."
             )
         body = (
-            _render_this_run(run_stats, level)
+            _render_this_run(run_stats, level, verify_link=verify_link if level == "target" else None)
             + _render_recommendations(checklist_new, "Новое в этом пополнении", intro=new_intro,
                                        target_path=target_path,
                                        verify_link=verify_link if level == "target" else None)

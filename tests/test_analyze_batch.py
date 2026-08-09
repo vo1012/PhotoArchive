@@ -599,17 +599,18 @@ class TestAnalyzeExifPrefetchRespectsSampleLimit:
         assert call_sizes == [cfg.sample_limit], call_sizes
 
 
-class TestExifPrefetchTransientOp:
+class TestExifPrefetchRateHint:
     """2026-08-06, боевой прогон пользователя ("статус-строка надолго замирает, работает
     очень медленно"): пока идёт сбор батча + сам вызов exiftool_batch() на весь батч сразу --
-    ни один update() не происходит, статус-строка визуально замирает на всё это время. Тот же
-    приём "работаю", что уже применён к распаковке архива/хешированию видео
-    (ProgressReporter.set_transient_op()) -- transient_op_cb получает текст ДО батч-вызова и
-    None сразу после.
+    ни один update() не происходит. Изначальный фикс (transient_op_cb, текстовая строка
+    "чтение метаданных, файлов: N…") убран 2026-08-07 по прямой просьбе пользователя --
+    видимость активности теперь решает общее "занято" время в статус-строке
+    (ProgressReporter._build_two_line_status(), см. tests/test_progress_phase2.py), не
+    привязанное к конкретной операции.
 
-    Следующая находка того же дня ("скорость всегда 0"): исключение времени батча из EMA
-    целиком -- неверная модель (в отличие от распаковки, это время И ЕСТЬ цена N файлов) --
-    rate_hint_cb получает (секунд_на_файл, N), тем же порогом len>1, что и transient_op_cb."""
+    Следующая находка того же дня ("скорость всегда 0"): без учёта времени батча в EMA
+    (в отличие от распаковки, это время И ЕСТЬ цена N файлов) -- rate_hint_cb получает
+    (секунд_на_файл, N), только для батчей больше 1 файла."""
 
     def _items(self, tmp_path, n):
         paths = []
@@ -619,26 +620,9 @@ class TestExifPrefetchTransientOp:
             paths.append(p)
         return [_item(p) for p in paths]
 
-    def test_transient_op_shown_only_for_multi_file_batches(self, tmp_path):
-        items = self._items(tmp_path, 3)
-        calls = []
-        list(m._walk_with_exif_prefetch(
-            iter(items), str(tmp_path / "_extract"), batch_size=2,
-            transient_op_cb=calls.append))
-        # batch_size=2 -> первый батч из 2 файлов (транзиент показан и сброшен), хвостовой
-        # батч из 1 файла (транзиент НЕ показан -- одиночный файл и так почти мгновенен).
-        assert calls == ["чтение метаданных, файлов: 2…", None]
-
-    def test_transient_op_not_shown_for_single_file_batch(self, tmp_path):
-        items = self._items(tmp_path, 1)
-        calls = []
-        list(m._walk_with_exif_prefetch(
-            iter(items), str(tmp_path / "_extract"), batch_size=200,
-            transient_op_cb=calls.append))
-        assert calls == []
-
-    def test_none_callback_does_not_crash(self, tmp_path):
-        # transient_op_cb=None -- дефолт, вызывающий код без two_line-бара (не должно упасть).
+    def test_walk_with_exif_prefetch_yields_all_items(self, tmp_path):
+        # Без каких-либо callback'ов -- обычный вызывающий код (analyze без two_line-бара)
+        # не должен падать.
         items = self._items(tmp_path, 3)
         result = list(m._walk_with_exif_prefetch(
             iter(items), str(tmp_path / "_extract"), batch_size=2))
@@ -650,8 +634,8 @@ class TestExifPrefetchTransientOp:
         list(m._walk_with_exif_prefetch(
             iter(items), str(tmp_path / "_extract"), batch_size=2,
             rate_hint_cb=lambda per_item, n: calls.append(n)))
-        # Тот же batch_size=2 расклад, что и у transient_op: батч из 2 файлов вызывает хинт
-        # (с n=2), хвостовой батч из 1 файла -- нет (одиночный файл меряется честно как есть).
+        # batch_size=2 -> первый батч из 2 файлов вызывает хинт (с n=2), хвостовой батч из
+        # 1 файла -- нет (одиночный файл меряется честно как есть).
         assert calls == [2]
 
     def test_rate_hint_reflects_real_elapsed_time(self, tmp_path, monkeypatch):
@@ -763,29 +747,39 @@ class TestAlbumDateGroupingStats:
         return source, m.Config(source=str(source), target=str(target), sample_limit=0,
                                  workdir=str(workdir))
 
-    def test_n_albums_detected_counts_by_full_path_not_bare_album_name(self, tmp_path):
-        """Два физически разных альбома с одинаковым голым именем ("Отпуск" под разными
-        dump-родителями DCIM/Camera -- find_album() пропускает известные технические имена
-        при поиске альбома, см. DEFAULT_DUMP_SEGMENT_NAMES) -- должны считаться как ДВА
-        альбома, не как один. До фикса album_names копил голое имя (segments[album_idx]), оба
-        схлопывались в одну запись -- недосчёт."""
+    def test_n_albums_detected_counts_every_folder_in_the_tree_separately(self, tmp_path):
+        """2026-08-08 (альбомный редизайн, "альбом -- это каждая папка в дереве"): "Мои
+        фото/Свадьба" и "Мои фото/Отпуск" -- общий родитель "Мои фото" считается один раз,
+        а сами подпапки -- отдельно, итого 3 разных альбома для 2 файлов, не 1 (общий
+        контейнер) и не 2 (только подпапки без родителя)."""
         source, cfg = self._cfg(tmp_path)
-        (source / "DCIM" / "Отпуск").mkdir(parents=True)
-        (source / "Camera" / "Отпуск").mkdir(parents=True)
-        _make_jpeg(source / "DCIM" / "Отпуск" / "a.jpg")
-        _make_jpeg(source / "Camera" / "Отпуск" / "b.jpg")
+        (source / "Мои фото" / "Свадьба").mkdir(parents=True)
+        (source / "Мои фото" / "Отпуск").mkdir(parents=True)
+        _make_jpeg(source / "Мои фото" / "Свадьба" / "a.jpg")
+        _make_jpeg(source / "Мои фото" / "Отпуск" / "b.jpg")
 
         stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
 
-        assert stats.n_albums_detected == 2
+        assert stats.n_albums_detected == 3
+
+    def test_dump_ancestor_before_real_name_counts_as_no_album_at_all(self, tmp_path):
+        """2026-08-08: dump-родитель (DCIM) перед реальным именем теперь отравляет весь путь
+        целиком -- ни один уровень не считается альбомом, всё падает в ByDate."""
+        source, cfg = self._cfg(tmp_path)
+        (source / "DCIM" / "Отпуск").mkdir(parents=True)
+        _make_jpeg(source / "DCIM" / "Отпуск" / "a.jpg")
+
+        stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
+
+        assert stats.n_albums_detected == 0
 
     def test_n_media_in_albums_and_n_media_by_date_split_correctly(self, tmp_path):
         """YY (n_media_in_albums)/QQ (n_media_by_date) -- фильтр по item.ftype media, тот же
         цикл, что и n_albums_detected."""
         source, cfg = self._cfg(tmp_path)
-        (source / "DCIM" / "Отпуск").mkdir(parents=True)
-        _make_jpeg(source / "DCIM" / "Отпуск" / "a.jpg")
-        _make_jpeg(source / "DCIM" / "Отпуск" / "b.jpg")
+        (source / "Отпуск").mkdir(parents=True)
+        _make_jpeg(source / "Отпуск" / "a.jpg")
+        _make_jpeg(source / "Отпуск" / "b.jpg")
         _make_jpeg(source / "c.jpg")  # без альбома -- файл прямо в корне SOURCE
 
         stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
@@ -809,3 +803,34 @@ class TestAlbumDateGroupingStats:
 
         assert len(stats.bydate_media_by_folder) == 2
         assert stats.n_media_by_date == 3
+
+    def test_self_scan_recognizes_real_album_content_not_as_dump_item(self, tmp_path, monkeypatch):
+        """Живая находка (2026-08-08, ci/windows_ci_test.py::test_passport_report_on_real_archive
+        на реальных bin/): "Albums" -- защищённое dump-имя (самозащита от каскадного
+        самопоедания) -- на self_scan (Паспорт архива/analyze на уже собранном архиве)
+        item.rel_path буквально начинается с "Albums/", и под безусловным отравлением (после
+        альбомного редизайна) это топило ЛЮБОЙ правильно разложенный файл архива -- находился
+        не альбом, а "файл добавлен мимо программы" (n_dump_items). Регрессия не поймана
+        существующими self_scan-тестами (ни один не строил реальный альбом и не self-scan'ил
+        его), поймана только сквозным CI-прогоном на реальных bin/."""
+        monkeypatch.setattr(m, "exiftool_batch", lambda paths, **kw: {})
+        source = tmp_path / "source"
+        target = tmp_path / "target"
+        workdir = tmp_path / "workdir"
+        source.mkdir()
+        target.mkdir()
+        workdir.mkdir()
+        (source / "Отпуск").mkdir()
+        _make_jpeg(source / "Отпуск" / "a.jpg")
+
+        cfg = m.Config(source=str(source), target=str(target), sample_limit=0, workdir=str(workdir))
+        m.ensure_target_layout(cfg)
+        m._run_impl(cfg, log=lambda *a, **k: None, print_summary=False)
+        assert (target / "Albums" / "Отпуск" / "a.jpg").exists()  # precondition
+
+        cfg2 = m.Config(source=str(target), target=m._NO_TARGET_PLACEHOLDER, sample_limit=0,
+                         workdir=str(workdir))
+        stats = m.run_analyze(cfg2, "analyze", log=lambda *a, **k: None, self_scan=True)
+
+        assert stats.n_dump_items == 0
+        assert stats.n_media_in_albums == 1

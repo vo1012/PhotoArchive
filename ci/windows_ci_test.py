@@ -143,13 +143,22 @@ def test_regression_and_zones():
     check(any("tiny_icon" in row["source"] for row in rn), "tiny icon in Cache -> rejected_noise.csv")
     check(not os.path.exists(os.path.join(tgt, "_Unsorted", "Pictures")),
           "noisy-zone icon did NOT land in _Unsorted")
-    check(os.path.isfile(os.path.join(tgt, "Albums", "Cache", "real_photo.jpg")),
-          "confident photo in noisy zone still archived")
+    # 2026-08-08 (альбомный редизайн): "Pictures" -- служебное имя, теперь отравляет всё, что
+    # ниже него, безусловно (раньше пропускалось при поиске якоря, "Cache" становился
+    # альбомом) -- confident-фото из noisy-зоны всё равно архивируется, но теперь по дате,
+    # не в альбом "Cache".
+    check(os.path.isfile(os.path.join(tgt, "ByDate", "2019", "2019-07 [PhotoArchive]",
+                                       "real_photo.jpg")),
+          "confident photo in noisy zone still archived (now by date -- Pictures poisons Cache)")
 
     # re-run against the same target: must dedup, not duplicate
     r2 = run_photosort(src, tgt)
     check(r2.returncode == 0, "second run (dedup) exits 0")
-    n_files = sum(len(files) for _, _, files in os.walk(os.path.join(tgt, "Albums"))) + \
+    # __ПРОПУЩЕННЫЕ_ДУБЛИ.txt (2026-08-08) is an EXPECTED new file, not a media duplicate --
+    # "photo1.jpg" is now a within-album identical_at_destination re-run hit, which legitimately
+    # writes this marker in Albums\Отпуск 2015\Море\ -- excluded from the media-file count here.
+    n_files = sum(1 for _, _, files in os.walk(os.path.join(tgt, "Albums"))
+                  for f in files if f != "__ПРОПУЩЕННЫЕ_ДУБЛИ.txt") + \
               sum(len(files) for _, _, files in os.walk(os.path.join(tgt, "ByDate")))
     check(n_files == 4, f"no duplicate files after re-run (found {n_files}, expected 4)")
 
@@ -1447,7 +1456,9 @@ def test_dedup_verification_page():
               "dedup-verification: grouped under the archive folder (album name visible)")
         check("скопировано из" in html_out and "a.jpg" in html_out,
               "dedup-verification: shows where the kept file was copied from")
-        check("a_copy1.jpg" in html_out and "отклонён" in html_out,
+        # 2026-08-08 (альбомный редизайн, вёрстка-таблица): "отклонён"/"отклонены" ушло вместе
+        # со старой <ul>-вёрсткой -- колонка "Число дублей" ("1 дубль") теперь несёт этот смысл.
+        check("a_copy1.jpg" in html_out and "1 дубль" in html_out,
               "dedup-verification: shows the rejected duplicate's own source path")
 
     report_path = os.path.join(tgt, "__служебные_файлы", "report.html")
@@ -2135,134 +2146,22 @@ def test_force_dump_tilde_prefix():
           "force-dump-tilde: Albums\\~Яндекс_диск\\ is not created for a dated loose photo")
 
 
-def test_merged_album_marker_file():
-    print("\n=== 2026-07-11 (user request): __ВНИМАНИЕ_объединённая_папка.txt appears when "
-          "an album is actually populated from more than one physical source location ===")
-    # Real-world scenario discussed with the user: two differently-named album folders share
-    # SOME exact-duplicate content (e.g. wedding photos for the groom's vs bride's relatives,
-    # overlapping only on the couple's own shared photos). Content-based dedup is global and
-    # not album-aware -- the duplicate physically survives only in whichever album was walked
-    # first, and the SECOND album gets nothing for that file. Nothing is copied twice (hardlink/
-    # real-copy/symlink all considered and rejected, see README.md) -- instead the WINNING
-    # album gets a visible marker file listing where else its content conceptually came from.
-
-    # --- unit-level: find_album() now returns a third value, album_prefix -- the path from
-    # SOURCE root through (and including) the album segment itself, and working uniformly for
-    # an archive-derived album (the archive's own filename occupies the boundary segment).
-    # Updated 2026-08-03 (RULES_VERSION 2026-08-03, "ОТРАВЛЕНИЕ ВЕТКИ" / two-phase traversal,
-    # commit 24f545a): a recognized dump segment ("фотокамера") found BELOW an already-found
-    # album no longer just "collapses" without extending the prefix -- it now poisons the
-    # album outright (find_album returns None/None/None), same as any other dump branch below
-    # an album. The old expectation here ("YandexDisk | YandexDisk") described pre-24f545a
-    # behavior and started failing live CI on windows-latest the moment that commit landed --
-    # caught late because this script's own CI run wasn't checked at push time, only local
-    # pytest (a different, already-updated suite). See RULES.md for the full rule.
-    code = (
-        "import sys; sys.path.insert(0, %r)\n"
-        "sys.stdout.reconfigure(encoding='utf-8', errors='replace')\n"
-        "import photosort_win as m\n"
-        "album, subpath, prefix = m.find_album('Свадьба_жених/img.jpg', None)\n"
-        "print('plain_album:', album, '|', prefix)\n"
-        "album2, subpath2, prefix2 = m.find_album('YandexDisk/Фотокамера/img.jpg', None)\n"
-        "print('dump_subfolder_poisons_album:', album2, '|', prefix2)\n"
-        "album3, subpath3, prefix3 = m.find_album('Downloads/archive-2020-07-01/inner/photo.jpg', 1)\n"
-        "print('archive_derived:', album3, '|', prefix3, '|', subpath3)\n"
-    ) % ROOT
-    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                        encoding="utf-8", errors="replace")
-    check(r.returncode == 0, f"merged-album-marker: find_album unit script exits 0 (stderr={r.stderr[-500:]})")
-    check("plain_album: Свадьба_жених | Свадьба_жених" in r.stdout,
-          "merged-album-marker: album_prefix for a plain disk album equals the album name itself")
-    check("dump_subfolder_poisons_album: None | None" in r.stdout,
-          "merged-album-marker: a recognized dump segment (Фотокамера) below an already-found "
-          "album poisons it entirely (RULES_VERSION 2026-08-03) -- album/prefix both None, not "
-          "collapsed-but-kept as before")
-    check("archive_derived: archive-2020-07-01 | Downloads/archive-2020-07-01 | ['inner']" in r.stdout,
-          "merged-album-marker: album_prefix for an archive-derived album includes the disk-side "
-          "path through the archive's own filename segment")
-
-    # --- end-to-end: АльбомА (walked first) and АльбомБ share one byte-identical photo, plus
-    # АльбомБ has one unique photo of its own.
-    src = os.path.join(WORK, "src_merged_album")
-    shared_a = os.path.join(src, "АльбомА", "shared.jpg")
-    shared_b = os.path.join(src, "АльбомБ", "shared.jpg")
-    unique_b = os.path.join(src, "АльбомБ", "unique.jpg")
-    image(shared_a, 1200, 900, exif=True, dt="2020:05:05 10:00:00")
-    image(unique_b, 1200, 900, exif=True, dt="2020:06:06 10:00:00")
-    shutil.copyfile(shared_a, shared_b)  # byte-identical on purpose -- this IS the duplicate
-
-    tgt = os.path.join(WORK, "target_merged_album")
-    r2 = run_photosort(src, tgt)
-    check(r2.returncode == 0, "merged-album-marker: end-to-end run exits 0")
-    marker_a = os.path.join(tgt, "Albums", "АльбомА", "__ВНИМАНИЕ_объединённая_папка.txt")
-    marker_b = os.path.join(tgt, "Albums", "АльбомБ", "__ВНИМАНИЕ_объединённая_папка.txt")
-    check(os.path.isfile(marker_a),
-          "merged-album-marker: marker file created in the WINNING album (АльбомА, walked first)")
-    check(not os.path.isfile(marker_b),
-          "merged-album-marker: no marker in АльбомБ -- it never actually merged anything INTO itself")
-    if os.path.isfile(marker_a):
-        with open(marker_a, encoding="utf-8") as f:
-            marker_text = f.read()
-        check(marker_text.rstrip("\n").endswith("— АльбомБ"),
-              f"merged-album-marker: marker line names the OTHER album as the source (got: {marker_text!r})")
-    check(os.path.isfile(os.path.join(tgt, "Albums", "АльбомБ", "unique.jpg")),
-          "merged-album-marker: АльбомБ's own unique photo is still archived normally")
-
-    # --- dry-run: detection is reported (both in build_final_summary's text and in stdout),
-    # but nothing is physically written -- same "пробный прогон ничего не пишет" guarantee as
-    # real file copies.
-    tgt_dry = os.path.join(WORK, "target_merged_album_dry")
-    r3 = run_photosort(src, tgt_dry, extra_args=["--dry-run"])
-    check(r3.returncode == 0, "merged-album-marker: dry-run exits 0")
-    check("АльбомА ← АльбомБ" in r3.stdout,
-          "merged-album-marker: dry-run stdout reports the merge BEFORE any real build")
-    # resolve_dest_path() unconditionally creates the destination folder skeleton even at
-    # dry_run (pre-existing, documented quirk, out of scope here -- see ROADMAP.md) -- so
-    # Albums\АльбомА\ itself may exist, but it must be empty: no photo, and definitely no
-    # marker file (that write is explicitly dry_run-gated in _note_album_source()).
-    check(not os.path.isfile(os.path.join(tgt_dry, "Albums", "АльбомА",
-                                           "__ВНИМАНИЕ_объединённая_папка.txt")),
-          "merged-album-marker: dry-run does not physically write the marker file")
-    check(not os.path.isfile(os.path.join(tgt_dry, "Albums", "АльбомА", "shared.jpg")),
-          "merged-album-marker: dry-run does not physically copy any file either")
-
-    # --- repeat run: a THIRD source folder ("АльбомВ") sharing the same photo gets appended
-    # later -- a new line (with a blank separator before it) should join the existing marker.
-    third = os.path.join(WORK, "src_merged_album_round2")
-    shared_c = os.path.join(third, "АльбомВ", "shared.jpg")
-    os.makedirs(os.path.dirname(shared_c), exist_ok=True)
-    shutil.copyfile(shared_a, shared_c)
-    r4 = run_photosort(third, tgt)
-    check(r4.returncode == 0, "merged-album-marker: second (supplemental) run exits 0")
-    with open(marker_a, encoding="utf-8") as f:
-        marker_text_2 = f.read()
-    check("\n\n" in marker_text_2 or marker_text_2.count("\n") >= 3,
-          "merged-album-marker: a blank separator line is inserted before the new run's addition")
-    check(marker_text_2.rstrip("\n").endswith("— АльбомВ"),
-          f"merged-album-marker: second run appends a new line for the new source (got: {marker_text_2!r})")
-    check("— АльбомБ" in marker_text_2,
-          "merged-album-marker: the original first-run entry is preserved, not overwritten")
-
-
 def test_archive_file_always_becomes_an_album():
-    print("\n=== 2026-07-11 finding: an archive file is always an album (named after the "
-          "archive itself) unless it sits inside an already-meaningful disk-side album ===")
+    print("\n=== 2026-07-11 finding, narrowed 2026-08-08: an archive file is an album named "
+          "after itself when nothing on its path is dump, on equal footing with any folder ===")
     # Real case: 8 Yandex.Disk export zips all unpack into an internal folder literally
     # called "archive\" -- before this fix, that generic internal name won as "the album"
-    # and merged all 8 unrelated exports into one Albums\archive\ pile. Now: a folder name
-    # found INSIDE an archive is never trusted alone to name an album -- if the disk-side
-    # path has no real album, the ARCHIVE'S OWN FILENAME becomes the album instead, and the
-    # archive's internal structure becomes that album's subpath (see find_album(),
-    # archive_boundary_idx).
+    # and merged all 8 unrelated exports into one Albums\archive\ pile. A folder name found
+    # INSIDE an archive is never trusted alone to name an album on its own.
     tmp_jpg = os.path.join(WORK, "_tmp_for_archive_album.jpg")
     image(tmp_jpg, 1300, 1000, exif=True, dt="2023:10:02 11:25:21")
 
-    # Case 1: zip sits loose on the "Рабочий стол" (dump) -- no real disk-side album exists,
-    # so the archive's own filename ("yandex_export") becomes the album, and its internal
-    # "archive\" folder becomes subpath underneath it, not a competing/winning album name.
+    # Case 1: zip sits loose directly under SOURCE (no dump ancestor at all) -- nothing on
+    # the path is dump, so the archive's own filename ("yandex_export") becomes the album,
+    # and its internal "archive\" folder becomes subpath underneath it.
     src1 = os.path.join(WORK, "src_archive_album_loose")
-    zpath1 = os.path.join(src1, "Рабочий стол", "yandex_export.zip")
-    os.makedirs(os.path.dirname(zpath1), exist_ok=True)
+    zpath1 = os.path.join(src1, "yandex_export.zip")
+    os.makedirs(src1, exist_ok=True)
     with zipfile.ZipFile(zpath1, "w") as zf:
         zf.write(tmp_jpg, arcname="archive/photo.jpg")
     tgt1 = os.path.join(WORK, "target_archive_album_loose")
@@ -2273,6 +2172,24 @@ def test_archive_file_always_becomes_an_album():
           "survives as subpath underneath it, not as a competing album")
     check(not os.path.isdir(os.path.join(tgt1, "Albums", "archive")),
           "archive-album loose: the generic internal folder name never becomes the album itself")
+
+    # Case 1b (2026-08-08, replaces the old expectation): the SAME zip, but now sitting on a
+    # dump-named ancestor folder ("Рабочий стол") -- no more positional exception for archives
+    # "rescuing" a path via their own name -- the dump ancestor poisons everything below it,
+    # including the archive's own (otherwise fine) name, same as it would for a real folder.
+    src1b = os.path.join(WORK, "src_archive_album_dump_ancestor")
+    zpath1b = os.path.join(src1b, "Рабочий стол", "yandex_export.zip")
+    os.makedirs(os.path.dirname(zpath1b), exist_ok=True)
+    with zipfile.ZipFile(zpath1b, "w") as zf:
+        zf.write(tmp_jpg, arcname="archive/photo.jpg")
+    tgt1b = os.path.join(WORK, "target_archive_album_dump_ancestor")
+    r1b = run_photosort(src1b, tgt1b)
+    check(r1b.returncode == 0, "archive-album dump-ancestor: run exits 0")
+    # Albums\ itself is always created as part of the TARGET skeleton, even when empty --
+    # check it has no CONTENT, not that the folder is absent.
+    check(not os.listdir(os.path.join(tgt1b, "Albums")),
+          "archive-album dump-ancestor: a dump ancestor (Рабочий стол) poisons the archive "
+          "and everything inside it too -- Albums\\ stays empty, file falls to ByDate")
 
     # Case 2: the SAME zip, but now sitting inside a real, already-meaningful disk album.
     # Updated 2026-08-03 ("archive == folder", RULES_VERSION 2026-08-03, commit 24f545a): a
@@ -2298,23 +2215,27 @@ def test_archive_file_always_becomes_an_album():
           "album -- it only ever appears nested under the real disk-side album")
 
 
-def test_bare_digit_date_folder_kept_inside_album_but_not_as_album_name():
-    print("\n=== 2026-07-11 finding: a bare 6-8 digit folder ('20240802') never NAMES an "
-          "album, but survives as a subpath once already inside a real album ===")
-    # The pure unit check on the two-role split (is_dump_segment(for_subpath=...)) now lives
-    # in tests/test_dump_segments.py (test_bare_digit_date_folder_two_role_split) -- this test
-    # keeps only the end-to-end pipeline part.
+def test_bare_digit_date_folder_always_poisons_now():
+    print("\n=== 2026-08-08 (replaces the old 'kept as subpath inside an album' expectation): "
+          "a bare 6-8 digit folder ('20240802') is now ALWAYS dump, no positional exception ===")
+    # The pure unit check now lives in tests/test_dump_segments.py
+    # (test_bare_digit_folder_always_dump) -- this test keeps only the end-to-end pipeline part.
 
-    # End-to-end: a real album containing an unrenamed camera-style date folder.
+    # End-to-end: an unrenamed camera-style date folder INSIDE what would otherwise be a real
+    # album -- before 2026-08-08 this survived as a subpath; now it poisons the album entirely.
     src = os.path.join(WORK, "src_digit_date_subpath")
     jpg = os.path.join(src, "Отпуск", "20240802", "photo.jpg")
     image(jpg, 1300, 1000, exif=True, dt="2024:08:02 10:00:00")
     tgt = os.path.join(WORK, "target_digit_date_subpath")
     r2 = run_photosort(src, tgt)
     check(r2.returncode == 0, "digit-date subpath: end-to-end run exits 0")
-    check(os.path.isfile(os.path.join(tgt, "Albums", "Отпуск", "20240802", "photo.jpg")),
-          "digit-date subpath: the unrenamed camera-style date folder survives as a subpath "
-          "inside the real album, instead of being collapsed away")
+    check(not os.listdir(os.path.join(tgt, "Albums")),
+          "digit-date subpath: the day-folder now poisons the whole path -- Albums\\ stays "
+          "empty, falls to ByDate instead of surviving as a subpath")
+    check(os.path.isfile(os.path.join(tgt, "ByDate", "2024", "2024-08 [PhotoArchive]",
+                                       "photo.jpg")),
+          "digit-date subpath: file lands in the normal ByDate bucket for its EXIF date "
+          "(month granularity, the CLI default)")
 
 
 def test_summary_enriched_always():
@@ -4211,9 +4132,8 @@ ALL_TESTS = [
     test_desktop_is_dump_segment,
     test_camera_roll_and_new_folder_are_dump_segments,
     test_force_dump_tilde_prefix,
-    test_merged_album_marker_file,
     test_archive_file_always_becomes_an_album,
-    test_bare_digit_date_folder_kept_inside_album_but_not_as_album_name,
+    test_bare_digit_date_folder_always_poisons_now,
     test_summary_enriched_always,
     test_default_exclude_dirs_configurable_and_logged,
     test_dump_segment_names_configurable,

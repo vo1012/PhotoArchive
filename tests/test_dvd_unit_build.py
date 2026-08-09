@@ -227,6 +227,32 @@ def test_sample_limit_truncated_unit_is_not_cleaned_up(tmp_path):
     assert (target / "Albums" / "Disc1" / "VIDEO_TS" / "VTS_01_0.VOB").read_bytes() == b"v" * 200
 
 
+def test_dvd_video_ts_duplicate_within_same_run_not_recopied(tmp_path):
+    """2026-08-08, живой боевой прогон F:->D: -- два физически идентичных VIDEO_TS в РАЗНЫХ
+    папках SOURCE (тот же диск, скопированный пользователем в двух местах) обнаружены в ОДНОМ
+    прогоне -- registry с прошлых прогонов пуст (fingerprint нигде не записан), но второй юнит
+    всё равно обязан быть распознан как дубль ПЕРВОГО, встреченного в этом же прогоне, а не
+    скопирован повторно (~ вдвое впустую занятое место, реальная находка боевого прогона)."""
+    source = tmp_path / "source"
+    (source / "a" / "VIDEO_TS").mkdir(parents=True)
+    (source / "a" / "VIDEO_TS" / "VTS_01_0.VOB").write_bytes(b"v" * 200)
+    (source / "b" / "VIDEO_TS").mkdir(parents=True)
+    (source / "b" / "VIDEO_TS" / "VTS_01_0.VOB").write_bytes(b"v" * 200)  # byte-identical disc
+    target = tmp_path / "target"
+    target.mkdir()
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    cfg = m.Config(source=str(source), target=str(target), dry_run=False, sample_limit=0,
+                    workdir=str(workdir))
+
+    stats, *_ = _run(cfg)
+
+    assert len(stats["dvd_units_copied"]) == 1
+    assert stats["dvd_units_skipped_duplicate"][0]["name"] in ("a", "b")
+    albums = list((target / "Albums").iterdir())
+    assert len(albums) == 1  # only one VIDEO_TS folder physically written, not two
+
+
 def test_dry_run_does_not_copy_dvd_files(tmp_path):
     source = tmp_path / "source"
     disc = source / "Disc1"

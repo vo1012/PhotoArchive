@@ -1,10 +1,10 @@
 """is_dump_segment() / find_album() -- pure path-segment classification, no filesystem I/O.
 
-Scenarios below are migrated from the equivalent subprocess unit checks in
-ci/windows_ci_test.py (test_desktop_is_dump_segment, test_camera_roll_and_new_folder_are_dump_segments,
-test_force_dump_tilde_prefix, test_bare_digit_date_folder_kept_inside_album_but_not_as_album_name)
--- those tests keep their end-to-end (real pipeline run) portions, only the pure-logic unit
-checks were duplicated here where they run in seconds without a subprocess."""
+2026-08-08 (альбомный редизайн, "чем проще, тем лучше для пользователя"): алгоритм сведён к
+одному правилу -- любой служебный (dump) сегмент ГДЕ УГОДНО на пути отравляет всё, что глубже,
+без исключений по позиции (день-папка, юзернейм профиля, архив как "второй шанс" -- всё это
+убрано). Если путь не отравлен -- он целиком зеркалится в Albums\\, и каждая папка на нём это
+свой отдельный альбом (см. RULES.md)."""
 import pytest
 
 import photosort_win as m
@@ -19,8 +19,6 @@ import photosort_win as m
     ("Новая папка (2)", True),
     ("New Folder", True),
     ("New Folder (3)", True),
-    # deliberately NOT blanket-whitelisted -- see find_album()'s archive_boundary_idx handling
-    # for how a real archive named "archive" is actually resolved.
     ("archive", False),
     ("Фото Чайка_2024", False),
     ("Яндекс_диск", False),
@@ -30,21 +28,19 @@ def test_is_dump_segment_known_names(name, expected):
 
 
 def test_force_dump_tilde_prefix():
-    # 2026-07-11 (user request): a '~'-prefixed folder is ALWAYS dump, in either role, even
-    # though the plain name would be a plausible real album.
+    # 2026-07-11 (user request): a '~'-prefixed folder is ALWAYS dump, even though the plain
+    # name would be a plausible real album.
     assert m.is_dump_segment("~Яндекс_диск") is True
-    assert m.is_dump_segment("~Яндекс_диск", for_subpath=True) is True
     assert m.is_dump_segment("Яндекс_диск") is False
 
 
-def test_bare_digit_date_folder_two_role_split():
-    # 2026-07-11 finding: a bare 6-8 digit folder never NAMES an album, but survives as a
-    # subpath once already inside a real album; a short digit run never gets that exemption;
-    # a date WITH separators was never dump in either role.
+def test_bare_digit_folder_always_dump():
+    # 2026-08-08: убрана позиционная экземпция дня-папки (было: НЕ dump, если уже внутри
+    # найденного альбома) -- "день-папка всегда dump, отравляет наравне со всеми" (прямое
+    # решение пользователя). Любой голый цифровой сегмент, любой длины, теперь безусловно dump.
     assert m.is_dump_segment("20240802") is True
-    assert m.is_dump_segment("20240802", for_subpath=True) is False
-    assert m.is_dump_segment("101", for_subpath=True) is True
-    assert m.is_dump_segment("2015-08-20") is False
+    assert m.is_dump_segment("101") is True
+    assert m.is_dump_segment("2015-08-20") is False  # separators -- not a bare digit run
 
 
 def test_dump_tag_always_dump_regardless_of_prefix_or_config():
@@ -59,186 +55,126 @@ def test_dump_prefixes_whatsapp_telegram():
 
 
 class TestFindAlbum:
-    def test_no_album_all_segments_dump_or_no_letters(self):
-        assert m.find_album("DCIM/100ABCDE/IMG_0001.jpg") == (None, None, None)
+    def test_no_dump_anywhere_mirrors_whole_path(self):
+        album, subpath, prefix = m.find_album("Отпуск/Море/photo.jpg")
+        assert (album, subpath, prefix) == ("Отпуск", ["Море"], "Отпуск")
 
-    def test_first_meaningful_segment_is_the_album(self):
-        album, subpath, prefix = m.find_album("Отпуск/2015-08-20/photo.jpg")
-        assert album == "Отпуск"
-        assert subpath == ["2015-08-20"]
-        # album_prefix is the path from SOURCE's root up to AND INCLUDING the album segment
-        # itself (used only for the merged-album marker note), not the full subpath too.
-        assert prefix == "Отпуск"
+    def test_single_segment_album(self):
+        album, subpath, prefix = m.find_album("Отпуск/photo.jpg")
+        assert (album, subpath, prefix) == ("Отпуск", [], "Отпуск")
 
-    def test_bare_digit_date_subpath_kept_inside_real_album(self):
-        # Companion of test_bare_digit_date_folder_two_role_split above, exercised through the
-        # full find_album() path-walk rather than is_dump_segment() directly.
-        album, subpath, _prefix = m.find_album("Отпуск/20240802/photo.jpg")
-        assert album == "Отпуск"
-        assert subpath == ["20240802"]
+    def test_file_directly_in_source_root_has_no_album(self):
+        assert m.find_album("photo.jpg") == (None, None, None)
 
-    def test_profile_username_segment_is_dump(self):
-        # A Windows/Unix profile username sitting directly under Users/Home is not a
-        # meaningful album -- loose photos underneath it fall through to ByDate instead.
-        assert m.find_album("Users/User1/Pictures/photo.jpg") == (None, None, None)
+    def test_dump_top_segment_poisons_everything_below(self):
+        # DCIM -- служебное имя, отравляет "Отпуск" ниже, хотя раньше (до редизайна) поиск
+        # просто пропускал бы DCIM и нашёл бы "Отпуск" как альбом.
+        assert m.find_album("DCIM/Отпуск/photo.jpg") == (None, None, None)
 
-    def test_archive_own_name_becomes_album_when_disk_side_has_none(self):
-        # 2026-07-11 finding: an archive's OWN filename anchors the album when nothing
-        # meaningful exists on the disk-side path leading to it (archive_boundary_idx == the
-        # archive's own segment, "DCIM" being a dump name disqualifies the disk side). The
-        # generic internal folder name "archive" (found inside many real zip exports) is never
-        # trusted to NAME the album, but still survives as a subpath level underneath it.
-        rel_path = "DCIM/Свадьба.zip/archive/photo.jpg"
-        album, subpath, prefix = m.find_album(rel_path, archive_boundary_idx=1)
-        assert album == "Свадьба.zip"
-        assert subpath == ["archive"]
-        assert prefix == "DCIM/Свадьба.zip"
+    def test_dump_deep_inside_otherwise_real_path_poisons_below(self):
+        # 2026-08-03: dump/тильда-папка НИЖЕ уже "хорошего" сегмента всё равно отравляет всё
+        # глубже неё, без права на реанимацию даже осмысленным именем ниже.
+        assert m.find_album("RealAlbum/~synced/RealLookingSubAlbum/photo.jpg") == (None, None, None)
 
-    def test_real_album_outside_archive_wins_over_archive_name(self):
-        rel_path = "Свадьба/export.zip/photos/img.jpg"
-        album, subpath, _prefix = m.find_album(rel_path, archive_boundary_idx=1)
-        assert album == "Свадьба"
-        # 2026-08-03: "архив == папка" -- the archive's own (non-dump) name is now kept as an
-        # ordinary subpath level, exactly like a real folder would be, regardless of how many
-        # media files live inside it (see find_album()'s docstring).
-        assert subpath == ["export.zip", "photos"]
+    def test_dump_does_not_affect_sibling_branch(self):
+        # Отравление скоуплено на файлы, ЧЕЙ путь реально проходит через dump-сегмент -- сосед
+        # в той же папке, но без dump-сегмента на своём пути, резолвится нормально.
+        assert m.find_album("RealAlbum/normal.jpg") == ("RealAlbum", [], "RealAlbum")
 
-    def test_archive_own_name_kept_in_subpath_even_with_single_file(self):
-        # Same rule as above, worded against the original "single file vs many" question this
-        # was discussed against: no file-count exception exists -- a single-photo archive gets
-        # the exact same sub-folder treatment as one with many.
-        rel_path = "Свадьба/export.zip/img.jpg"
-        album, subpath, _prefix = m.find_album(rel_path, archive_boundary_idx=1)
-        assert album == "Свадьба"
-        assert subpath == ["export.zip"]
+    def test_bare_date_folder_now_poisons_like_any_other_dump_name(self):
+        # 2026-08-08: раньше эта день-папка была исключением ("не считается сигналом
+        # некуратировано") -- теперь исключений нет вовсе, она dump как и всё остальное.
+        assert m.find_album("RealAlbum/20240802/RealLookingSubAlbum/photo.jpg") == (None, None, None)
 
-    def test_dump_folder_below_album_poisons_everything_beneath_no_recovery(self):
-        # 2026-08-03 (user request): a dump/tilde FOLDER found below an already-established
-        # album voids the album for EVERYTHING deeper, permanently -- even folders that look
-        # like perfectly meaningful album names of their own can't "un-poison" the branch.
-        rel_path = "RealAlbum/~synced/RealLookingSubAlbum/photo.jpg"
-        assert m.find_album(rel_path) == (None, None, None)
+    def test_users_profile_root_poisons_like_any_dump_name(self):
+        # 2026-08-08: отдельная проверка юзернейма профиля убрана как избыточная -- "Users"
+        # само по себе уже служебное имя и отравляет всё ниже с первого сегмента, до проверки
+        # логина дело не доходит вовсе (даже частый сценарий "весь профиль/Pictures как
+        # источник" теперь падает в ByDate, осознанно принято пользователем).
+        assert m.find_album("Users/User1/Pictures/Отпуск/photo.jpg") == (None, None, None)
 
-    def test_poison_does_not_affect_sibling_branch(self):
-        # The poison above is scoped to items whose path actually passes through the dump/
-        # tilde folder -- a sibling file directly in RealAlbum (not through ~synced) resolves
-        # completely normally.
-        album, subpath, _prefix = m.find_album("RealAlbum/normal.jpg")
-        assert album == "RealAlbum"
-        assert subpath == []
-
-    def test_bare_date_folder_below_album_does_not_poison(self):
-        # Companion of the poison test above: a bare 6-8 digit day-folder is NOT a "not
-        # curated" signal (same for_subpath exemption as test_bare_digit_date_subpath_kept_
-        # inside_real_album), so it must not trigger the poison rule.
-        album, subpath, _prefix = m.find_album("RealAlbum/20240802/RealLookingSubAlbum/photo.jpg")
-        assert album == "RealAlbum"
-        assert subpath == ["20240802", "RealLookingSubAlbum"]
-
-    def test_tilde_archive_own_name_is_unconditional_bydate_even_inside_real_album(self):
-        # 2026-08-03 (user request): unlike a folder, an archive's OWN tilde/dump name makes
-        # its entire content independently ByDate, regardless of where the archive itself
-        # physically sits -- even directly inside an otherwise-fine real album.
-        rel_path = "RealAlbum/~backup/photo.jpg"
+    def test_archive_own_dump_name_poisons_only_its_own_content(self):
+        # Имя архива -- просто ещё один сегмент пути, проверяется той же is_dump_segment(), в
+        # том же едином проходе, без отдельного кода. Тильда/dump-имя архива отравляет то, что
+        # внутри НЕГО, но не соседние файлы (у них этого сегмента вовсе нет в их rel_path).
+        rel_path = "RealAlbum/~backup.zip/inner/photo.jpg"
         assert m.find_album(rel_path, archive_boundary_idx=1) == (None, None, None)
+        assert m.find_album("RealAlbum/sibling.jpg") == ("RealAlbum", [], "RealAlbum")
 
-    def test_tilde_archive_does_not_poison_sibling_files_in_same_album(self):
-        # The independence cuts both ways: the tilde-archive's own fate doesn't leak out to
-        # affect a normal sibling file living in the very same album folder.
-        album, subpath, _prefix = m.find_album("RealAlbum/normal.jpg")
-        assert album == "RealAlbum"
-        assert subpath == []
+    def test_archive_normal_name_participates_like_an_ordinary_folder(self):
+        # Архив с обычным (не dump) именем -- просто ещё один сегмент дерева, ничем не
+        # отличается от папки: путь целиком зеркалится, включая имя архива как подпапка.
+        rel_path = "Свадьба/export.zip/photos/img.jpg"
+        album, subpath, prefix = m.find_album(rel_path, archive_boundary_idx=1)
+        assert (album, subpath, prefix) == ("Свадьба", ["export.zip", "photos"], "Свадьба")
 
     def test_dump_folder_poisons_before_archive_is_ever_consulted(self):
-        # If the branch is ALREADY poisoned by a dump/tilde FOLDER before reaching an archive,
-        # the archive doesn't get a chance to "rescue" anything via its own (perfectly normal)
-        # name -- the poison is a one-way door regardless of what's found deeper.
         rel_path = "RealAlbum/~tildefolder/somearchive/photo.jpg"
         assert m.find_album(rel_path, archive_boundary_idx=2) == (None, None, None)
 
+    def test_every_folder_in_a_clean_tree_is_its_own_album(self):
+        # "Альбом -- это каждая папка в дереве" (прямая формулировка пользователя): "Мои
+        # фото/Свадьба" и "Мои фото/Отпуск" физически лежат под общим "Мои фото", но каждая
+        # папка на пути (включая сам "Мои фото") -- потенциально свой альбом; find_album()
+        # отдаёт верхний сегмент как album/album_prefix (для build_album_dest_dir()), полный
+        # путь восстанавливается как album_prefix + subpath.
+        album1, subpath1, prefix1 = m.find_album("Мои фото/Свадьба/img.jpg")
+        album2, subpath2, prefix2 = m.find_album("Мои фото/Отпуск/img.jpg")
+        assert (album1, subpath1, prefix1) == ("Мои фото", ["Свадьба"], "Мои фото")
+        assert (album2, subpath2, prefix2) == ("Мои фото", ["Отпуск"], "Мои фото")
+
+    def test_dump_ancestor_before_real_name_poisons_the_whole_thing(self):
+        # 2026-08-08: раньше два разных dump-родителя перед одинаковым именем считались двумя
+        # разными альбомами (album_prefix разный) -- теперь ОБА падают в ByDate, вопрос
+        # "разные ли это альбомы" не возникает вовсе, раз альбома нет.
+        assert m.find_album("DCIM/Отпуск/a.jpg") == (None, None, None)
+        assert m.find_album("Camera/Отпуск/b.jpg") == (None, None, None)
+
 
 class TestIsTerminalBydateBranch:
-    """REVIEW-HANDOFF.md, Раунд 58 (придирка): _is_terminal_bydate_branch() дублирует логику
-    find_album() вручную (см. её собственный докстринг: "kept in sync manually"), но не имела
-    ни одного прямого теста -- всё покрытие было косвенным, через сквозное поведение
-    SourceWalker.walk(). Раунд 58 подтвердил инвариант независимым fuzz-тестом (~60000
-    случайных путей, не тестами проекта) -- эти тесты не повторяют тот же fuzz, а закрепляют
-    ключевые случаи из докстринга/RULES.md напрямую, чтобы будущая правка find_album() без
-    синхронной правки этой копии ловилась сразу, не только на практике.
+    """2026-08-08 (альбомный редизайн): с уходом позиционных исключений найти "тупик" стало
+    безусловным -- если СРЕДИ УЖЕ ПРОЙДЕННЫХ сегментов (включая текущую папку/архив) есть хотя
+    бы один dump, результат уже окончательный (True), что бы ни нашлось глубже. Больше нет
+    промежуточного "ещё не решено" состояния, отличного от простого is_dump_segment()."""
 
-    segments -- путь ДО и ВКЛЮЧАЯ папку/архив, который сейчас проверяется (без имени файла,
-    в отличие от find_album())."""
+    def test_dump_name_alone_is_terminal(self):
+        # 2026-08-08: раньше DCIM сам по себе НЕ был тупиком (поиск мог продолжаться глубже и
+        # найти реальный альбом) -- теперь любой dump сегмент немедленно и безусловно тупик.
+        assert m._is_terminal_bydate_branch(["DCIM"]) is True
 
-    def test_still_searching_dump_name_alone_is_not_terminal(self):
-        # A dump-named folder alone doesn't end the search -- a real album might still be
-        # found deeper (e.g. DCIM/Отпуск/photo.jpg), so Фаза 1 must keep descending.
-        assert m.is_dump_segment("DCIM")
-        assert m._is_terminal_bydate_branch(["DCIM"]) is False
-
-    def test_real_album_folder_is_not_terminal(self):
+    def test_real_folder_is_not_terminal(self):
         assert m._is_terminal_bydate_branch(["Отпуск"]) is False
 
-    def test_bare_digit_date_folder_inside_album_is_not_terminal(self):
-        # Same for_subpath exemption as find_album()'s bare-digit-date handling -- a day-
-        # folder carried over from a camera/phone is not a poison signal.
-        assert m._is_terminal_bydate_branch(["Отпуск", "20240802"]) is False
+    def test_bare_digit_date_folder_is_now_terminal(self):
+        # 2026-08-08: убрана экземпция -- день-папка dump как и всё остальное.
+        assert m._is_terminal_bydate_branch(["Отпуск", "20240802"]) is True
 
-    def test_dump_folder_below_album_is_terminal(self):
+    def test_dump_folder_below_real_name_is_terminal(self):
         assert m._is_terminal_bydate_branch(["RealAlbum", "~synced"]) is True
 
-    def test_profile_username_branch_is_not_terminal(self):
-        # Mirrors find_album()'s Users/Home handling -- "Users" itself is a recognized dump
-        # name (loop keeps searching), "User1" is disqualified as a profile username, but
-        # neither makes the branch a definitive dead end -- a real album might still exist
-        # deeper under the profile folder.
-        assert m._is_terminal_bydate_branch(["Users", "User1"]) is False
+    def test_users_profile_root_is_terminal(self):
+        assert m._is_terminal_bydate_branch(["Users", "User1"]) is True
 
     def test_archive_own_dump_name_is_terminal(self):
-        assert m._is_terminal_bydate_branch(["DCIM", "~namedarchive"], archive_boundary_idx=1) is True
+        assert m._is_terminal_bydate_branch(["RealAlbum", "~namedarchive"], archive_boundary_idx=1) is True
 
-    def test_archive_own_normal_name_becomes_album_not_terminal(self):
-        assert m._is_terminal_bydate_branch(["DCIM", "realname"], archive_boundary_idx=1) is False
-
-    def test_archive_own_name_without_letters_is_terminal(self):
-        # Dead end: neither the disk side nor the archive's own name (no letters) qualify.
-        assert m._is_terminal_bydate_branch(["DCIM", "12345"], archive_boundary_idx=1) is True
-
-    def test_archive_with_normal_name_inside_real_album_is_not_terminal(self):
-        assert m._is_terminal_bydate_branch(["RealAlbum", "normalarchive"], archive_boundary_idx=1) is False
-
-    def test_tilde_archive_inside_real_album_is_terminal(self):
-        # 2026-08-03: an archive's own tilde/dump name is unconditional ByDate regardless of
-        # where it physically sits -- even directly inside an otherwise-fine real album.
-        assert m._is_terminal_bydate_branch(["RealAlbum", "~backup"], archive_boundary_idx=1) is True
-
-    def test_dump_folder_poisons_before_archive_is_reached(self):
-        assert m._is_terminal_bydate_branch(
-            ["RealAlbum", "~tildefolder", "somearchive"], archive_boundary_idx=2) is True
+    def test_archive_own_normal_name_is_not_terminal(self):
+        assert m._is_terminal_bydate_branch(["RealAlbum", "realname"], archive_boundary_idx=1) is False
 
     @pytest.mark.parametrize("segments,archive_boundary_idx,expected_terminal", [
-        (["DCIM"], None, False),
+        (["DCIM"], None, True),
         (["Отпуск"], None, False),
-        (["Отпуск", "20240802"], None, False),
+        (["Отпуск", "20240802"], None, True),
         (["RealAlbum", "~synced"], None, True),
-        (["Users", "User1"], None, False),
-        (["DCIM", "~namedarchive"], 1, True),
-        (["DCIM", "realname"], 1, False),
-        (["DCIM", "12345"], 1, True),
-        (["RealAlbum", "normalarchive"], 1, False),
-        (["RealAlbum", "~backup"], 1, True),
+        (["Users", "User1"], None, True),
+        (["RealAlbum", "~namedarchive"], 1, True),
+        (["RealAlbum", "realname"], 1, False),
         (["RealAlbum", "~tildefolder", "somearchive"], 2, True),
     ])
     def test_agrees_with_find_album_on_a_leaf_completing_the_same_path(
             self, segments, archive_boundary_idx, expected_terminal):
-        """Инвариант, который держится ТОЛЬКО в одну сторону (см. докстринг
-        _is_terminal_bydate_branch()): если она говорит "тупик" (True) для этой ветки, то
-        find_album() для ЛЮБОГО файла, довершающего этот же путь, обязана вернуть None -- это
-        и есть всё, что "тупик" гарантирует (одно и то же ревизорское fuzz-подтверждение).
-        Обратное НЕ верно и не проверяется здесь: "не тупик" (False) означает лишь "поиск ещё
-        не исчерпан", а не "файл-лист прямо на этой глубине обязательно найдёт альбом" -- у
-        "DCIM/photo.jpg" (пример из докстрингов обеих функций) find_album() тоже честно вернёт
-        None, что не противоречит False (реальный альбом мог бы найтись ГЛУБЖЕ, просто не в
-        этом конкретном, специально коротком тестовом пути)."""
+        """Если _is_terminal_bydate_branch() говорит "тупик" (True) для этой ветки, то
+        find_album() для ЛЮБОГО файла, довершающего этот же путь, обязана вернуть None."""
         got_terminal = m._is_terminal_bydate_branch(segments, archive_boundary_idx=archive_boundary_idx)
         assert got_terminal is expected_terminal
         if not expected_terminal:
