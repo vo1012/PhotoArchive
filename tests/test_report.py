@@ -228,7 +228,8 @@ def test_undated_checklist_item_shows_folder_and_name():
     безадресным (только счётчик) -- пользователю нечем было найти сами файлы без похода в
     undated_media.csv. Задача 5 (2026-08-02): показываются только файлы под
     ByDate/0000-undated/ -- только там дата реально определяет место файла (см. RULES.md,
-    блок UNDATED)."""
+    блок UNDATED). 2026-08-09 (задача 5): пункт объединён с Tier B/C -- заголовок и
+    разбивка теперь общие на весь чек-лист, не отдельный "вообще без даты"."""
     data = {"undated_media": [
         {"timestamp": "2026-01-01 00:00:00", "source": "F:\\a.jpg",
          "dest": "D:\\Archive\\ByDate\\0000-undated\\Отпуск\\a.jpg"},
@@ -236,7 +237,8 @@ def test_undated_checklist_item_shows_folder_and_name():
     fields = r._build_checklist_fields(data)
     items = r._build_checklist_items(fields)
     joined = "".join(items)
-    assert "1 файл вообще без даты" in joined
+    assert "1 файл — дата определена неточно или не определена вовсе" in joined
+    assert "дата не определилась вовсе" in joined
     assert "a.jpg" in joined
     assert "ByDate\\0000-undated\\Отпуск" in joined
 
@@ -254,13 +256,14 @@ def test_undated_checklist_item_hides_albums_files_entirely():
     fields = r._build_checklist_fields(data)
     items = r._build_checklist_items(fields)
     joined = "".join(items)
-    assert "вообще без даты" not in joined
+    assert "дата определена неточно" not in joined
 
 
 def test_undated_checklist_item_groups_and_previews_like_tier_bc():
     """Задача 5: тот же <details>-паттерн "превью 2 + Показать ещё N папок", что уже
     применён к Tier B/C -- живой репорт пользователя: 274 файла сплошным абзацем без
-    группировки читались нечитаемо."""
+    группировки читались нечитаемо. 2026-08-09: заголовок группы теперь общий для B/C/D
+    ("с неточной или отсутствующей датой"), не отдельный "вообще без даты"."""
     data = {"undated_media": [
         {"timestamp": "2026-01-01 00:00:00", "source": f"F:\\a{i}.jpg",
          "dest": rf"D:\Archive\ByDate\0000-undated\Папка{i % 3}\a{i}.jpg"}
@@ -269,26 +272,27 @@ def test_undated_checklist_item_groups_and_previews_like_tier_bc():
     fields = r._build_checklist_fields(data)
     items = r._build_checklist_items(fields)
     joined = "".join(items)
-    # Каждая из 3 папок -- своя строка "N файлов вообще без даты" (тот же паттерн, что у
-    # Tier B/C -- заголовок на группу, не один общий агрегат на всю категорию).
-    assert joined.count("файла вообще без даты") == 3
+    # Каждая из 3 папок -- своя строка "N файлов с неточной или отсутствующей датой" (тот же
+    # паттерн, что у Tier B/C -- заголовок на группу, не один общий агрегат на всю категорию).
+    assert joined.count("файла с неточной или отсутствующей датой") == 3
     assert "<details>" in joined
     assert "Показать ещё 1 папку" in joined  # 3 папки всего, превью 2, "ещё" -- 1
 
 
-def test_undated_checklist_item_degrades_without_rows():
-    """analyze-уровень не отслеживает undated_media поштучно (только агрегат в model) --
-    fields.get() должен деградировать до старого текста без списка, не упасть с KeyError.
-    Задача 5: undated_detail тоже отсутствует на этом уровне (build_model_from_analyze_stats
-    не добавляет этот ключ вовсе) -- del здесь имитирует именно это, не просто пустой список."""
+def test_date_issues_checklist_item_degrades_without_rows():
+    """analyze-уровень не отслеживает undated_media/dates_review поштучно (только агрегат в
+    model) -- fields.get() должен деградировать до сводки без списка файлов, не упасть с
+    KeyError. Задача 5 (2026-08-09): date_issues_detail отсутствует на этом уровне
+    (build_model_from_analyze_stats не добавляет этот ключ вовсе) -- del здесь имитирует
+    именно это, не просто пустой список."""
     fields = r._build_checklist_fields({})
-    fields["undated_total"] = 3
-    del fields["undated_media"]
-    del fields["undated_detail"]
+    fields["date_issues_d_total"] = 3
+    del fields["date_issues_detail"]
     items = r._build_checklist_items(fields)
     joined = "".join(items)
-    assert "3 файла вообще без даты" in joined
-    assert "Где искать" not in joined
+    assert "3 файла — дата определена неточно или не определена вовсе" in joined
+    assert "дата не определилась вовсе" in joined
+    assert "Папка:" not in joined
 
 
 def test_parse_target_logs_skips_corrupted_rotated_file_without_crashing(tmp_path):
@@ -1574,8 +1578,7 @@ def test_build_checklist_items_shows_dispute_file_and_reason_when_detail_availab
         "near_dup_clusters": [], "exact_dup_groups": [],
         "disputes_total": 1, "disputes_by_folder": Counter({r"C:\S\Отпуск": 1}),
         "disputes_detail": [(r"C:\S\Отпуск", [("icon.svg", "icon_or_svg")])],
-        "dates_review_total": 0, "dates_review_by_folder": Counter(), "dates_review_bc_total": 0,
-        "undated_total": 0, "quality_flags": Counter(), "unreadable": [],
+        "quality_flags": Counter(), "unreadable": [],
     }
     items = r._build_checklist_items(fields)
     joined = "".join(items)
@@ -1596,18 +1599,34 @@ def test_file_link_or_text_only_links_absolute_windows_paths():
     assert r._file_link_or_text("X", "") == "X"
 
 
-def test_build_checklist_items_falls_back_to_folder_counts_without_dispute_detail():
-    """analyze-уровень: disputes_detail отсутствует (AnalyzeStats не отслеживает source/reason
-    на файл) -- старое поведение (только числа по папкам) должно сохраниться, не падать."""
+def test_build_checklist_items_shows_disputed_paths_on_analyze_level():
+    """Задача 4 (SESSION-HANDOFF.txt, 2026-08-09): analyze-уровень теперь показывает реальные
+    пути (AnalyzeStats.disputed_paths), не голый агрегат по папкам -- заголовок без
+    "однозначно" (прямая инструкция пользователя), file://-ссылка рабочая (путь абсолютный)."""
     fields = {
         "near_dup_clusters": [], "exact_dup_groups": [],
-        "disputes_total": 4, "disputes_by_folder": Counter({r"C:\S\Отпуск": 4}),
-        "dates_review_total": 0, "dates_review_by_folder": Counter(), "dates_review_bc_total": 0,
-        "undated_total": 0, "quality_flags": Counter(), "unreadable": [],
+        "disputes_total": 2, "disputed_paths": [r"C:\S\Отпуск\icon.svg", r"C:\S\Отпуск\tiny.jpg"],
+        "quality_flags": Counter(), "unreadable": [],
     }
     items = r._build_checklist_items(fields)
     joined = "".join(items)
-    assert "4 файла не удалось однозначно распознать" in joined
+    assert "2 файла не удалось распознать" in joined
+    assert "однозначно" not in joined
+    assert "icon.svg" in joined and "tiny.jpg" in joined
+    assert 'file:///C:/S/' in joined
+
+
+def test_build_checklist_items_falls_back_to_folder_counts_without_dispute_detail():
+    """Ни disputes_detail (TARGET), ни disputed_paths (analyze) не переданы -- страховочный
+    старый агрегат по папкам должен сохраниться, не падать с KeyError."""
+    fields = {
+        "near_dup_clusters": [], "exact_dup_groups": [],
+        "disputes_total": 4, "disputes_by_folder": Counter({r"C:\S\Отпуск": 4}),
+        "quality_flags": Counter(), "unreadable": [],
+    }
+    items = r._build_checklist_items(fields)
+    joined = "".join(items)
+    assert "4 файла не удалось распознать" in joined
     assert "Сгруппированы по исходной папке" in joined
 
 
@@ -1624,8 +1643,7 @@ def test_build_checklist_items_dispute_detail_links_unsorted_with_target_path():
         "near_dup_clusters": [], "exact_dup_groups": [],
         "disputes_total": 1, "disputes_by_folder": Counter({r"C:\S\Отпуск": 1}),
         "disputes_detail": [(r"C:\S\Отпуск", [("icon.svg", "icon_or_svg")])],
-        "dates_review_total": 0, "dates_review_by_folder": Counter(), "dates_review_bc_total": 0,
-        "undated_total": 0, "quality_flags": Counter(), "unreadable": [],
+        "quality_flags": Counter(), "unreadable": [],
     }
     joined = "".join(r._build_checklist_items(fields, target_path=r"D:\__PhotoArchive__"))
     assert '<a href="file:///D:/__PhotoArchive__/_Unsorted" target="_blank" rel="noopener">_Unsorted</a>' in joined
@@ -1669,8 +1687,9 @@ def test_cluster_dates_review_groups_by_archive_folder_with_tier():
 
     Пункт B.9 ("большой разбор report.html"): folder теперь АБСОЛЮТНЫЙ путь (не friendly-
     усечённый) -- нужен, чтобы построить рабочую file://-ссылку на реальную папку в TARGET,
-    friendly-текст для показа строится отдельно на стороне рендера
-    (_dates_review_checklist_item(), см. соответствующий тест)."""
+    friendly-текст для показа строится отдельно на стороне рендера (_date_issues_checklist_item(),
+    см. соответствующий тест -- объединённая версия прежней _dates_review_checklist_item(),
+    задача 5, 2026-08-09)."""
     rows = [
         {"source": "s1", "dest": r"C:\T\dst\Albums\Отпуск\a.jpg", "tier": "B"},
         {"source": "s2", "dest": r"C:\T\dst\Albums\Отпуск\b.jpg", "tier": "C"},
@@ -1684,7 +1703,7 @@ def test_cluster_dates_review_groups_by_archive_folder_with_tier():
     assert folder == r"C:\T\dst\ByDate\2020\2020-05"
     assert items == [("c.jpg", "B")]
 
-    title, detail = r._dates_review_checklist_item(groups[0])
+    title, detail = r._date_issues_checklist_item(groups[0])
     assert "ByDate\\2020\\2020-05" in detail
 
 
@@ -1698,16 +1717,16 @@ def test_cluster_dates_review_hides_albums_files_entirely():
     fields = r._build_checklist_fields(data)
     items = r._build_checklist_items(fields)
     joined = "".join(items)
-    assert "получили дату приблизительно" not in joined
+    assert "дата определена неточно" not in joined
 
 
 def test_build_checklist_items_shows_dates_review_file_and_tier_when_detail_available():
     fields = {
         "near_dup_clusters": [], "exact_dup_groups": [],
         "disputes_total": 0, "disputes_by_folder": Counter(),
-        "dates_review_by_folder": Counter({r"Albums\Отпуск": 1}), "dates_review_bc_total": 1,
-        "dates_review_detail": [(r"Albums\Отпуск", [("a.jpg", "B")])],
-        "undated_total": 0, "quality_flags": Counter(), "unreadable": [],
+        "date_issues_b_total": 1, "date_issues_c_total": 0, "date_issues_d_total": 0,
+        "date_issues_detail": [(r"Albums\Отпуск", [("a.jpg", "B")])],
+        "quality_flags": Counter(), "unreadable": [],
     }
     items = r._build_checklist_items(fields)
     joined = "".join(items)
@@ -1716,19 +1735,21 @@ def test_build_checklist_items_shows_dates_review_file_and_tier_when_detail_avai
     assert "Albums\\Отпуск" in joined
 
 
-def test_build_checklist_items_falls_back_to_folder_counts_without_dates_review_detail():
-    """analyze-уровень: dates_review_detail отсутствует -- старое поведение (числа по папкам)
-    должно сохраниться, не падать."""
+def test_build_checklist_items_date_issues_summary_only_without_detail():
+    """analyze-уровень: date_issues_detail отсутствует (AnalyzeStats не отслеживает source/dest
+    на файл построчно) -- сводный пункт (заголовок + разбивка по тирам) должен всё равно
+    показаться, без списка файлов/папок, не падать."""
     fields = {
         "near_dup_clusters": [], "exact_dup_groups": [],
         "disputes_total": 0, "disputes_by_folder": Counter(),
-        "dates_review_by_folder": Counter({r"C:\S\Отпуск": 3}), "dates_review_bc_total": 3,
-        "undated_total": 0, "quality_flags": Counter(), "unreadable": [],
+        "date_issues_b_total": 0, "date_issues_c_total": 3, "date_issues_d_total": 0,
+        "quality_flags": Counter(), "unreadable": [],
     }
     items = r._build_checklist_items(fields)
     joined = "".join(items)
-    assert "3 файла получили дату приблизительно" in joined
-    assert "Папки-источники" in joined
+    assert "3 файла — дата определена неточно или не определена вовсе" in joined
+    assert "оценочно, по соседним файлам в папке" in joined
+    assert "Папка:" not in joined
 
 
 def test_sheet2_tier_chart_caption_excludes_raw():
@@ -1841,36 +1862,21 @@ def test_cta_block_analyze_empty_model_falls_back_to_generic_text():
     assert "Нравится результат" in html_out
 
 
-def test_cta_block_analyze_shows_album_date_grouping_line():
-    """SESSION-HANDOFF.txt, 2026-08-07 (группировка альбом/дата в analyze-отчёте): агрегат
-    "найдено XX папок-альбомов с YY медиафайлами и ZZ обычных папок... с QQ файлами"."""
+def test_cta_block_analyze_never_shows_album_date_grouping_prediction():
+    """2026-08-09 (SESSION-HANDOFF.txt, прямое решение пользователя): абзац-предсказание
+    "Найдено XX папок-альбомов ... которые разложатся по дате ..." убран целиком -- КАК файлы
+    реально разложатся, показывает dry-run, analyze -- только то, что нашли. Модель по-прежнему
+    может нести n_albums_detected/n_regular_folders (см. build_model_from_analyze_stats()), но
+    _render_cta_block() их больше не читает -- регресс на случай, если абзац вернётся молча."""
     model = {
         "years": Counter({2020: 1}), "archives_with_media": 0, "total_bytes": 0,
         "n_albums_detected": 2, "n_media_in_albums": 30,
         "n_regular_folders": 3, "n_media_by_date": 7,
     }
     html_out = r._render_cta_block("analyze", model=model)
-    assert "Найдено 2 папки-альбома с 30 медиафайлами" in html_out
-    assert "3 обычные папки, которые разложатся по дате, с 7 файлами" in html_out
-
-
-def test_cta_block_analyze_album_date_grouping_singular_folder_agreement():
-    """Ровно 1 обычная папка -- согласование "которая разложится", не "которые разложатся"."""
-    model = {
-        "years": Counter(), "archives_with_media": 0, "total_bytes": 0,
-        "n_albums_detected": 0, "n_media_in_albums": 0,
-        "n_regular_folders": 1, "n_media_by_date": 4,
-    }
-    html_out = r._render_cta_block("analyze", model=model)
-    assert "1 обычная папка, которая разложится по дате" in html_out
-    assert "которые разложатся" not in html_out
-
-
-def test_cta_block_analyze_omits_album_date_grouping_line_when_both_zero():
-    model = {"years": Counter(), "archives_with_media": 0, "total_bytes": 0}
-    html_out = r._render_cta_block("analyze", model=model)
     assert "папок-альбомов" not in html_out
     assert "разложатся по дате" not in html_out
+    assert "обычн" not in html_out
 
 
 class _FakeAnalyzeStats:
@@ -1886,6 +1892,12 @@ class _FakeAnalyzeStats:
         self.predicted_unique_count = 3
         self.n_exact_dupes = 0
         self.n_broken_or_zero = 0
+        # Задачи 4/6 (SESSION-HANDOFF.txt, 2026-08-09): disputed_paths ("не удалось распознать")/
+        # unreadable_paths ("не прочитано") -- раздельные списки реальных путей, заменяют
+        # общий n_broken_or_zero для рендера чек-листа/decisions-пирога (сам n_broken_or_zero
+        # выше остаётся -- читается только Паспортом, _render_passport_integrity()).
+        self.disputed_paths = []
+        self.unreadable_paths = []
         self.total_bytes = 54321
         self.predicted_unique_bytes = 12345
         # SESSION-HANDOFF.txt п.4 -- общее число объектов + разбивка файлов по месту.
@@ -1901,6 +1913,13 @@ class _FakeAnalyzeStats:
         # НЕ лежащее в Albums -- см. _render_passport_integrity()).
         self.exact_dup_edges = []
         self.n_tier_cd_bydate = 3
+        # Задача 5 (SESSION-HANDOFF.txt, 2026-08-09): album-исключающие тир-счётчики B/C/D
+        # раздельно -- та же семантика "не в альбоме", что n_tier_cd_bydate выше, тоньше на
+        # тир. Значения по умолчанию согласованы с tier_counts={"C": 2, "D": 1} выше (n_tier_cd_
+        # bydate=3 -- та же сумма C+D), конкретные тесты переопределяют при необходимости.
+        self.n_tier_b_bydate = 0
+        self.n_tier_c_bydate = 2
+        self.n_tier_d_bydate = 1
         self.n_archives_found = 0
         self.n_archives_with_media = 0
         self.found_archive_top_level = []
@@ -2073,21 +2092,96 @@ def test_render_sheet1_analyze_level_does_not_claim_an_archive_exists():
     assert "Что нашлось на этом диске" in analyze_html
 
 
+def test_render_sheet1_embeds_generated_at_in_heading_when_given():
+    """Задача 10 (SESSION-HANDOFF.txt, 2026-08-09): "по состоянию на ГГГГ-ММ-ДД ЧЧ:ММ" --
+    точный образец текста от пользователя, дописывается прямо в <h1>, дублируя общий футер
+    страницы. Обе ветки heading (is_scan True/False, задача 10 п.3 "Ваш архив" по аналогии)."""
+    model = r.build_model_from_rows({"appended": [_appended_row(r"D:\T\ByDate\2026\2026-01-01 [PhotoArchive]\a.jpg")]})
+    analyze_html = r._render_sheet1(model, "analyze", generated_at="2026-08-09 13:21")
+    target_html = r._render_sheet1(model, "target", generated_at="2026-08-09 13:21")
+    assert "<h1>Что нашлось на этом диске по состоянию на 2026-08-09 13:21</h1>" in analyze_html
+    assert "<h1>Ваш архив по состоянию на 2026-08-09 13:21</h1>" in target_html
+
+
+def test_render_sheet1_omits_generated_at_when_not_given():
+    """generated_at=None (по умолчанию) -- заголовок БЕЗ даты, как раньше. Это и есть путь,
+    которым _render_found_archive_block() зовёт _render_sheet1() как ВНУТРЕННЮЮ карточку на
+    чужой странице (найденный архив внутри SOURCE) -- та страница не должна получить дату
+    задним числом просто потому, что _render_sheet1() её теперь умеет показывать."""
+    model = r.build_model_from_rows({"appended": []})
+    html_out = r._render_sheet1(model, "analyze")
+    assert "<h1>Что нашлось на этом диске</h1>" in html_out
+    assert "по состоянию на" not in html_out
+
+
+def test_generate_report_from_analyze_stats_heading_and_footer_share_one_timestamp(tmp_path, monkeypatch):
+    """Задача 10, п.2: ОДИН вызов strftime() на страницу, не два независимых -- если бы
+    _render_sheet1()/_page_shell() каждый считали своё время сами, на границе минуты они могли
+    бы разойтись. Здесь time.strftime() нарочно возвращает РАЗНОЕ значение при каждом вызове --
+    если заголовок и футер совпадают, значит оба читают ОДНО и то же уже посчитанное значение."""
+    calls = []
+
+    def _fake_strftime(fmt):
+        calls.append(fmt)
+        return f"2026-08-09 13:{20 + len(calls)}"
+    monkeypatch.setattr(r.time, "strftime", _fake_strftime)
+
+    stats = _FakeAnalyzeStats()
+    out_path = tmp_path / "report.html"
+    r.generate_report_from_analyze_stats(stats, str(out_path))
+    html_out = out_path.read_text(encoding="utf-8")
+
+    heading_m = re.search(r"Что нашлось на этом диске по состоянию на ([\d\-]+ [\d:]+)</h1>", html_out)
+    footer_m = re.search(r"Сформировано PhotoArchive[^·]*· ([\d\-]+ [\d:]+)</div>", html_out)
+    assert heading_m and footer_m, html_out
+    assert heading_m.group(1) == footer_m.group(1)
+    assert len(calls) == 1  # ровно один вызов strftime() на всю страницу
+
+
+def test_render_passport_summary_embeds_generated_at_in_heading():
+    stats = _FakeAnalyzeStats()
+    html_out = r._render_passport_summary(stats, generated_at="2026-08-09 13:21")
+    assert "<h1>Архив сейчас по состоянию на 2026-08-09 13:21</h1>" in html_out
+
+
+def test_generate_passport_report_heading_and_footer_share_one_timestamp(tmp_path, monkeypatch):
+    calls = []
+
+    def _fake_strftime(fmt):
+        calls.append(fmt)
+        return f"2026-08-09 13:{20 + len(calls)}"
+    monkeypatch.setattr(r.time, "strftime", _fake_strftime)
+
+    stats = _FakeAnalyzeStats()
+    out_path = tmp_path / "passport.html"
+    r.generate_passport_report(stats, str(out_path))
+    html_out = out_path.read_text(encoding="utf-8")
+
+    heading_m = re.search(r"Архив сейчас по состоянию на ([\d\-]+ [\d:]+)</h1>", html_out)
+    footer_m = re.search(r"Сформировано PhotoArchive[^·]*· ([\d\-]+ [\d:]+)</div>", html_out)
+    assert heading_m and footer_m, html_out
+    assert heading_m.group(1) == footer_m.group(1)
+
+
 def test_render_sheet1_analyze_shows_object_count_tile():
-    # SESSION-HANDOFF.txt п.4 (2026-08-05, боевой прогон): плитка "объектов (папок и архивов)"
-    # -- только для analyze (build_model_from_rows() для реальной сборки её не считает вовсе).
+    # SESSION-HANDOFF.txt п.4 (2026-08-05, боевой прогон): плитка "папок и архивов" -- только
+    # для analyze (build_model_from_rows() для реальной сборки её не считает вовсе). Подпись
+    # "объектов (папок и архивов)" -> "папок и архивов" -- находка 2026-08-09 (боевой прогон):
+    # слово "объектов" в терминале означает другую гранулярность (файл, не папка/архив), не
+    # дублировать в отчёте, см. SESSION-HANDOFF.txt.
     stats = _FakeAnalyzeStats()
     stats.n_objects_total = 42
     model = r.build_model_from_analyze_stats(stats)
     html_out = r._render_sheet1(model, "analyze")
     assert "42" in html_out
-    assert "объектов" in html_out
+    assert "папок и архивов" in html_out
+    assert "объектов" not in html_out
 
 
 def test_render_sheet1_target_level_omits_object_count_tile():
     model = r.build_model_from_rows({"appended": [_appended_row(r"C:\T\dst\Albums\A\a.jpg")]})
     html_out = r._render_sheet1(model, "target")
-    assert "объектов (папок и архивов)" not in html_out
+    assert "папок и архивов" not in html_out
 
 
 def test_render_sheet1_analyze_shows_files_by_location_breakdown():
@@ -2332,6 +2426,29 @@ class TestPassportVerificationPage:
         link = r.generate_passport_verification_page(stats, str(out_path))
         assert link is None
         assert not (tmp_path / r.PASSPORT_VERIFICATION_FILENAME).exists()
+
+    def test_heading_and_footer_share_one_timestamp(self, tmp_path, monkeypatch):
+        """Задача 10 (SESSION-HANDOFF.txt, 2026-08-09): эта страница -- ОТДЕЛЬНЫЙ файл, свой
+        собственный _page_shell()/футер -- тоже получает "по состоянию на" в заголовке, тот же
+        принцип "один strftime() на страницу", что и у report.html/passport.html."""
+        calls = []
+
+        def _fake_strftime(fmt):
+            calls.append(fmt)
+            return f"2026-08-09 13:{20 + len(calls)}"
+        monkeypatch.setattr(r.time, "strftime", _fake_strftime)
+
+        stats = _FakeAnalyzeStats()
+        stats.exact_dup_edges = [{"dest": "Albums/A/orig.jpg", "matched_dest": "Albums/B/copy.jpg"}]
+        out_path = tmp_path / "passport.html"
+        r.generate_passport_verification_page(stats, str(out_path))
+        html_out = (tmp_path / r.PASSPORT_VERIFICATION_FILENAME).read_text(encoding="utf-8")
+
+        heading_m = re.search(r"Полная сверка — Паспорт архива по состоянию на ([\d\-]+ [\d:]+)</h1>",
+                               html_out)
+        footer_m = re.search(r"Сформировано PhotoArchive[^·]*· ([\d\-]+ [\d:]+)</div>", html_out)
+        assert heading_m and footer_m, html_out
+        assert heading_m.group(1) == footer_m.group(1)
 
     def test_multi_folder_near_dup_group_also_gets_its_own_section(self, tmp_path):
         stats = _FakeAnalyzeStats()

@@ -1510,10 +1510,11 @@ def test_this_run_stats_broken_down_by_media_type():
 
 
 def test_undated_file_shows_folder_and_name_in_report():
-    print("\n=== 2026-07-26, обсуждение с пользователем: 'N файлов вообще без даты' в "
-          "report.html теперь показывает папку+имя каждого файла в архиве, не только "
-          "число -- через реальный пайплайн (тот же приём форсирования Tier D, что и "
-          "test_undated_promotion) ===")
+    print("\n=== 2026-07-26, обсуждение с пользователем: Tier D в report.html показывает "
+          "папку+имя каждого файла в архиве, не только число -- через реальный пайплайн "
+          "(тот же приём форсирования Tier D, что и test_undated_promotion). Формулировка "
+          "обновлена задачей 5 (SESSION-HANDOFF.txt, 2026-08-09) -- Tier B/C/D объединены "
+          "в один пункт чек-листа. ===")
     src = os.path.join(WORK, "src_undated_report_path")
     for i in range(3):
         image(os.path.join(src, "dcim", f"plain{i}.jpg"), 1000, 800)
@@ -1533,8 +1534,11 @@ def test_undated_file_shows_folder_and_name_in_report():
     report_path = os.path.join(tgt, "__служебные_файлы", "report.html")
     with open(report_path, encoding="utf-8") as f:
         html_out = f.read()
-    check("вообще без даты" in html_out,
-          "undated-report-path: report.html renders the Tier D checklist item")
+    check("дата определена неточно или не определена вовсе" in html_out,
+          "undated-report-path: report.html renders the merged Tier B/C/D checklist item "
+          "(Задача 5, SESSION-HANDOFF.txt 2026-08-09 -- old separate Tier D wording retired)")
+    check("дата не определилась вовсе" in html_out,
+          "undated-report-path: item's tier breakdown mentions the Tier D bucket")
     check("0000-undated" in html_out and "plain2.jpg" in html_out,
           "undated-report-path: item shows the archive folder+filename, not just a bare count "
           "(live fix, verified end-to-end)")
@@ -1542,11 +1546,11 @@ def test_undated_file_shows_folder_and_name_in_report():
 
 def test_dates_review_shows_folder_and_name_in_report():
     print("\n=== 2026-07-26, по прямой просьбе пользователя (общий аудит 'путь для "
-          "проверки' по Листу 3): 'N файлов получили дату приблизительно' (Tier B/C) "
-          "теперь показывает папку+имя каждого файла в архиве, не только число -- через "
-          "реальный пайплайн (тот же приём форсирования Tier C, что и "
-          "test_undated_promotion: plain0/plain1 получают mtime-guess дату, plain2 уходит "
-          "в Tier D отдельно) ===")
+          "проверки' по Листу 3): Tier B/C в report.html показывает папку+имя каждого файла "
+          "в архиве, не только число -- через реальный пайплайн (тот же приём форсирования "
+          "Tier C, что и test_undated_promotion: plain0/plain1 получают mtime-guess дату, "
+          "plain2 уходит в Tier D отдельно). Формулировка обновлена задачей 5 "
+          "(SESSION-HANDOFF.txt, 2026-08-09) -- Tier B/C/D объединены в один пункт чек-листа. ===")
     src = os.path.join(WORK, "src_dates_review_report_path")
     for i in range(3):
         image(os.path.join(src, "dcim", f"plain{i}.jpg"), 1000, 800)
@@ -1567,8 +1571,9 @@ def test_dates_review_shows_folder_and_name_in_report():
     report_path = os.path.join(tgt, "__служебные_файлы", "report.html")
     with open(report_path, encoding="utf-8") as f:
         html_out = f.read()
-    check("получили дату приблизительно" in html_out,
-          "dates-review-report-path: report.html renders the Tier B/C checklist item")
+    check("дата определена неточно или не определена вовсе" in html_out,
+          "dates-review-report-path: report.html renders the merged Tier B/C/D checklist item "
+          "(Задача 5, SESSION-HANDOFF.txt 2026-08-09 -- old separate Tier B/C wording retired)")
     check("оценочная" in html_out,
           "dates-review-report-path: item shows the tier confidence label, not just a count")
     if tier_c_rows:

@@ -66,7 +66,7 @@ import report  # PROMPT_archive_report.md, границы: отдельный м
 # blanket ignore of all warnings, so any other future PIL/library warning still surfaces.
 warnings.filterwarnings("ignore", message="Palette images with Transparency.*", category=UserWarning)
 
-__version__ = "0.4.0"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
+__version__ = "0.4.1"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
                                  # с RULES_VERSION ниже (та про совместимость архива, а не exe)
 RULES_VERSION = "2026-08-08"   # дата последнего изменения бизнес-правил -- см. RULES.md;
                                 # менять руками при изменении логики раскладки/дедупа/дат
@@ -509,19 +509,35 @@ _TWO_LINE_OP_FIELD_WIDTH = max(len(_DRY_RUN_PHASE_DESC), len(_BUILD_PHASE_DESC),
                                 len(_ANALYZE_QUICK_PROGRESS_DESC), len(_ANALYZE_PASSPORT_PROGRESS_DESC))
 
 
-def _console_tag_line_budget(tail_len: int, min_width: int = 15) -> int:
+_CONSOLE_TAG_LINE_SAFETY_MARGIN = 8  # см. докстринг _console_tag_line_budget()
+
+
+def _console_tag_line_budget(tail_len: int, min_width: int = 15, tag_width: int = 10) -> int:
     """Бюджет под путь для однострочных построчных сообщений с общим 2-пробельным отступом
     ("  [archive] "/"  [папка]   ", см. ProgressReporter._format_object_line()) и фиксированным
-    10-символьным тегом -- общая часть ProgressReporter._object_line_budget()/
-    SourceWalker._log_archive() (SESSION-HANDOFF.txt, 2026-08-05, боевой прогон п.2: у
-    _log_archive() не было аналогичной обрезки, длинные пути переносились некрасиво посреди
-    слова самим терминалом). tail_len -- точная длина хвостового текста ПОСЛЕ пути (например
-    ": найдено медиафайлов 0") -- оба вызывающих места знают свой хвост заранее и могут измерить
-    его, не гадать общий запас."""
+    тегом -- общая часть ProgressReporter._object_line_budget()/SourceWalker._log_archive()
+    (SESSION-HANDOFF.txt, 2026-08-05, боевой прогон п.2: у _log_archive() не было аналогичной
+    обрезки, длинные пути переносились некрасиво посреди слова самим терминалом). tail_len --
+    точная длина хвостового текста ПОСЛЕ пути (например ": найдено медиафайлов 0") -- оба
+    вызывающих места знают свой хвост заранее и могут измерить его, не гадать общий запас.
+
+    tag_width (2026-08-09, живая находка пользователя -- буквы A/D после тега): по умолчанию
+    10 -- ширина тега БЕЗ буквы решения ("[archive] "/"[папка]   ", см. _log_archive(), её
+    формат не меняется). ProgressReporter._object_line_budget() передаёт 11 явно -- см. её
+    докстринг за тем, откуда взялась именно эта ширина ("[archive]A "/"[папка]A   ", когда
+    буква показывается).
+
+    SESSION-HANDOFF.txt (2026-08-09, боевой прогон, третья находка): _CONSOLE_TAG_LINE_SAFETY_MARGIN
+    -- запас прочности сверх точной длины хвоста, ОБЩИЙ для обоих вызывающих мест (раньше
+    _object_line_budget() зашивал свои лишние +8 в СОБСТВЕННЫЙ tail_reserve ДО вызова этой
+    функции, а _log_archive() передавал точный хвост совсем без запаса -- на одинаковой ширине
+    терминала это давало РАЗНЫЙ бюджет [archive]/[папка] и перенос строки там, где у [папка] с
+    её более широким запасом такого не случалось). Margin вынесен сюда, в единственное место,
+    чтобы оба вызывающих места гарантированно получали одинаковый запас."""
     if not sys.stderr.isatty():
         return 80
     columns = shutil.get_terminal_size(fallback=(80, 24)).columns
-    return max(min_width, columns - 2 - 10 - tail_len)
+    return max(min_width, columns - 2 - tag_width - tail_len - _CONSOLE_TAG_LINE_SAFETY_MARGIN)
 
 
 class ProgressReporter:
@@ -842,7 +858,8 @@ class ProgressReporter:
         # строке ("s/файл" рядом с "объектов"/"всего медиа") -- заменено на кириллическую "с".
         # Безопасно в любой кодовой странице консоли (обычная русская буква, не Unicode-символ
         # рисования рамок вроде │ выше по докстрингу, тот действительно падал в cp1251).
-        base = (f"{op:<{_TWO_LINE_OP_FIELD_WIDTH}}{sep}всего медиа {media_count:>8}{sep}"
+        media_label = "найдено медиа" if self.media_count_from_objects else "всего медиа"
+        base = (f"{op:<{_TWO_LINE_OP_FIELD_WIDTH}}{sep}{media_label} {media_count:>8}{sep}"
                 f"объектов {obj_part:>13}")
         tail = f"{sep}{rate:>9.2f}с/файл{free_part}"
         elapsed_part = f"{sep}занято {_tqdm.format_interval(elapsed):>8}"
@@ -928,35 +945,57 @@ class ProgressReporter:
         -- этот колбэк вызывается чаще, чем медиа-тики, включая пропущенные не-медиа файлы)."""
         self._obj_count += n
 
-    def _object_line_budget(self, min_width: int = 15) -> int:
+    def _object_line_budget(self, letter: str = "", min_width: int = 15) -> int:
         """Бюджет под путь в объект-строке (см. write_object_line()) -- своя, отдельная от
         _context_note_budget()/_progress_note_budget() оценка: путь здесь на СВОЕЙ строке, не
         делит её с self.desc, зато делит с 2-пробельным отступом (см. _format_object_line() --
         тот же отступ, что и у всех self.log()-строк SourceWalker, "  [archive]"/
         "  [skip_marker]"/"  Распаковка" и т.д. -- живой репорт пользователя, 2026-08-01:
-        "скачет" левый край без него), фиксированным 10-символьным тегом ("[archive] "/
-        "[папка]   ") и текстовым хвостом " найдено медиафайлов N" -- см.
-        _console_tag_line_budget() за общей частью расчёта (2026-08-05, теперь также
-        SourceWalker._log_archive())."""
-        tail_reserve = len(" найдено медиафайлов ") + 8  # +8 -- запас под само число N
-        return _console_tag_line_budget(tail_reserve, min_width=min_width)
+        "скачет" левый край без него), фиксированным тегом ("[archive] "/"[папка]   ", 10
+        символов без буквы решения, 11 с ней -- см. letter ниже) и текстовым хвостом
+        " найдено медиафайлов N" -- см. _console_tag_line_budget() за общей частью расчёта
+        (2026-08-05, теперь также SourceWalker._log_archive()). Запас под само число N --
+        теперь общий _CONSOLE_TAG_LINE_SAFETY_MARGIN внутри _console_tag_line_budget()
+        (2026-08-09, см. её докстринг), не отдельный "+8" здесь -- раньше он был зашит именно
+        тут, и именно поэтому [archive] (без такого же запаса) переносился там, где [папка] --
+        нет.
 
-    def _format_object_line(self, tag: str, path: str, n_found: int) -> str:
-        label = "[archive] " if tag == "archive" else "[папка]   "  # оба ровно 10 символов
-        truncated = _truncate_progress_note(path, maxlen=self._object_line_budget())
+        letter (2026-08-09, живая находка пользователя): "A"/"D" (альбом/по дате, см.
+        _format_object_line()) добавляет 1 символ к тегу -- бюджет под путь должен сжаться на
+        тот же 1 символ, иначе строка перестанет укладываться в реальную ширину терминала
+        ровно на границе. "" (по умолчанию, режимы analyze/[4] Паспорт, где буква не
+        показывается) -- бюджет не меняется, тот же расчёт, что и раньше."""
+        tail_reserve = len(" найдено медиафайлов ")
+        tag_width = 11 if letter else 10
+        return _console_tag_line_budget(tail_reserve, min_width=min_width, tag_width=tag_width)
+
+    def _format_object_line(self, tag: str, path: str, n_found: int, letter: str = "") -> str:
+        # letter (2026-08-09, живая находка пользователя, режимы --dry-run/[3] реальная сборка):
+        # "A" -- файлы уйдут в альбом (find_album() нашёл совпадение), "D" -- разберутся по
+        # дате (не нашёл, ByDate). "" (по умолчанию, analyze/[4] Паспорт) -- буква не
+        # показывается вовсе, старый формат без изменений. Буква -- сразу после закрывающей "]"
+        # тега (по прямой просьбе пользователя), паддинг у "[папка]" на 2 символа больше, чем у
+        # "[archive]" (короче само слово), чтобы после буквы у ОБОИХ тегов было ровно по одному
+        # пробелу перед путём (не 1 у archive и 3 у папка, как получилось бы при наивной
+        # вставке буквы в старый фиксированный паддинг).
+        if letter:
+            label = f"[archive]{letter} " if tag == "archive" else f"[папка]{letter}   "  # оба ровно 11 символов
+        else:
+            label = "[archive] " if tag == "archive" else "[папка]   "  # оба ровно 10 символов
+        truncated = _truncate_progress_note(path, maxlen=self._object_line_budget(letter))
         # Живой репорт пользователя (2026-08-01): двоеточие после имени -- отделяет путь от
         # хвоста "найдено медиафайлов N", тот же приём, что и у status-стиля _log_archive()
         # ("X: archive_no_media"), теперь и здесь для единообразия.
         return f"  {label}{truncated}: найдено медиафайлов {n_found}"
 
-    def write_object_line(self, tag: str, path: str, n_found: int) -> None:
+    def write_object_line(self, tag: str, path: str, n_found: int, letter: str = "") -> None:
         """two_line-режим: печатается РОВНО один раз на объект (папку/архив), при входе в
-        него -- см. _format_object_line() за форматом. self._bar.write() НЕ используется --
-        та же причина, что и у log_line() (см. её докстринг): tqdm.write() распознаёт "свои"
-        активные бары СРАВНЕНИЕМ потоков вывода, а наш бар создан с собственным
-        _RussianRateStream-прокси, не голым sys.stderr -- совпадения не будет, tqdm ничего не
-        очистит и допишет строку прямо в хвост текущей строки бара. Тот же ручной приём
-        clear/print/refresh, что и в log_line().
+        него -- см. _format_object_line() за форматом (letter -- см. её докстринг). self._bar.write()
+        НЕ используется -- та же причина, что и у log_line() (см. её докстринг): tqdm.write()
+        распознаёт "свои" активные бары СРАВНЕНИЕМ потоков вывода, а наш бар создан с
+        собственным _RussianRateStream-прокси, не голым sys.stderr -- совпадения не будет,
+        tqdm ничего не очистит и допишет строку прямо в хвост текущей строки бара. Тот же
+        ручной приём clear/print/refresh, что и в log_line().
 
         SESSION-HANDOFF.txt п.4 (2026-08-05, боевой прогон): self._objects_seen -- ровно один
         тик на каждый вызов (папка ИЛИ архив, любая глубина реального дерева SOURCE) -- НЕ
@@ -967,7 +1006,7 @@ class ProgressReporter:
         self._objects_seen += 1
         if self.media_count_from_objects:
             self._media_declared += n_found
-        line = self._format_object_line(tag, path, n_found)
+        line = self._format_object_line(tag, path, n_found, letter)
         if self._bar is not None:
             self._bar.clear()
             print(line, file=sys.stderr)
@@ -1447,6 +1486,13 @@ class Config:
     place_lookup: str = "offline"
     home_country: str = "RU"
     archive_hash_cache: bool = True
+    # SESSION-HANDOFF.txt, 2026-08-09 (одиннадцатая задача, "как ускорить анализ"): sniff_signature()
+    # читает первые 32 байта КАЖДОГО файла отдельным open() -- заметные накладные расходы на
+    # медленном/сетевом диске. По умолчанию ВЫКЛЮЧЕНА -- проверка не выполняется в обычном
+    # анализе ([1]/CLI analyze, mode=="analyze-quick"), безусловно ВСЕГДА выполняется в
+    # self-scan ("Паспорт архива") независимо от этого флага (полная проверка уже собранного
+    # архива, там сокращать смысла нет, см. photosort_win.py:run_analyze()).
+    check_signature: bool = False
     max_archive_depth: int = 8
     max_dest_path: int = 240
     small_image_px: int = 640
@@ -2577,6 +2623,41 @@ def cleanup_dir(path: str):
     if os.path.isdir(winlong(path)):
         shutil.rmtree(winlong(path), ignore_errors=True)
 
+
+def _cleanup_own_tmp_extract_entries(cfg: "Config", log=print) -> None:
+    """Подчищает СОБСТВЕННЫЕ (sha256-именованные, см. _OWN_TMP_EXTRACT_ENTRY_RE/
+    _handle_archive()) папки распаковки архивов внутри cfg.tmp_extract -- защита от
+    накопления мусора после прерванного прогона (Ctrl+C, крах). Не трогает ничего, что не
+    похоже на собственную временную папку программы (см. докстринг _OWN_TMP_EXTRACT_ENTRY_RE
+    выше -- почему это важно).
+
+    Живая находка пользователя, 2026-08-09: временные распакованные папки архива
+    (__служебные_файлы\\tmp_extract\\<hash>\\...) оставались на диске после Ctrl+C ВО ВРЕМЯ
+    самого прогона (--dry-run) -- раньше только эта же по сути проверка запускалась в начале
+    СЛЕДУЮЩЕГО прогона (см. Фазу 0 _run_impl()), ничего не подчищало сразу после текущего
+    прерывания, и run_analyze() (`[1]`/CLI analyze, `[4]` Паспорт архива) не запускал такую
+    проверку вообще, ни в начале, ни после прерывания. Теперь одна и та же функция вызывается
+    в обоих местах (до основного цикла -- остатки чужого прошлого прерывания; сразу после
+    `except KeyboardInterrupt` текущего цикла -- остатки этого же прогона, не дожидаясь
+    следующего запуска программы) -- см. _run_impl()/run_analyze()."""
+    if not (os.path.isdir(winlong(cfg.tmp_extract)) and os.listdir(winlong(cfg.tmp_extract))):
+        return
+    entries = [n for n in os.listdir(winlong(cfg.tmp_extract)) if n != SKIP_MARKER]
+    # Only remove entries that look like our own archive_hash extraction dirs (see
+    # _handle_archive()) -- see _OWN_TMP_EXTRACT_ENTRY_RE comment above for why.
+    recognized = [n for n in entries if _OWN_TMP_EXTRACT_ENTRY_RE.match(n)]
+    unrecognized = [n for n in entries if n not in recognized]
+    if recognized:
+        log(f"TMP_EXTRACT не пуст — очищаю {len(recognized)} временных папок распаковки")
+        for name in recognized:
+            cleanup_dir(os.path.join(cfg.tmp_extract, name))
+    if unrecognized:
+        log(f"ВНИМАНИЕ: в TMP_EXTRACT_DIR ({cfg.tmp_extract}) есть {len(unrecognized)} "
+            f"файлов/папок, не похожих на собственные временные файлы программы -- "
+            f"НЕ трогаю их. Если это чужая папка (например, tmp_extract_dir в photoarchive_config.yaml "
+            f"указан по ошибке) -- поправьте настройку. Первые: "
+            f"{unrecognized[:5]}")
+
 # ============================================================================
 # WALKER  (from pipeline/walker.py)
 # ============================================================================
@@ -2654,37 +2735,60 @@ def _quick_media_count_estimate(source: str, cfg: Config, on_progress=None) -> i
     root_under_system_dir = is_under_system_dir(source)
     stack = []
 
-    def _scan(dirpath):
+    def _scan(dirpath, is_root=False):
         nonlocal count
         try:
             with os.scandir(winlong(dirpath)) as it:
                 scanned = list(it)
         except OSError:
             return
-        delta = 0
+        # SESSION-HANDOFF.txt, 2026-08-09 (боевой прогон, вторая находка): реальный обход
+        # (_walk_dir()) тикает VIDEO_TS-юнит и SKIP_MARKER-папку ОДНОЙ гранулярностью, отличной
+        # от по-файлового счёта ниже -- имена нужны ДО решения, считать ли содержимое папки
+        # по файлам или как единое целое/пропустить вовсе, поэтому dir/file разделяются здесь
+        # одним проходом, а не как раньше (delta считался по ходу, без предварительного
+        # разбора имён файлов).
+        subdir_names = []
+        file_names = []
         for entry in scanned:
             try:
                 is_dir = entry.is_dir(follow_symlinks=False)
             except OSError:
                 continue
             if is_dir:
-                # os.path.join(dirpath, entry.name) -- NOT entry.path: scandir() was called
-                # on winlong(dirpath) (\\?\-prefixed for long-path safety), so entry.path
-                # would silently inherit that prefix, while cfg.target/realpath() comparisons
-                # below never carry it -- os.path.realpath() does NOT strip \\?\ back off, so
-                # the two forms of the same path would compare unequal and the target-skip
-                # check below would never fire (live bug, caught by
-                # test_quick_media_count_estimate_never_descends_into_target before it shipped).
-                # Same convention _walk_dir() already uses elsewhere: store plain paths, wrap
-                # with winlong() only at the actual syscall boundary.
-                stack.append(os.path.join(dirpath, entry.name))
+                subdir_names.append(entry.name)
             else:
-                delta += 1
+                file_names.append(entry.name)
+        # _walk_dir(): SKIP_MARKER пропускает папку целиком (не считает её файлы, не спускается
+        # в подпапки) -- КРОМЕ самого корня SOURCE (ПРАВИЛО ЯВНОГО УКАЗАНИЯ, тот же принцип, что
+        # и у пропуска exclude-списков для корня ниже).
+        if not is_root and SKIP_MARKER in file_names:
+            return
+        # _walk_dir(): VIDEO_TS -- ОДНА неделимая единица (см. секцию "DVD-VIDEO UNITS" выше),
+        # реальный обход тикает её как единый объект, не заглядывая внутрь -- знаменатель должен
+        # считать так же, иначе X (реальные тики) никогда не догонит Y (эта оценка) на источнике
+        # с DVD-рипами.
+        if _is_video_ts_dir(dirpath, file_names):
+            count += 1
+            if on_progress is not None:
+                on_progress(1)
+            return
+        delta = len(file_names)
         count += delta
         if delta and on_progress is not None:
             on_progress(delta)
+        for name in subdir_names:
+            # os.path.join(dirpath, name) -- NOT entry.path: scandir() was called on
+            # winlong(dirpath) (\\?\-prefixed for long-path safety), so entry.path would
+            # silently inherit that prefix, while cfg.target/realpath() comparisons below never
+            # carry it -- os.path.realpath() does NOT strip \\?\ back off, so the two forms of
+            # the same path would compare unequal and the target-skip check below would never
+            # fire (live bug, caught by test_quick_media_count_estimate_never_descends_into_target
+            # before it shipped). Same convention _walk_dir() already uses elsewhere: store
+            # plain paths, wrap with winlong() only at the actual syscall boundary.
+            stack.append(os.path.join(dirpath, name))
 
-    _scan(source)  # корень -- ПРАВИЛО ЯВНОГО УКАЗАНИЯ (RULES.md), без проверки исключений
+    _scan(source, is_root=True)  # корень -- ПРАВИЛО ЯВНОГО УКАЗАНИЯ (RULES.md), без проверки исключений
     while stack:
         dirpath = stack.pop()
         base_lower = os.path.basename(dirpath).lower()
@@ -2836,9 +2940,15 @@ def _unique_dvd_dest_name(parent_dir: str, base_name: str, reserved: set) -> str
 class SourceWalker:
     def __init__(self, cfg: Config, log=print, progress_cb=None,
                  object_line_cb=None, transient_op_cb=None, object_progress_cb=None,
-                 dvd_unit_registry: dict = None):
+                 dvd_unit_registry: dict = None, show_placement_letter: bool = False):
         self.cfg = cfg
         self.log = log
+        # Живая находка пользователя, 2026-08-09: "A"/"D" (альбом/по дате) после тега
+        # "[папка]"/"[archive]" в консоли -- ТОЛЬКО --dry-run/[3] реальная сборка (по прямой
+        # просьбе пользователя), НЕ analyze/[4] Паспорт архива -- та же SourceWalker/
+        # ProgressReporter обслуживает оба случая, различие только в этом флаге, который
+        # передаёт вызывающий код (_run_impl() -- True, run_analyze() -- по умолчанию False).
+        self._show_placement_letter = show_placement_letter
         # Раунд 50 ревью (REVIEW-HANDOFF.md, БЛОКЕР 1): раньше выставлялось только в walk()'s
         # ветке для SOURCE-папки -- ветка для SOURCE-одиночного-файла-архива (RULES.md:347,
         # штатный режим "Фаза 2а") делает return раньше той строки, атрибут никогда не
@@ -3230,7 +3340,16 @@ class SourceWalker:
             "name": display_name, "dest_path": dest_dir, "n_files": len(records),
             "total_bytes": total_bytes, "fingerprint": fingerprint,
         })
-        self.log(f"  [dvd_unit] новый DVD-диск -> {dest_dir} "
+        # Живая находка пользователя, 2026-08-09 (дополнение к A/D-буквам после [папка]/
+        # [archive]): "[dvd_unit]" -- та же буква, тем же принципом (сразу после "]", один
+        # пробел перед текстом), но решение здесь уже известно (volume_label/album посчитаны
+        # вызывающей стороной _walk_dir() ВЫШЕ, см. три приоритета в докстринге) -- пробный
+        # find_album() не нужен, в отличие от _placement_letter() для папки/архива.
+        letter = ""
+        if self._show_placement_letter:
+            letter = "A" if (volume_label or album is not None) else "D"
+        letter_part = f"{letter} " if letter else " "
+        self.log(f"  [dvd_unit]{letter_part}новый DVD-диск -> {dest_dir} "
                  f"({len(records)} файлов, {disp_base})")
         for rel, size, mtime, full_path, sha in records:
             dest_path = os.path.join(dest_dir, *rel.split("/"))
@@ -3243,6 +3362,22 @@ class SourceWalker:
                 dvd_dest_path=dest_path, dvd_sha256=sha,
                 dvd_unit_fingerprint=fingerprint,
             )
+
+    def _placement_letter(self, rel_prefix: str, archive_boundary_idx) -> str:
+        """"A"/"D" (альбом/по дате) -- см. __init__()'s show_placement_letter. Пробный
+        find_album() с фиктивным именем файла "x" в конце (тот же приём, что уже использует
+        DVD-юнит выше/объявление "[папка] ... найдено медиафайлов N" ниже) -- определяет,
+        найдётся ли альбом ДЛЯ ЭТОГО пути-контейнера (папки или архива), не читая реальные
+        файлы внутри. "" если show_placement_letter выключен (по умолчанию, analyze/[4]
+        Паспорт архива -- буква там не показывается вовсе, см. __init__())."""
+        if not self._show_placement_letter:
+            return ""
+        probe_rel = f"{rel_prefix}/x" if rel_prefix else "x"
+        probe_album, _s, _p = find_album(
+            probe_rel, archive_boundary_idx,
+            dump_names=self.cfg.dump_segment_names_lower,
+            dump_prefixes=self.cfg.dump_segment_prefixes_tuple)
+        return "A" if probe_album is not None else "D"
 
     def _walk_dir(self, dirpath, rel_prefix, origin_prefix, depth, is_root=False, ancestors=(),
                   archive_no_crc=False, archive_boundary_idx=None):
@@ -3457,18 +3592,30 @@ class SourceWalker:
                 # задолго до того, как Фаза 3 реально возьмётся за эту папку. folder_media_count
                 # == 0 -- печатаем сразу как раньше, откладывать нечего (ни один файл не уйдёт в
                 # очередь).
+                #
+                # Живая находка пользователя, 2026-08-09: та же самая probe_album нужна и для
+                # буквы "A"/"D" (см. _placement_letter()) -- probe_album==None ЗНАЧИТ "уйдёт по
+                # дате" ровно в том же смысле, что уже используется для defer_announcement,
+                # поэтому одна проба на оба вопроса, не дублировать find_album(). Внутри
+                # need_probe -- та же проверка, что раньше гейтила единственный вызов, плюс
+                # self._show_placement_letter (буква нужна и вне phase==1/media>0, например для
+                # пустых папок или Фазы 2/3, где раньше probe_album вообще не вычислялся).
                 defer_announcement = False
-                if self._phase == 1 and folder_media_count > 0:
+                probe_album = None
+                need_probe = self._show_placement_letter or (self._phase == 1 and folder_media_count > 0)
+                if need_probe:
                     probe_rel = f"{cur_rel_prefix}/x" if cur_rel_prefix else "x"
                     probe_album, _s, _p = find_album(
                         probe_rel, archive_boundary_idx,
                         dump_names=self.cfg.dump_segment_names_lower,
                         dump_prefixes=self.cfg.dump_segment_prefixes_tuple)
+                if self._phase == 1 and folder_media_count > 0:
                     defer_announcement = probe_album is None
+                letter = ("A" if probe_album is not None else "D") if self._show_placement_letter else ""
                 if defer_announcement:
-                    self._pending_folder_announcements[cur_dirpath] = (disp_for_object, folder_media_count)
+                    self._pending_folder_announcements[cur_dirpath] = (disp_for_object, folder_media_count, letter)
                 else:
-                    self._object_line_cb("folder", disp_for_object, folder_media_count)
+                    self._object_line_cb("folder", disp_for_object, folder_media_count, letter)
 
             def _defer_raw_with_sibling(name, _dirpath=cur_dirpath, _sibling_by_base=sibling_by_base):
                 t = file_type(os.path.join(_dirpath, name))
@@ -3642,7 +3789,13 @@ class SourceWalker:
         # ложным "ничего не найдено" -- не печатаем вовсе, вместо этого нужный сигнал уже даёт
         # archive_bomb_suspected в archives.log чуть ниже по функции.
         if info.ok and self._object_line_cb is not None:
-            self._object_line_cb("archive", _strip_trailing_arrow(full_display), info.media_count)
+            # Живая находка пользователя, 2026-08-09: буква "A"/"D" -- та же проба, что и у
+            # объявления папки (_placement_letter()/find_album() с фиктивным "x" в конце) --
+            # rel_prefix здесь уже включает собственное имя архива последним сегментом (см.
+            # вызывающий код _walk_dir(): new_rel_prefix = f"{cur_rel_prefix}/{base_no_ext}"),
+            # тот же смысл, что cur_rel_prefix у папки.
+            letter = self._placement_letter(rel_prefix, archive_boundary_idx)
+            self._object_line_cb("archive", _strip_trailing_arrow(full_display), info.media_count, letter)
 
         try:
             compressed_size = os.path.getsize(winlong(archive_path))
@@ -5705,6 +5858,18 @@ class AnalyzeStats:
     n_tier_c_estimated: int = 0
     n_copy_artifact_mtime: int = 0
     n_broken_or_zero: int = 0
+    # SESSION-HANDOFF.txt, 2026-08-09 (боевой прогон, шестая находка): n_broken_or_zero выше
+    # смешивал ДВЕ разные по природе категории под одним счётчиком -- содержимое НЕ распознано
+    # (item.size==0 или rec.broken, TARGET-уровень зовёт это "disputed") и файл физически НЕ
+    # УДАЛОСЬ прочитать (rec.read_error, TARGET-уровень зовёт это "unreadable", disputes.csv/
+    # unreadable.csv -- РАЗНЫЕ CSV уже на TARGET-уровне, см. run_logs.disputed()/.unreadable()).
+    # Analyze-уровень (self_scan=False, обычный [1]/CLI analyze) теперь тоже различает их --
+    # self-scan/"Паспорт архива" по-прежнему читает только общий n_broken_or_zero выше, эта
+    # находка его не касается (см. _render_passport_integrity()). Путь -- реальный абсолютный
+    # (_analyze_source_abs_path(cfg, item), см. run_analyze()) -- рабочая file://-
+    # ссылка в отчёте, тот же паттерн, что encrypted_archive_paths выше.
+    disputed_paths: list = field(default_factory=list)
+    unreadable_paths: list = field(default_factory=list)
     n_signature_mismatch: int = 0
     n_raw_without_jpeg: int = 0
     n_jpeg_without_raw: int = 0
@@ -5781,6 +5946,16 @@ class AnalyzeStats:
     # уровне AnalyzeStats, т.к. паспорт не использует per-file dest/tier построчно (дешевле
     # одного дополнительного счётчика, чем тащить весь список путей ради паспорта).
     n_tier_cd_bydate: int = 0
+    # SESSION-HANDOFF.txt, 2026-08-09 (боевой прогон, пятая находка): объединённый чек-лист
+    # "получили дату неточно или не получили вовсе" (report.py) разбивает итог по тирам B/C/D
+    # РАЗДЕЛЬНО (не по 5 пересекающимся полям n_no_exif_date/etc выше -- те не складываются в
+    # чистую сумму, см. находку) -- n_tier_cd_bydate выше считает только C+D вместе, без B, и
+    # используется ДРУГИМ местом (_render_passport_integrity(), не трогать). Три новых счётчика
+    # ниже -- та же семантика "тир X И НЕ в альбоме", что и n_tier_cd_bydate, просто на тир
+    # тоньше -- считаются в том же цикле run_analyze(), заодно с tier_counts/n_tier_cd_bydate.
+    n_tier_b_bydate: int = 0
+    n_tier_c_bydate: int = 0
+    n_tier_d_bydate: int = 0
     # ROADMAP.md, analyze как "2 части", часть 2 ("на этом диске найден архив PhotoArchive"):
     # top-level -- найденные архивы, НЕ вложенные в другой найденный архив (см.
     # classify_found_archives()). Раунд 44 ревью (придирка) -- парный field "nested" (вложенные
@@ -5906,6 +6081,32 @@ def _flush_exif_prefetch_batch(pending: list, cache, log, rate_hint_cb=None):
             rate_hint_cb((time.time() - t0) / n, n)
 
 
+def _analyze_source_abs_path(cfg: Config, item) -> str:
+    """SESSION-HANDOFF.txt, 2026-08-09 (задачи 4/6): реальный абсолютный путь для
+    disputed_paths/unreadable_paths (рабочая file://-ссылка в отчёте) -- item.origin_display
+    сам по себе НЕ включает корень SOURCE (см. его докстринг в SourceItem) и использует "/" как
+    разделитель (POSIX-style, тот же принцип, что item.rel_path -- см. комментарии в
+    _walk_dir()), НЕ os.sep -- голая os.path.join(cfg.source, item.origin_display) без замены
+    разделителя дала бы смешанный путь вида "F:\\Photos\\2015/Crimea/IMG_1234.jpg": сама
+    file://-ссылка это бы пережила (_file_link_or_text() всё равно заменяет "\\" на "/" целиком
+    для href), но _win_dirname()/_win_basename() (группировка по папке, отображаемое имя файла)
+    расщепляют только по "\\" -- без нормализации здесь "базовым именем" ошибочно оказалась бы
+    "2015/Crimea/IMG_1234.jpg" целиком, а не только "IMG_1234.jpg".
+
+    REVIEW-HANDOFF.md, Раунд 80 [ЗАМЕЧАНИЕ]: os.path.join() здесь -- та же ошибка, от которой
+    уже есть документированная защита в report.py (_win_dirname()/_win_basename(), см. их
+    докстрины) -- os.path на не-Windows раннере (public-репозиторий гоняет tests/ на
+    ubuntu-latest в CI) это posixpath, который "\\" не считает разделителем: результат
+    join() на POSIX -- ".../NewBatch/Sub\\broken.jpg" одним куском, не тот же путь, что дал бы
+    os.path.join(source, "Sub", "broken.jpg") на Windows. Ручная склейка через f-string (тот
+    же принцип, что rpartition("\\") у _win_dirname()) даёт identичный на Windows результат
+    (единственная целевая платформа программы), но остаётся корректной строкой и на POSIX --
+    сам путь всё равно никогда не читается с диска POSIX-раннером, только сравнивается как
+    текст в тестах."""
+    rel = item.origin_display.replace("/", "\\")
+    return cfg.source.rstrip("\\") + "\\" + rel
+
+
 def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> AnalyzeStats:
     """mode: analyze-quick (метаданные, без SHA/pHash; CLI -- "analyze --source ...", см.
     _CLI_ANALYZE_MODE_MAP) | analyze (+ полный проход хеширования, точный+near-дедуп ВНУТРИ
@@ -5923,6 +6124,11 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
     SOURCE, на TARGET на самом деле собственная разметка программы с прошлого прогона, а не
     независимое доказательство (живой репорт пользователя, 2026-08-01, см. докстринг
     resolve_date()/_PASSPORT_SELF_SCAN_RECOGNIZED_TOP ниже)."""
+    # Остатки чужого прошлого прерванного прогона (Ctrl+C/крах) -- та же проверка, что
+    # _run_impl()'s Фаза 0 делает для реальной сборки/--dry-run, раньше отсутствовала здесь
+    # вовсе (живая находка пользователя, 2026-08-09). Симметричный вызов после основного цикла
+    # ниже подчищает то же самое для ЭТОГО прогона, если он сам будет прерван.
+    _cleanup_own_tmp_extract_entries(cfg, log=log)
     stats = AnalyzeStats(mode=mode)
     date_ctx = DateContext()
     album_names = set()
@@ -6131,14 +6337,28 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
             if item.ftype == "image" and not item.sibling_path:
                 stats.n_jpeg_without_raw += 1
 
-            real_kind = sniff_signature(item.read_path)
-            if real_kind is not None and real_kind != _coarse_kind(item.ftype):
-                stats.n_signature_mismatch += 1
+            # SESSION-HANDOFF.txt, 2026-08-09 (одиннадцатая задача): self_scan (Паспорт архива)
+            # -- проверка сигнатуры ВСЕГДА безусловна (полная проверка уже собранного архива).
+            # Обычный анализ ([1]/CLI analyze) -- только если пользователь явно включил флаг в
+            # конфиге (по умолчанию cfg.check_signature=False, проверка пропускается). Когда
+            # проверка не выполняется -- n_signature_mismatch не увеличивается вовсе (не может
+            # быть найдено то, что не проверялось) -- поле рендерится ТОЛЬКО в Паспорте архива
+            # (self_scan всегда True там), обычный [1]-отчёт этот пункт вообще не показывает,
+            # ни сейчас, ни после этой правки -- ложному "0" протечь некуда (обсуждено и
+            # закрыто с пользователем в этой же сессии).
+            if self_scan or cfg.check_signature:
+                real_kind = sniff_signature(item.read_path)
+                if real_kind is not None and real_kind != _coarse_kind(item.ftype):
+                    stats.n_signature_mismatch += 1
 
             if item.size == 0:
                 stats.n_broken_or_zero += 1
+                # Пустой файл -- содержимое НЕ распознано (TARGET-уровень назвал бы это
+                # "disputed", см. AnalyzeStats.disputed_paths выше), не путать с rec.read_error
+                # ниже ("не прочитано" -- I/O-сбой, файл вообще не открылся).
+                stats.disputed_paths.append(_analyze_source_abs_path(cfg, item))
                 # Битый/пустой файл всегда уходит в _Unsorted при реальной сборке (см. отчёт
-                # "N файлов не удалось однозначно распознать -- Лежат в _Unsorted"), независимо
+                # "N файлов не удалось распознать -- Лежат в _Unsorted"), независимо
                 # от того, что вычислил tree_key выше (реальный альбом/RAW тут не место назначения).
                 stats.tree_folder_counts["_Unsorted"] += 1
                 stats.tree_folder_bytes["_Unsorted"] += item.size
@@ -6156,6 +6376,17 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
             rec = recs[0]
             if rec.read_error or rec.broken:
                 stats.n_broken_or_zero += 1
+                # rec.read_error -- файл физически не удалось прочитать (I/O-сбой, TARGET-
+                # уровень зовёт это "не прочитано"/unreadable.csv); rec.broken -- файл прочитан,
+                # но содержимое не распознано (та же категория, что item.size==0 выше, TARGET-
+                # уровень зовёт это "disputed"/disputes.csv). Этот участок уже ПОСЛЕ фильтра
+                # item.ftype in (image, raw, video) выше -- rec.read_error здесь гарантированно
+                # медиа, доп. проверка не нужна (в отличие от item.size==0 выше, тот срабатывает
+                # ДО фильтра типа).
+                if rec.read_error:
+                    stats.unreadable_paths.append(_analyze_source_abs_path(cfg, item))
+                else:
+                    stats.disputed_paths.append(_analyze_source_abs_path(cfg, item))
                 stats.tree_folder_counts["_Unsorted"] += 1
                 stats.tree_folder_bytes["_Unsorted"] += item.size
                 continue
@@ -6220,6 +6451,17 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                 stats.n_copy_artifact_mtime += 1
             if tier in ("C", "D") and not album:
                 stats.n_tier_cd_bydate += 1
+            # SESSION-HANDOFF.txt, 2026-08-09 (пятая находка): разбивка B/C/D РАЗДЕЛЬНО для
+            # объединённого чек-листа "получили дату неточно или не получили вовсе" в
+            # report.py -- тот же album-фильтр, что n_tier_cd_bydate выше, просто на тир тоньше
+            # (та C+D-агрегат остаётся как есть, отдельным полем, для _render_passport_integrity()).
+            if not album:
+                if tier == "B":
+                    stats.n_tier_b_bydate += 1
+                elif tier == "C":
+                    stats.n_tier_c_bydate += 1
+                elif tier == "D":
+                    stats.n_tier_d_bydate += 1
 
             if cfg.place_lookup == "offline":
                 place = place_for_gps(rec.gps_lat, rec.gps_lon, cfg.home_country)
@@ -6282,6 +6524,11 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
 
     stats.n_objects_total = bar.object_count  # SESSION-HANDOFF.txt п.4 -- ДО close(), не после
     bar.close()  # ДО того, как вызывающий код продолжит писать в консоль -- не портить формат бара
+    # Живая находка пользователя, 2026-08-09: раньше run_analyze() не подчищал tmp_extract ни в
+    # начале, ни после прерывания вовсе (в отличие от _run_impl(), см. её Фазу 0) -- временные
+    # распакованные архивы копились под %TEMP% (см. _NO_TARGET_PLACEHOLDER) неограниченно.
+    # Безусловно (не только при stats.interrupted) -- дешёвый no-op, если нечего чистить.
+    _cleanup_own_tmp_extract_entries(cfg, log=log)
 
     for display, status, note in walker.archive_logs:
         if status.startswith("archive_"):
@@ -7093,23 +7340,10 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
     }
 
     log("=== Фаза 0: окружение ===")
-    if os.path.isdir(winlong(cfg.tmp_extract)) and os.listdir(winlong(cfg.tmp_extract)):
-        entries = [n for n in os.listdir(winlong(cfg.tmp_extract)) if n != SKIP_MARKER]
-        # Only remove entries that look like our own archive_hash extraction dirs (see
-        # _handle_archive()) -- see _OWN_TMP_EXTRACT_ENTRY_RE comment above for why.
-        recognized = [n for n in entries if _OWN_TMP_EXTRACT_ENTRY_RE.match(n)]
-        unrecognized = [n for n in entries if n not in recognized]
-        if recognized:
-            log(f"TMP_EXTRACT не пуст — очищаю {len(recognized)} остатков прошлого "
-                f"прерванного прогона")
-            for name in recognized:
-                cleanup_dir(os.path.join(cfg.tmp_extract, name))
-        if unrecognized:
-            log(f"ВНИМАНИЕ: в TMP_EXTRACT_DIR ({cfg.tmp_extract}) есть {len(unrecognized)} "
-                f"файлов/папок, не похожих на собственные временные файлы программы -- "
-                f"НЕ трогаю их. Если это чужая папка (например, tmp_extract_dir в photoarchive_config.yaml "
-                f"указан по ошибке) -- поправьте настройку. Первые: "
-                f"{unrecognized[:5]}")
+    # Остатки чужого прошлого прерванного прогона (Ctrl+C/крах) -- см. _cleanup_own_tmp_extract_
+    # entries() докстринг. Симметричный вызов после основного цикла ниже (после except
+    # KeyboardInterrupt) подчищает то же самое для ЭТОГО прогона, если он сам будет прерван.
+    _cleanup_own_tmp_extract_entries(cfg, log=log)
 
     if not cfg.suppress_logs:
         ensure_target_layout(cfg)
@@ -7234,7 +7468,7 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
         walker = SourceWalker(cfg, log=log, object_line_cb=bar.write_object_line,
                                transient_op_cb=bar.set_transient_op,
                                object_progress_cb=bar.add_object_progress,
-                               dvd_unit_registry=dvd_unit_registry)
+                               dvd_unit_registry=dvd_unit_registry, show_placement_letter=True)
         # NB: items are analyzed and placed one at a time (no read-ahead batching).
         # Files extracted from an archive live in TMP_EXTRACT only until that archive's
         # generator scope closes (walker.py cleans up in a `finally` right after its last
@@ -7334,6 +7568,14 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
             # баннером прерывания и заново возбуждает KeyboardInterrupt -- поведение "Ctrl+C
             # останавливает программу" не меняется, только теперь есть отчёт перед выходом.
             st.interrupted = True
+
+        # Живая находка пользователя, 2026-08-09: временные распакованные папки архива
+        # (__служебные_файлы\tmp_extract\<hash>\...) оставались на диске после Ctrl+C ВО ВРЕМЯ
+        # самого прогона (в т.ч. --dry-run) -- раньше только Фаза 0 в начале СЛЕДУЮЩЕГО прогона
+        # подчищала такие остатки, ничего не делало сразу после ЭТОГО прерывания. Безусловно
+        # (не только при st.interrupted) -- дешёвый no-op на успешном прогоне, где чистить
+        # нечего (обычный обход уже подчищает всё сам по ходу, см. _handle_archive()).
+        _cleanup_own_tmp_extract_entries(cfg, log=log)
 
         # Архивные события (extracted/no_media/password_protected/bomb_suspected/...) копятся
         # в walker.archive_logs по ходу walk() -- по завершении обхода переносим их в
@@ -7587,6 +7829,12 @@ DEFAULT_CONFIG_YAML_TEMPLATE = """\
                                 # ускорения повторных прогонов на растущем архиве; false = всегда
                                 # пересчитывать всё заново (медленнее, но нечувствительно к
                                 # теоретической коллизии path+size+mtime при разном содержимом)
+# check_signature: false        # false (по умолчанию) = не проверять сигнатуру файла (первые
+                                # байты содержимого) против расширения в обычном анализе ([1]/CLI
+                                # analyze) -- ускоряет анализ на медленном/сетевом диске; true =
+                                # проверять. "Паспорт архива" ([4]) проверяет сигнатуру ВСЕГДА,
+                                # независимо от этого флага -- это полная проверка уже собранного
+                                # архива, там сокращать не нужно
 # max_archive_depth: 8          # потолок вложенности архив-в-архиве
 # max_dest_path: 240            # символов на сегмент пути (плюс жёсткий лимит 255 байт UTF-8)
 # small_image_px: 640           # граница "маленького, но не иконки" фото
@@ -7727,6 +7975,7 @@ DEFAULT_CONFIG_YAML_TEMPLATE = """\
 # source/target/dry_run/sample_limit: они всегда приходят из CLI/интерактивного ввода
 CONFIG_YAML_FIELDS = {
     "layout", "date_mode", "place_lookup", "home_country", "archive_hash_cache",
+    "check_signature",
     "max_archive_depth", "max_dest_path", "small_image_px", "free_space_margin_gb",
     "read_retry_count", "read_retry_delay", "bydate_granularity",
     "scan_system_dirs",

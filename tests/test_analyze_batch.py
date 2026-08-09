@@ -834,3 +834,189 @@ class TestAlbumDateGroupingStats:
 
         assert stats.n_dump_items == 0
         assert stats.n_media_in_albums == 1
+
+
+class TestDisputedAndUnreadablePaths:
+    """SESSION-HANDOFF.txt, задачи 4/6 (2026-08-09, боевой прогон): analyze-уровень раньше
+    сливал "содержимое не распознано" (disputed) и "физически не удалось прочитать"
+    (unreadable) в один общий n_broken_or_zero, без единого пути к файлу. Теперь -- два
+    раздельных списка реальных абсолютных путей."""
+    def _cfg(self, tmp_path):
+        source = tmp_path / "NewBatch"
+        source.mkdir()
+        target = tmp_path / "MyArchive"
+        target.mkdir()
+        workdir = tmp_path / "appdir"
+        workdir.mkdir()
+        return source, m.Config(source=str(source), target=str(target), sample_limit=0,
+                                 workdir=str(workdir))
+
+    def _expected_abs_path(self, source, *parts):
+        """REVIEW-HANDOFF.md, Раунд 80 [ЗАМЕЧАНИЕ]: _analyze_source_abs_path() всегда склеивает
+        "\\" (программа -- только для Windows, см. её докстринг/CLAUDE.md), НЕЗАВИСИМО от
+        разделителя, который на POSIX-раннере дал бы str(source / "a" / "b") (pathlib берёт
+        posixpath, "/"). Прямое сравнение с str(pathlib.Path(...)) поэтому platform-зависимо и
+        падает на не-Windows CI -- собираем ожидаемое значение той же ручной склейкой, что и
+        сама функция, не через pathlib."""
+        return str(source).rstrip("\\/") + "\\" + "\\".join(parts)
+
+    def test_zero_byte_file_recorded_as_disputed_not_unreadable(self, tmp_path):
+        """Пустой файл -- содержимое прочитано (0 байт), просто не медиа -- "не удалось
+        распознать" (disputed_paths), не "не прочитано" (unreadable_paths). Путь -- реальный
+        абсолютный (SOURCE + относительный origin_display, см. _analyze_source_abs_path())."""
+        source, cfg = self._cfg(tmp_path)
+        (source / "Album").mkdir()
+        (source / "Album" / "broken.jpg").write_bytes(b"")
+
+        stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
+
+        assert stats.disputed_paths == [self._expected_abs_path(source, "Album", "broken.jpg")]
+        assert stats.unreadable_paths == []
+
+    def test_corrupt_content_recorded_as_disputed_not_unreadable(self, tmp_path):
+        """Ненулевой файл, который физически ЧИТАЕТСЯ, но не РАСПОЗНАЁТСЯ как изображение
+        (rec.broken, не rec.read_error) -- та же категория "не удалось распознать", что и
+        пустой файл выше, не "не прочитано"."""
+        source, cfg = self._cfg(tmp_path)
+        (source / "garbage.jpg").write_bytes(b"not a real jpeg" * 10)
+
+        stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
+
+        assert stats.disputed_paths == [self._expected_abs_path(source, "garbage.jpg")]
+        assert stats.unreadable_paths == []
+
+    def test_read_error_recorded_as_unreadable_not_disputed(self, tmp_path, monkeypatch):
+        """rec.read_error -- физический I/O-сбой при чтении, отдельная категория от
+        disputed выше ("не прочитано", не "не удалось распознать"). Нужен mode="analyze" (не
+        "analyze-quick") -- rec.read_error проверяется только внутри `if not skip_hash`, см.
+        SESSION-HANDOFF.txt (шестая находка)."""
+        source, cfg = self._cfg(tmp_path)
+        _make_jpeg(source / "a.jpg")
+
+        def _raise(*a, **kw):
+            raise m.ReadError("locked by another process")
+        monkeypatch.setattr(m, "sha256_file_with_retry", _raise)
+
+        stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
+
+        assert stats.unreadable_paths == [self._expected_abs_path(source, "a.jpg")]
+        assert stats.disputed_paths == []
+
+    def test_disputed_and_unreadable_paths_use_backslash_separators(self, tmp_path):
+        """_analyze_source_abs_path() нормализует item.origin_display ("/" -- POSIX-style) в
+        "\\\\" при склейке с cfg.source -- иначе _win_dirname()/_win_basename() (рендер отчёта)
+        расщепляли бы смешанный путь неверно (см. докстринг функции). Проверяем именно СУФФИКС
+        (часть, произведённую из origin_display), не весь путь целиком -- cfg.source сам по
+        себе на POSIX-раннере (см. _expected_abs_path()) законно содержит "/" (tmp_path -- это
+        реальный путь текущей ОС, не собственно то, что тестирует эта функция)."""
+        source, cfg = self._cfg(tmp_path)
+        (source / "Sub").mkdir()
+        (source / "Sub" / "broken.jpg").write_bytes(b"")
+
+        stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
+
+        assert stats.disputed_paths == [self._expected_abs_path(source, "Sub", "broken.jpg")]
+        assert stats.disputed_paths[0].endswith("Sub\\broken.jpg")
+        assert "Sub/broken.jpg" not in stats.disputed_paths[0]
+
+
+class TestDateTierBydateCounters:
+    """Задача 5 (SESSION-HANDOFF.txt, 2026-08-09): n_tier_b_bydate/n_tier_c_bydate/
+    n_tier_d_bydate -- album-исключающие счётчики для объединённого чек-листа report.html,
+    та же семантика "тир X и не в альбоме", что n_tier_cd_bydate, просто тоньше на тир."""
+    def _cfg(self, tmp_path):
+        source = tmp_path / "NewBatch"
+        source.mkdir()
+        target = tmp_path / "MyArchive"
+        target.mkdir()
+        workdir = tmp_path / "appdir"
+        workdir.mkdir()
+        return source, m.Config(source=str(source), target=str(target), sample_limit=0,
+                                 workdir=str(workdir))
+
+    def test_tier_b_counts_only_outside_albums(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(m, "exiftool_batch", lambda paths, **kw: {})
+        monkeypatch.setattr(m, "resolve_date",
+                             lambda *a, **kw: (None, "B", "medium", "filename_pattern", None))
+        source, cfg = self._cfg(tmp_path)
+        (source / "Album").mkdir()
+        _make_jpeg(source / "Album" / "in_album.jpg")
+        _make_jpeg(source / "loose.jpg")
+
+        stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
+
+        assert stats.n_tier_b_bydate == 1  # только loose.jpg -- in_album.jpg исключён
+        assert stats.tier_counts["B"] == 2  # сырой tier_counts по-прежнему считает ОБА файла
+
+    def test_tier_c_and_d_also_exclude_album_files(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(m, "exiftool_batch", lambda paths, **kw: {})
+        source, cfg = self._cfg(tmp_path)
+        (source / "Album").mkdir()
+        _make_jpeg(source / "Album" / "c_in_album.jpg")
+        _make_jpeg(source / "c_loose.jpg")
+        _make_jpeg(source / "Album" / "d_in_album.jpg")
+        _make_jpeg(source / "d_loose.jpg")
+
+        calls = {}
+
+        def _fake_resolve_date(ctx, rel_path, *a, **kw):
+            tier = "C" if "c_" in rel_path else "D"
+            calls[rel_path] = tier
+            return (None, tier, "low", "no_signal", None)
+        monkeypatch.setattr(m, "resolve_date", _fake_resolve_date)
+
+        stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
+
+        assert stats.n_tier_c_bydate == 1  # только c_loose.jpg
+        assert stats.n_tier_d_bydate == 1  # только d_loose.jpg
+        assert stats.n_tier_cd_bydate == 2  # C+D вместе, не в альбоме -- уже существующий счётчик
+
+
+class TestCheckSignatureFlag:
+    """Задача 11 (SESSION-HANDOFF.txt, 2026-08-09): sniff_signature() -- заметные накладные
+    расходы на медленном/сетевом диске (отдельный open() на КАЖДЫЙ файл). Новый флаг
+    cfg.check_signature (по умолчанию False) отключает проверку в обычном анализе, self-scan
+    ("Паспорт архива") проверяет ВСЕГДА, независимо от флага."""
+    def _cfg(self, tmp_path, **overrides):
+        source = tmp_path / "NewBatch"
+        source.mkdir()
+        target = tmp_path / "MyArchive"
+        target.mkdir()
+        workdir = tmp_path / "appdir"
+        workdir.mkdir()
+        return source, m.Config(source=str(source), target=str(target), sample_limit=0,
+                                 workdir=str(workdir), **overrides)
+
+    def _make_signature_mismatch_file(self, source):
+        # ZIP magic bytes (PK\x03\x04) под именем .jpg -- sniff_signature() вернёт "archive",
+        # _coarse_kind("image")=="image" -- несоответствие. Не обязано быть валидным
+        # изображением дальше по циклу (sniff_signature() -- самая первая проверка, до
+        # analyze_batch()/декодирования, см. run_analyze()).
+        (source / "fake.jpg").write_bytes(b"PK\x03\x04" + b"\x00" * 60)
+
+    def test_disabled_by_default_no_check_in_normal_analyze(self, tmp_path):
+        source, cfg = self._cfg(tmp_path)
+        self._make_signature_mismatch_file(source)
+
+        stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)  # self_scan=False
+
+        assert cfg.check_signature is False
+        assert stats.n_signature_mismatch == 0
+
+    def test_enabled_via_flag_checks_in_normal_analyze(self, tmp_path):
+        source, cfg = self._cfg(tmp_path, check_signature=True)
+        self._make_signature_mismatch_file(source)
+
+        stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)  # self_scan=False
+
+        assert stats.n_signature_mismatch == 1
+
+    def test_self_scan_always_checks_regardless_of_flag(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(m, "exiftool_batch", lambda paths, **kw: {})
+        source, cfg = self._cfg(tmp_path)  # check_signature=False (по умолчанию)
+        self._make_signature_mismatch_file(source)
+
+        stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None, self_scan=True)
+
+        assert cfg.check_signature is False
+        assert stats.n_signature_mismatch == 1  # self_scan игнорирует флаг, проверяет всегда

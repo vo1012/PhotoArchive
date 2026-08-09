@@ -322,6 +322,8 @@ class _FakeAnalyzeStatsForFoundArchivesReport:
         self.predicted_unique_count = 1
         self.n_exact_dupes = 0
         self.n_broken_or_zero = 0
+        self.disputed_paths = []
+        self.unreadable_paths = []
         self.total_bytes = 100
         self.predicted_unique_bytes = 100
         self.dates_by_year = Counter()
@@ -343,3 +345,6 @@ class _FakeAnalyzeStatsForFoundArchivesReport:
         self.n_media_in_albums = 0
         self.bydate_media_by_folder = Counter()
         self.n_media_by_date = 0
+        self.n_tier_b_bydate = 0
+        self.n_tier_c_bydate = 0
+        self.n_tier_d_bydate = 0

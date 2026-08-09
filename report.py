@@ -433,6 +433,7 @@ def _build_checklist_fields(data: dict) -> dict:
     disputes = data.get("disputes", [])
     dates_review = data.get("dates_review", [])
     appended = data.get("appended", [])
+    date_issues_detail = _cluster_date_issues(dates_review, data.get("undated_media", []))
     return {
         "near_dup_clusters": _cluster_near_dup(data.get("near_dup_edges", [])),
         # Раунд 31 (REVIEW-HANDOFF.md): живёт в этом же словаре ради переиспользования
@@ -450,37 +451,21 @@ def _build_checklist_fields(data: dict) -> dict:
         # (AnalyzeStats считает только n_broken_or_zero агрегатом, без source/reason на файл)
         # -- _build_checklist_items() откатывается на старый агрегат по .get(..., []).
         "disputes_detail": _cluster_disputes(disputes),
-        "dates_review_by_folder": Counter(
-            _win_dirname(r.get("source", "")) for r in dates_review if r.get("tier") in ("B", "C")
-        ),
-        "dates_review_bc_total": sum(1 for r in dates_review if r.get("tier") in ("B", "C")),
-        # 2026-07-26, по просьбе пользователя (общий аудит "путь для проверки" по Листу 3):
-        # тот же приём, что и disputes_detail -- путь+имя каждого файла, не только счётчик по
-        # папке. Пусто для analyze (см. build_model_from_analyze_stats() -- не отслеживает
-        # source/dest на файл, только n_uncertain_dates агрегатом), _build_checklist_items()
-        # откатывается на старый агрегат по .get(..., []), тот же паттерн, что у disputes.
-        "dates_review_detail": _cluster_dates_review(dates_review),
+        # Задача 5 (SESSION-HANDOFF.txt, 2026-08-09): прежние раздельные "dates_review_by_folder"/
+        # "dates_review_bc_total"/"undated_total"/"undated_media"/"undated_detail"/
+        # "dates_review_detail" объединены в один набор date_issues_* -- см. _cluster_date_issues()
+        # (Tier B/C + Tier D одной группировкой по папке, Albums/ исключён на обеих сторонах,
+        # тот же фильтр, что уже был у каждой из двух половин по отдельности). Тоталы по тирам
+        # считаются ИЗ уже отфильтрованных групп -- не отдельным проходом по сырым rows, гарантия
+        # что totals и detail никогда не разойдутся между собой.
+        "date_issues_detail": date_issues_detail,
+        "date_issues_b_total": sum(1 for _, items in date_issues_detail for _, t in items if t == "B"),
+        "date_issues_c_total": sum(1 for _, items in date_issues_detail for _, t in items if t == "C"),
+        "date_issues_d_total": sum(1 for _, items in date_issues_detail for _, t in items if t == "D"),
         "unreadable": data.get("unreadable", []),
         # Флаг из appended.csv (RunLogs.appended()) -- раньше виден был только агрегатом в
         # диаграмме Листа 2 ("Качество кадров"), без указания, что с этим делать.
         "quality_flags": Counter(r.get("flags", "") or "" for r in appended),
-        # Tier D (undated_media.csv) -- "даты нет вообще", не путать с Tier B/C выше
-        # ("дата есть, но приблизительная") -- разные по природе находки, разные пункты.
-        "undated_total": len(data.get("undated_media", [])),
-        # 2026-07-26, обсуждение с пользователем: раньше здесь был только счётчик -- пункт
-        # "N файлов вообще без даты" был безадресным, найти файлы можно было только через
-        # undated_media.csv напрямую. dest -- путь в АРХИВЕ (файл всё равно дописан, просто
-        # без даты, см. photosort_win.py:run_logs.undated_media()), не source в источнике --
-        # пользователю нужно то место, где искать СЕЙЧАС, тот же принцип, что у "Самый старый
-        # файл" (Раунд 40).
-        "undated_media": data.get("undated_media", []),
-        # Задача 5: та же группировка/превью, что Tier B/C (dates_review_detail) -- уже
-        # отфильтрована до ByDate/0000-undated/ (см. _cluster_undated()). Ключ намеренно
-        # ОТСУТСТВУЕТ в build_model_from_analyze_stats() (analyze не отслеживает undated_media
-        # поштучно) -- _build_checklist_items() различает "нет detail вообще" (analyze,
-        # .get() без ключа -> None) от "detail есть, но все файлы в Albums/" ([] после
-        # фильтра) -- разное поведение рендера для каждого случая.
-        "undated_detail": _cluster_undated(data.get("undated_media", [])),
         # Пункт B.5 ("большой разбор report.html", SESSION-HANDOFF.txt): интро-фраза "сохранены
         # ВСЕ N файлов, включая M спорных" -- N должно включать M (спорные физически тоже
         # сохранены, в _Unsorted, просто не идут через run_logs.appended()/appended.csv,
@@ -772,10 +757,13 @@ def _cluster_disputes(disputes_rows: list) -> list:
     (source/reason), новых вычислений не требуется. Та же форма группировки, что
     _cluster_exact_dup_full() -- по исходной папке (_win_dirname), не плоским списком.
 
-    Пусто для analyze (AnalyzeStats считает только n_broken_or_zero одним агрегатным числом,
-    без source/reason на файл) -- тот же асимметричный охват, что уже есть у
-    disputes_by_folder/disputes_total, вызывающая сторона (_build_checklist_items())
-    откатывается на старое поведение (только числа по папкам), когда это поле пусто.
+    Пусто для analyze -- AnalyzeStats не отслеживает source/reason на файл через disputes.csv-
+    подобную структуру, только n_broken_or_zero + отдельно AnalyzeStats.disputed_paths (список
+    путей БЕЗ reason, задачи 4/6 SESSION-HANDOFF.txt 2026-08-09) -- _build_checklist_items()
+    для analyze рендерит эти пути ЧЕРЕЗ ДРУГОЙ путь (_path_list_checklist_item()), не через эту
+    функцию/_dispute_checklist_item(). Пустой результат здесь на TARGET-уровне означал бы
+    старый агрегатный fallback (только числа по папкам), но на практике недостижим -- TARGET
+    всегда отслеживает построчно.
 
     Возвращает [(folder, [(name, reason), ...]), ...], отсортировано по убыванию размера
     группы."""
@@ -852,6 +840,29 @@ def _cluster_undated(undated_rows: list) -> list:
             continue
         name = _win_basename(dest) or dest
         by_folder[_win_dirname(dest)].append(name)
+    groups = [(folder, items) for folder, items in by_folder.items()]
+    groups.sort(key=lambda g: -len(g[1]))
+    return groups
+
+
+def _cluster_date_issues(dates_review_rows: list, undated_rows: list) -> list:
+    """Задача 5 (SESSION-HANDOFF.txt, 2026-08-09): объединяет Tier B/C (_cluster_dates_review())
+    и Tier D (_cluster_undated()) в ОДНУ группировку по папке -- по прямой инструкции
+    пользователя оба прежних отдельных пункта чек-листа ("получили дату приблизительно"/
+    "вообще без даты") стали одним. Одна и та же папка может содержать файлы разной точности
+    одновременно -- показывать "Папка: ..." дважды для одной и той же папки было бы дублем,
+    поэтому группировка объединена здесь, а не просто конкатенацией двух списков групп. Тир
+    каждого файла остаётся в самом элементе группы (см. _DATE_TIER_LABELS) -- ничего не
+    теряется при слиянии, только общая структура "по папке".
+
+    Возвращает [(folder, [(name, tier), ...]), ...], отсортировано по убыванию размера
+    группы. Обе стороны уже отфильтрованы своими функциями (Albums/ исключены -- дата там ни
+    на что не влияет, см. RULES.md, блок UNDATED)."""
+    by_folder = defaultdict(list)
+    for folder, items in _cluster_dates_review(dates_review_rows):
+        by_folder[folder].extend(items)
+    for folder, items in _cluster_undated(undated_rows):
+        by_folder[folder].extend((name, "D") for name in items)
     groups = [(folder, items) for folder, items in by_folder.items()]
     groups.sort(key=lambda g: -len(g[1]))
     return groups
@@ -1101,13 +1112,22 @@ def _fmt_bytes(n: int) -> str:
     return f"{mb:.0f} МБ"
 
 
-def _page_shell(title: str, body_html: str, app_version: str = None) -> str:
+def _page_shell(title: str, body_html: str, app_version: str = None,
+                 generated_at: str = None) -> str:
     """app_version (SESSION-HANDOFF.txt, 2026-08-05, боевой прогон, п.4): номер версии
     программы в футере -- report.py не импортирует photosort_win.__version__ напрямую
     (PROMPT_archive_report.md, граница модулей: report.py ничего не импортирует из
     photosort_win) -- каждый публичный generate_*() выше передаёт его явным параметром, эта
     функция только форматирует. None (старые вызовы/тесты без параметра) -- строка футера как
-    раньше, без версии."""
+    раньше, без версии.
+
+    generated_at (задача 10, SESSION-HANDOFF.txt, 2026-08-09): готовая строка времени
+    (time.strftime("%Y-%m-%d %H:%M")), если вызывающий код уже посчитал её сам -- чтобы дата в
+    заголовке страницы (см. _render_sheet1()/_render_passport_summary() и т.п.) и дата в этом
+    футере ГАРАНТИРОВАННО совпадали (один вызов strftime на страницу, не два независимых,
+    которые в теории могут разойтись на границе минуты). None (старые вызовы/тесты) -- эта
+    функция сама вызывает strftime(), как раньше."""
+    generated_at = generated_at or time.strftime("%Y-%m-%d %H:%M")
     return f"""<!doctype html>
 <html lang="ru">
 <head>
@@ -1269,7 +1289,7 @@ p {{ margin: 8px 0; }}
 <div class="sheet">
 {_render_brand_header()}
 {body_html}
-<div class="footer">Сформировано PhotoArchive{f" {app_version}" if app_version else ""} · {time.strftime("%Y-%m-%d %H:%M")}</div>
+<div class="footer">Сформировано PhotoArchive{f" {app_version}" if app_version else ""} · {generated_at}</div>
 </div>
 </body>
 </html>"""
@@ -1342,7 +1362,7 @@ def generate_placeholder_report(reason: str, out_path: str, program_name: str = 
 # ============================================================================
 
 
-def _render_sheet1(model: dict, level: str = "target") -> str:
+def _render_sheet1(model: dict, level: str = "target", generated_at: str = None) -> str:
     # 2026-07-24: level=="analyze" -- SOURCE ещё только просканирован, ничего не собрано и не
     # "пополнено" -- заголовок/подписи "Ваш архив"/"с учётом только что добавленного в этом
     # пополнении" были бы неправдой (живая находка 2026-07-21, подтверждена чтением кода в
@@ -1350,6 +1370,13 @@ def _render_sheet1(model: dict, level: str = "target") -> str:
     # Вызов из _render_found_archive_block() (найденный СУЩЕСТВУЮЩИЙ архив внутри SOURCE) не
     # затронут -- level там не передаётся, остаётся по умолчанию "target", и это корректно:
     # для найденного архива "Ваш архив" -- правда, там реально есть история прошлых прогонов.
+    #
+    # generated_at (задача 10, SESSION-HANDOFF.txt, 2026-08-09): "по состоянию на ГГГГ-ММ-ДД
+    # ЧЧ:ММ" прямо в заголовке, дублирует общий футер страницы -- ТОЛЬКО когда эта функция
+    # рендерит СОБСТВЕННЫЙ верхний заголовок страницы (_generate_from_model(), см. её
+    # докстринг/вызов ниже). None (по умолчанию, в т.ч. вызов из _render_found_archive_block())
+    # -- заголовок без даты, как раньше: там это ВНУТРЕННЯЯ карточка на чужой странице
+    # ("Что нашлось на этом диске" самого analyze-скана), свой футер не сформирован.
     is_scan = level == "analyze"
     total_media = model["total_media"]
     years = model["years"]
@@ -1358,7 +1385,7 @@ def _render_sheet1(model: dict, level: str = "target") -> str:
 
     if model["total_bytes"]:
         stats.append(f'<div class="stat"><div class="value">{_fmt_bytes(model["total_bytes"])}</div>'
-                      f'<div class="label">{"занимает на диске" if is_scan else "занимает архив"}</div></div>')
+                      f'<div class="label">{"весят найденные медиафайлы" if is_scan else "занимает архив"}</div></div>')
 
     if years:
         span = _covered_year_span(years)
@@ -1375,7 +1402,7 @@ def _render_sheet1(model: dict, level: str = "target") -> str:
     n_objects_total = model.get("n_objects_total", 0)
     if is_scan and n_objects_total:
         stats.append(f'<div class="stat"><div class="value">{n_objects_total}</div>'
-                      f'<div class="label">объектов (папок и архивов)</div></div>')
+                      f'<div class="label">папок и архивов</div></div>')
 
     if is_scan:
         heading, subtitle = "Что нашлось на этом диске", (
@@ -1389,6 +1416,9 @@ def _render_sheet1(model: dict, level: str = "target") -> str:
         heading, subtitle = "Ваш архив", (
             'Цифры — по архиву целиком, с учётом только что добавленного в этом пополнении, '
             'за всё время, что вы пользуетесь программой с этим архивом.')
+
+    if generated_at:
+        heading = f"{heading} по состоянию на {generated_at}"
 
     parts = ['<div class="card">', f"<h1>{heading}</h1>",
              f'<p class="subtitle">{subtitle}</p>',
@@ -2149,40 +2179,60 @@ def _dispute_checklist_item(group: tuple, target_path: str = None) -> tuple:
     return f"{_n_files(len(items))} не удалось однозначно распознать", detail
 
 
-_DATE_TIER_LABELS = {"B": "высокая уверенность", "C": "оценочная"}
+_DATE_TIER_LABELS = {"B": "высокая уверенность", "C": "оценочная", "D": "нет данных"}
 
 
-def _dates_review_checklist_item(group: tuple) -> tuple:
-    """2026-07-26: тот же паттерн, что _dispute_checklist_item() -- имя файла + короткая
-    метка (здесь -- уровень достоверности Tier B/C, те же слова, что уже использует диаграмма
-    "Надёжность дат" -- "Высокая"/"Оценочная", не изобретать новую терминологию)."""
+def _date_issues_checklist_item(group: tuple) -> tuple:
+    """Задача 5 (SESSION-HANDOFF.txt, 2026-08-09): объединённая версия прежних раздельных
+    _dates_review_checklist_item()/_undated_checklist_item() -- один и тот же паттерн (имя
+    файла + метка тира), просто на едином группированном по папке списке из
+    _cluster_date_issues() (B/C/D вперемешку внутри одной папки, не три раздельных пункта)."""
     folder, items = group
     labels = [f"{html.escape(name)} ({html.escape(_DATE_TIER_LABELS.get(tier, tier))})"
               for name, tier in items[:5]]
     more = f" и ещё {len(items) - 5} {_plural(len(items) - 5, 'файл', 'файла', 'файлов')}" if len(items) > 5 else ""
-    # folder -- абсолютная папка в TARGET (_cluster_dates_review()); friendly-текст для показа
-    # строится тем же _friendly_target_dir(), что и у near-dup -- фиктивное имя файла на конце,
-    # функция всё равно отбрасывает последний сегмент (см. её докстринг).
+    # folder -- абсолютная папка в TARGET (_cluster_dates_review()/_cluster_undated()); friendly-
+    # текст для показа строится тем же _friendly_target_dir(), что и у near-dup -- фиктивное имя
+    # файла на конце, функция всё равно отбрасывает последний сегмент (см. её докстринг).
     friendly = _friendly_target_dir(folder + "\\x") if folder else ""
     folder_line = f"Папка: {_file_link_or_text(html.escape(friendly), folder)}." if friendly else ""
     action_line = f"Стоит перепроверить при желании: {', '.join(labels)}{more}."
     detail = f"{folder_line}<br>{action_line}" if folder_line else action_line
-    return f"{_n_files(len(items))} получили дату приблизительно", detail
+    return f"{_n_files(len(items))} с неточной или отсутствующей датой", detail
 
 
-def _undated_checklist_item(group: tuple) -> tuple:
-    """Задача 5: тот же паттерн, что _dates_review_checklist_item() -- превью на 5 файлов +
-    folder_line (кликабельная ссылка на саму папку под ByDate/0000-undated/, по решению
-    пользователя -- та же ссылка, что уже даёт Tier B/C, здесь раньше не было вообще).
-    group -- уже отфильтрован до ByDate/0000-undated/ (см. _cluster_undated())."""
-    folder, items = group
-    names = [html.escape(n) for n in items[:5]]
-    more = f" и ещё {len(items) - 5} {_plural(len(items) - 5, 'файл', 'файла', 'файлов')}" if len(items) > 5 else ""
-    friendly = _friendly_target_dir(folder + "\\x") if folder else ""
-    folder_line = f"Папка: {_file_link_or_text(html.escape(friendly), folder)}." if friendly else ""
-    action_line = f"Стоит проставить дату вручную при желании: {', '.join(names)}{more}."
-    detail = f"{folder_line}<br>{action_line}" if folder_line else action_line
-    return f"{_n_files(len(items))} вообще без даты", detail
+def _path_list_checklist_item(title: str, hint: str, paths: list) -> tuple:
+    """Задачи 4/6 (SESSION-HANDOFF.txt, 2026-08-09): путь к КАЖДОМУ файлу отдельной строкой,
+    БЕЗ обрезки на 5/"и ещё N" -- по прямому требованию пользователя (задача 4, "не удалось
+    распознать"); тот же принцип переиспользован и для "не прочитано" (задача 6) ради
+    единообразия -- обе категории на analyze-уровне получают одинаковый формат "список
+    реальных файлов", разница только в заголовке/подсказке. Группировка по папке -- ТОЛЬКО
+    если папок больше одной (тривиальный случай "все из одной папки" не плодит группу-обёртку
+    без пользы).
+
+    file://-ссылка -- только когда путь реально абсолютный, _file_link_or_text() сама решает,
+    откатываться на голый текст или нет. На TARGET-уровне ("не прочитано" из unreadable.csv)
+    путь -- относительный (origin_display "для логов", корень SOURCE нигде не персистируется
+    между прогоном и построением отчёта из CSV) -- по решению пользователя рендерится тем же
+    кодом, просто без работающей ссылки (тот же уже существующий разрыв, что и у "Спорных" на
+    этом уровне, см. _dispute_checklist_item())."""
+    by_folder = defaultdict(list)
+    for p in paths:
+        by_folder[_win_dirname(p)].append(p)
+
+    def _file_line(p):
+        return f'<div>{_file_link_or_text(html.escape(_win_basename(p)), p)}</div>'
+
+    if len(by_folder) > 1:
+        parts = []
+        for folder, folder_paths in sorted(by_folder.items(), key=lambda kv: -len(kv[1])):
+            label = _folder_label(folder) if folder else "корень источника"
+            lines = "".join(_file_line(p) for p in folder_paths)
+            parts.append(f'<div>{html.escape(label)} ({_n_files(len(folder_paths))}):{lines}</div>')
+        detail = hint + "".join(parts)
+    else:
+        detail = hint + "".join(_file_line(p) for p in paths)
+    return f"{_n_files(len(paths))} {title}", detail
 
 
 def _friendly_target_dir(dest: str) -> str:
@@ -2315,37 +2365,65 @@ def _build_checklist_items(fields: dict, target_path: str = None, verify_link: s
                     f'<ul class="checklist nested">{"".join(rest)}</ul></details></li>'
                 )
         else:
-            # analyze-уровень (build_model_from_analyze_stats) не отслеживает source/reason на
-            # файл -- только итоговое число; TARGET/dry-run уровень отслеживает (см.
-            # build_model_from_rows()/_cluster_disputes()).
-            folders = fields["disputes_by_folder"].most_common(TOP_N)
-            folder_detail = "; ".join(f"{html.escape(_folder_label(f))} ({n})" for f, n in folders)
-            # "где искать" и "какие папки-источники" -- две разные мысли, отдельные строки.
-            detail = f"Лежат в {_unsorted_link(target_path)}."
-            if folder_detail:
-                detail += f"<br>Сгруппированы по исходной папке: {folder_detail}."
-            items.append(_li(f"{_n_files(fields['disputes_total'])} не удалось однозначно распознать", detail))
+            # SESSION-HANDOFF.txt, 2026-08-09 (задача 4): analyze-уровень теперь отслеживает
+            # disputed_paths (реальные абсолютные пути, см. AnalyzeStats) -- показываем их тем
+            # же путь-списком, что и "не прочитано" ниже, вместо старого агрегата "числа по
+            # папкам" без единого имени файла. Заголовок без "однозначно" -- по прямой
+            # инструкции пользователя (только для этого, analyze-уровня -- TARGET-уровень выше
+            # свою формулировку с "однозначно" не меняет, self-scan/Паспорт архива не затронут).
+            disputed_paths = fields.get("disputed_paths")
+            if disputed_paths:
+                items.append(_li(*_path_list_checklist_item(
+                    "не удалось распознать",
+                    "Содержимое не удалось разобрать программой (пустой файл или "
+                    "повреждённые данные).",
+                    disputed_paths,
+                )))
+            else:
+                # Старый агрегатный fallback -- страховка на случай, если ни detail, ни paths
+                # недоступны (не должно происходить в реальном коде после этой правки, но
+                # оставлено на случай нестандартного вызывающего кода/старых фикстур).
+                folders = fields.get("disputes_by_folder", Counter()).most_common(TOP_N)
+                folder_detail = "; ".join(f"{html.escape(_folder_label(f))} ({n})" for f, n in folders)
+                detail = f"Лежат в {_unsorted_link(target_path)}."
+                if folder_detail:
+                    detail += f"<br>Сгруппированы по исходной папке: {folder_detail}."
+                items.append(_li(f"{_n_files(fields['disputes_total'])} не удалось распознать", detail))
 
-    if fields["dates_review_bc_total"]:
-        # 2026-08-02: dates_review_detail -- None означает "detail вообще недоступен"
-        # (analyze-уровень, build_model_from_analyze_stats не отслеживает source/dest на
-        # файл поштучно) -- отличается от [] ("detail доступен, но ПОСЛЕ фильтра до
-        # ByDate-файлов ничего не осталось", см. _cluster_dates_review()) -- тот же паттерн,
-        # что уже применён к undated_detail/Tier D ниже.
-        review_groups = fields.get("dates_review_detail")
-        if review_groups is None:
-            # analyze-уровень (build_model_from_analyze_stats) не отслеживает source/dest на
-            # файл -- только итоговое число, тот же асимметричный охват, что у disputes выше.
-            folders = fields["dates_review_by_folder"].most_common(TOP_N)
-            folder_detail = "; ".join(f"{html.escape(_folder_label(f))} ({n})" for f, n in folders)
-            detail = "Стоит перепроверить при желании."
-            if folder_detail:
-                detail += f"<br>Папки-источники: {folder_detail}."
-            items.append(_li(f"{_n_files(fields['dates_review_bc_total'])} получили дату приблизительно", detail))
-        elif review_groups:
-            # 2026-07-26: имя файла + уровень достоверности, не только счётчик по папке --
-            # тот же <details>/"Показать ещё" паттерн, что disputes/near-dup выше.
-            review_lis = [_li(*_dates_review_checklist_item(g)) for g in review_groups]
+    # Задача 5 (SESSION-HANDOFF.txt, 2026-08-09): прежние ДВА раздельных пункта ("получили
+    # дату приблизительно" -- Tier B/C, "вообще без даты" -- Tier D) объединены в ОДИН, по
+    # прямой инструкции пользователя, с обязательной оговоркой "не проблема для дальнейшей
+    # обработки" и разбивкой по тирам B/C/D раздельно внутри (не слитной суммой). Album-
+    # исключение (файл в Albums/ -- точность даты вообще ни на что не влияет, см. RULES.md,
+    # блок UNDATED) уже применено на обоих уровнях -- TARGET через _cluster_date_issues()
+    # (детали), analyze через album-исключающие n_tier_b/c/d_bydate (см. AnalyzeStats).
+    b_total = fields.get("date_issues_b_total", 0)
+    c_total = fields.get("date_issues_c_total", 0)
+    d_total = fields.get("date_issues_d_total", 0)
+    date_issues_total = b_total + c_total + d_total
+    if date_issues_total:
+        breakdown_parts = []
+        if b_total:
+            breakdown_parts.append(f"{_n_files(b_total)} — по имени файла (высокая уверенность)")
+        if c_total:
+            breakdown_parts.append(f"{_n_files(c_total)} — оценочно, по соседним файлам в папке")
+        if d_total:
+            breakdown_parts.append(f"{_n_files(d_total)} — дата не определилась вовсе")
+        items.append(_li(
+            f"{_n_files(date_issues_total)} — дата определена неточно или не определена вовсе",
+            "Не проблема для дальнейшей обработки — файл всё равно сохранён в архиве "
+            "корректно. Влияет только на автоматическую сортировку по дате (в какую папку "
+            f"ByDate/ГГГГ-ММ он попадёт). Разбивка: {'; '.join(breakdown_parts)}.",
+        ))
+        # detail_groups -- None на analyze-уровне (build_model_from_analyze_stats не отслеживает
+        # source/dest поштучно, см. _cluster_date_issues()) -- сводка выше уже полная доступная
+        # информация. [] на TARGET-уровне здесь невозможен одновременно с date_issues_total>0
+        # (тоталы посчитаны ИЗ уже отфильтрованных групп, см. _build_checklist_fields()).
+        detail_groups = fields.get("date_issues_detail")
+        if detail_groups:
+            # 2026-07-26/задача 5: имя файла + уровень достоверности, не только счётчик по
+            # папке -- тот же <details>/"Показать ещё" паттерн, что disputes/near-dup выше.
+            review_lis = [_li(*_date_issues_checklist_item(g)) for g in detail_groups]
             items.extend(review_lis[:CHECKLIST_PREVIEW_N])
             rest = review_lis[CHECKLIST_PREVIEW_N:]
             if rest:
@@ -2355,42 +2433,6 @@ def _build_checklist_items(fields: dict, target_path: str = None, verify_link: s
                     f'<li class="expand"><details><summary>{html.escape(label)}</summary>'
                     f'<ul class="checklist nested">{"".join(rest)}</ul></details></li>'
                 )
-        # review_groups == [] -- все Tier B/C файлы лежат в Albums/, точность даты не влияет
-        # на их место -- по тому же решению пользователя, что и у Tier D, пункт не рендерится
-        # вообще, ни в каком виде.
-
-    if fields["undated_total"]:
-        # Tier D -- дата отсутствует вообще (ни EXIF, ни имя файла, ни соседи по папке), не
-        # путать с Tier B/C выше ("дата есть, но приблизительная") -- разные находки.
-        # Задача 5 (SESSION-HANDOFF.txt, пакет "боевой прогон D:\\"): undated_detail -- None
-        # означает "detail вообще недоступен" (analyze-уровень, build_model_from_analyze_stats
-        # не отслеживает undated_media поштучно) -- отличается от [] ("detail доступен, но
-        # ПОСЛЕ фильтра до ByDate/0000-undated/ ничего не осталось", см. _cluster_undated()) --
-        # разное поведение: [] -- пункт вообще не рендерится (Albums/ не показываем никогда),
-        # None -- откат на старый общий текст, единственный доступный сигнал на этом уровне.
-        undated_groups = fields.get("undated_detail")
-        if undated_groups is None:
-            items.append(_li(
-                f"{_n_files(fields['undated_total'])} вообще без даты",
-                "Дата не определилась ни по EXIF, ни по имени файла, ни по соседям в папке — "
-                "стоит проставить вручную при желании.",
-            ))
-        elif undated_groups:
-            # Группировка по папке + превью на 5 файлов + "Показать ещё N папок" -- тот же
-            # <details>-паттерн, что Tier B/C выше (живой репорт пользователя: 274 файла
-            # сплошным абзацем через запятую без группировки читались нечитаемо).
-            undated_lis = [_li(*_undated_checklist_item(g)) for g in undated_groups]
-            items.extend(undated_lis[:CHECKLIST_PREVIEW_N])
-            rest = undated_lis[CHECKLIST_PREVIEW_N:]
-            if rest:
-                n = len(rest)
-                label = f"Показать ещё {n} {_plural(n, 'папку', 'папки', 'папок')}"
-                items.append(
-                    f'<li class="expand"><details><summary>{html.escape(label)}</summary>'
-                    f'<ul class="checklist nested">{"".join(rest)}</ul></details></li>'
-                )
-        # undated_groups == [] -- все Tier D файлы лежат в Albums/, дата не влияет на их
-        # место -- по решению пользователя пункт не рендерится вообще, ни в каком виде.
 
     small = fields["quality_flags"].get("small_image", 0)
     low_conf = fields["quality_flags"].get("low_confidence_photo", 0)
@@ -2403,11 +2445,21 @@ def _build_checklist_items(fields: dict, target_path: str = None, verify_link: s
         items.append(_li(f"{_n_files(small + low_conf)} стоит проверить на качество", "; ".join(parts) + "."))
 
     if fields["unreadable"]:
-        items.append(_li(
-            f"{_n_files(len(fields['unreadable']))} не прочитано",
+        # Задача 6 (SESSION-HANDOFF.txt, 2026-08-09): реальный список путей, тот же принцип
+        # рендера, что "не удалось распознать" выше -- на TARGET-уровне (unreadable.csv,
+        # source==относительный origin_display) file://-ссылка не строится (см. решение
+        # пользователя в _path_list_checklist_item()), на analyze-уровне (AnalyzeStats.
+        # unreadable_paths -- реальный абсолютный путь) ссылка рабочая. Не-медиа файлы уже не
+        # попадают в этот список вовсе (см. AnalyzeStats.unreadable_paths -- заполняется ПОСЛЕ
+        # фильтра item.ftype; TARGET-уровень тем же путём гарантированно всегда медиа, см.
+        # находку в SESSION-HANDOFF.txt).
+        paths = [r.get("source", "") for r in fields["unreadable"]]
+        items.append(_li(*_path_list_checklist_item(
+            "не прочитано",
             "Обычно помогает закрыть программу, которая могла держать файл открытым, и "
             "запустить тот же прогон ещё раз (см. FAQ).",
-        ))
+            paths,
+        )))
 
     return items
 
@@ -2787,8 +2839,13 @@ def build_model_from_analyze_stats(stats) -> dict:
         "appended": max(stats.predicted_unique_count - n_near_dup, 0),
         "near_dup": n_near_dup,
         "skipped_present": stats.n_exact_dupes,
-        "unreadable": stats.n_broken_or_zero,
-        "disputed": 0,  # analyze не разделяет "разногласия" и "битые/нечитаемые" отдельно
+        # SESSION-HANDOFF.txt, 2026-08-09 (шестая находка): раньше оба слились в один
+        # n_broken_or_zero ("analyze не разделяет..."), теперь AnalyzeStats.disputed_paths/
+        # unreadable_paths различают их той же семантикой, что TARGET-уровень (disputes.csv
+        # -- содержимое не распознано; unreadable.csv -- физически не прочитан), см. их
+        # докстринги в AnalyzeStats.
+        "unreadable": len(stats.unreadable_paths),
+        "disputed": len(stats.disputed_paths),
     })
 
     return {
@@ -2840,14 +2897,27 @@ def build_model_from_analyze_stats(stats) -> dict:
         "tier_counts": Counter(stats.tier_counts),
         "top_albums": [],  # AnalyzeStats не считает байты по альбомам
         "near_dup_clusters": _cluster_near_dup(stats.near_dup_edges),
+        # SESSION-HANDOFF.txt, 2026-08-09 (задачи 4/6): disputes_total/unreadable теперь
+        # различают "содержимое не распознано" (disputed_paths) и "физически не прочитан"
+        # (unreadable_paths) -- раньше оба сливались в один n_broken_or_zero. disputes_by_folder
+        # остаётся пустым Counter() только как страховка для устаревшего fallback-пути в
+        # _build_checklist_items() -- реальный рендер теперь идёт через disputed_paths.
         "disputes_by_folder": Counter(),
-        "disputes_total": stats.n_broken_or_zero,
-        "dates_review_by_folder": Counter(),
-        "dates_review_bc_total": stats.tier_counts.get("B", 0) + stats.tier_counts.get("C", 0),
-        "unreadable": [{}] * stats.n_broken_or_zero,
+        "disputes_total": len(stats.disputed_paths),
+        "disputed_paths": list(stats.disputed_paths),
+        "unreadable": [{"source": p} for p in stats.unreadable_paths],
         "rejected_noise_total": 0,
         "quality_flags": Counter(),  # analyze ничего не дописывает -- appended.csv нет
-        "undated_total": stats.tier_counts.get("D", 0),
+        # Задача 5 (SESSION-HANDOFF.txt, 2026-08-09): album-исключающие тир-счётчики (см.
+        # AnalyzeStats.n_tier_b_bydate/n_tier_c_bydate/n_tier_d_bydate) -- ЗАМЕНЯЮТ прежние
+        # dates_review_bc_total/undated_total, которые считали ПРЯМО из tier_counts, БЕЗ фильтра
+        # по альбому вообще (найденный баг -- Albums-файлы с неточной датой ошибочно попадали
+        # в чек-лист, хотя место таких файлов от даты не зависит). date_issues_detail здесь
+        # намеренно отсутствует (AnalyzeStats не отслеживает source/dest на файл построчно) --
+        # _build_checklist_items() откатывается на агрегат-только рендер (см. .get() без ключа).
+        "date_issues_b_total": stats.n_tier_b_bydate,
+        "date_issues_c_total": stats.n_tier_c_bydate,
+        "date_issues_d_total": stats.n_tier_d_bydate,
         # REVIEW-HANDOFF.md, Раунд 33: closing-рекомендация analyze через рамку "уязвимо/
         # защищено" (см. _render_cta_block()) -- уменьшенная версия того, что предложил
         # ревизор: считаем архивы ТОЛЬКО внутри одного этого источника (уже есть в
@@ -3070,27 +3140,6 @@ def _render_cta_block(level: str, target_path: str = None, model: dict = None) -
         # нужно именно archives_with_media (только archive_extracted, см. AnalyzeStats).
         archives_found = model.get("archives_with_media", 0)
         total_bytes = model.get("total_bytes", 0)
-        # SESSION-HANDOFF.txt, 2026-08-07 (группировка альбом/дата в analyze-отчёте): агрегат
-        # без дерева/списка имён альбомов -- сколько папок-альбомов нашлось и сколько медиа в
-        # них, отдельно сколько обычных (не-альбомных) папок разложится по дате и сколько в них
-        # медиа. n_albums_detected (см. AnalyzeStats) считается по album_prefix (полный путь),
-        # не по голому имени -- см. фикс точности того же дня.
-        n_albums = model.get("n_albums_detected", 0)
-        n_media_albums = model.get("n_media_in_albums", 0)
-        n_regular_folders = model.get("n_regular_folders", 0)
-        n_media_by_date = model.get("n_media_by_date", 0)
-        if n_albums or n_regular_folders:
-            which = "которая разложится" if n_regular_folders == 1 else "которые разложатся"
-            parts.append(
-                f'<p class="muted">Найдено {n_albums} '
-                f'{_plural(n_albums, "папка-альбом", "папки-альбома", "папок-альбомов")} с '
-                f'{n_media_albums} '
-                f'{_plural(n_media_albums, "медиафайлом", "медиафайлами", "медиафайлами")} '
-                f'и {n_regular_folders} '
-                f'{_plural(n_regular_folders, "обычная папка", "обычные папки", "обычных папок")}, '
-                f'{which} по дате, с {n_media_by_date} '
-                f'{_plural(n_media_by_date, "файлом", "файлами", "файлами")}.</p>'
-            )
         if archives_found:
             # Уменьшенная версия предложения ревизора: считаем архивы (zip/rar) ТОЛЬКО внутри
             # этого источника (AnalyzeStats.n_archives_with_media) -- report.html для analyze
@@ -3155,6 +3204,15 @@ def _generate_from_model(model: dict, out_path: str, level: str, program_name: s
     # строками этого прогона и посчитал run_start" -- отдельный флаг, снаружи неотличимый от
     # обычного checklist_new (оба -- тот же тип/форма), поэтому не выводится неявно из его
     # значения, а передаётся явным параметром.
+    # Задача 10 (SESSION-HANDOFF.txt, 2026-08-09): "по состоянию на ГГГГ-ММ-ДД ЧЧ:ММ" прямо в
+    # заголовке страницы -- ОДИН вызов strftime() на страницу, переиспользуется и в заголовке
+    # (_render_sheet1() ниже), и в футере (_page_shell() в конце), а не два независимых
+    # вызова, которые в теории могут разойтись на границе минуты. Решение пользователя:
+    # ТОЛЬКО заголовок _render_sheet1() ("Что нашлось на этом диске"/"Ваш архив") -- заголовок
+    # _render_this_run() ("Пробный прогон"/"Пополнение архива") этой задачи не касается (иногда
+    # делит страницу с заголовком _render_sheet1(), задваивать дату на одной странице не
+    # нужно, дата и так есть в общем футере).
+    generated_at = time.strftime("%Y-%m-%d %H:%M")
     if level == "workdir" and not full_workdir:
         fields = checklist_new if checklist_new is not None else model
         body = (_render_this_run(run_stats, level, verify_link=verify_link if level == "target" else None)
@@ -3166,7 +3224,7 @@ def _generate_from_model(model: dict, out_path: str, level: str, program_name: s
     # (см. ниже) её не заменяет.
     elif checklist_new is None:
         body = (_render_this_run(run_stats, level, verify_link=verify_link if level == "target" else None)
-                + _render_sheet1(model, level) + _render_sheet2(model)
+                + _render_sheet1(model, level, generated_at=generated_at) + _render_sheet2(model)
                 + _render_exact_dup_examples(model, "Дубли — примеры", intro=EXACT_DUP_INTRO,
                                               verify_link=verify_link if level == "target" else None)
                 + _render_sheet3_single(model, level))
@@ -3214,7 +3272,8 @@ def _generate_from_model(model: dict, out_path: str, level: str, program_name: s
     # целиком, по прямой просьбе пользователя), не после него.
     if interrupted:
         body = _render_interrupted_banner() + body
-    _write(out_path, _page_shell(f"{program_name} — отчёт архива", body, app_version=app_version))
+    _write(out_path, _page_shell(f"{program_name} — отчёт архива", body, app_version=app_version,
+                                  generated_at=generated_at))
 
 
 def generate_report(data: dict, out_path: str, level: str = "target",
@@ -3314,8 +3373,12 @@ def _addition_date_range(target_path: str) -> tuple:
     return timestamps[0][:10], timestamps[-1][:10]
 
 
-def _render_passport_summary(stats, target_path: str = None) -> str:
-    parts = ['<div class="card">', '<h1>Архив сейчас</h1>']
+def _render_passport_summary(stats, target_path: str = None, generated_at: str = None) -> str:
+    # generated_at (задача 10, SESSION-HANDOFF.txt, 2026-08-09): "по состоянию на ГГГГ-ММ-ДД
+    # ЧЧ:ММ" -- тот же приём, что у _render_sheet1(), эта карточка -- верхний заголовок
+    # ОТДЕЛЬНОЙ страницы generate_passport_report() (свой _page_shell()), см. её вызов.
+    heading = "Архив сейчас" + (f" по состоянию на {generated_at}" if generated_at else "")
+    parts = ['<div class="card">', f'<h1>{heading}</h1>']
     where = html.escape(target_path) if target_path else "архива"
     parts.append(f'<p class="subtitle">Полная проверка {where} заново, с нуля — не из истории '
                  'прошлых прогонов программы.</p>')
@@ -3607,16 +3670,23 @@ def _render_passport_dup_group_card(heading: str, clusters: list, target_path: s
     return "".join(cards)
 
 
-def _render_passport_verification_page(exact_multi: list, near_multi: list, target_path: str) -> str:
+def _render_passport_verification_page(exact_multi: list, near_multi: list, target_path: str,
+                                         generated_at: str = None) -> str:
     """Тело страницы "Полная сверка" паспорта -- те же две секции (точные дубли + похожие
     серии), что и у обычного пополнения (_render_dedup_verification_page()), но построена из
     exact_dup_edges/near_dup_edges self_scan'а, не из CSV-логов прошлых прогонов -- паспорт
     вообще не пишет CSV (read-only). Только группы, реально лежащие в разных папках (тот же
     фильтр, что и у обычного пополнения, Раунд 52 (придирка 2)) -- однопапочные уже полностью
-    показаны в самой "Целостности архива" (превью там не обрезает файлы внутри одной папки)."""
+    показаны в самой "Целостности архива" (превью там не обрезает файлы внутри одной папки).
+
+    generated_at (задача 10, SESSION-HANDOFF.txt, 2026-08-09): "по состоянию на ГГГГ-ММ-ДД
+    ЧЧ:ММ" в заголовке -- эта страница пишется в ОТДЕЛЬНЫЙ файл, свой собственный
+    _page_shell()/футер (см. generate_passport_verification_page())."""
     if not exact_multi and not near_multi:
         return ""
-    parts = ['<div class="card"><h1>Полная сверка — Паспорт архива</h1>'
+    heading = "Полная сверка — Паспорт архива" + (
+        f" по состоянию на {generated_at}" if generated_at else "")
+    parts = [f'<div class="card"><h1>{heading}</h1>'
              '<p class="subtitle">Полный список файлов каждой группы, без сокращения — '
              'построено этим же сканированием архива, не из истории прошлых прогонов.</p></div>']
     parts.append(_render_passport_dup_group_card("Точные дубли", exact_multi, target_path))
@@ -3638,12 +3708,14 @@ def generate_passport_verification_page(stats, out_path: str, target_path: str =
     near_clusters = _cluster_passport_edges(stats.near_dup_edges)
     exact_multi = [c for c in exact_clusters if len({_win_dirname(p) for p in c}) > 1]
     near_multi = [c for c in near_clusters if len({_win_dirname(p) for p in c}) > 1]
-    body = _render_passport_verification_page(exact_multi, near_multi, target_path)
+    # Задача 10: один вызов strftime() на ЭТУ страницу (отдельный файл/футер от passport.html).
+    generated_at = time.strftime("%Y-%m-%d %H:%M")
+    body = _render_passport_verification_page(exact_multi, near_multi, target_path, generated_at)
     if not body:
         return None
     verify_out_path = os.path.join(os.path.dirname(out_path), PASSPORT_VERIFICATION_FILENAME)
     _write(verify_out_path, _page_shell(f"{program_name} — полная сверка паспорта", body,
-                                         app_version=app_version))
+                                         app_version=app_version, generated_at=generated_at))
     return PASSPORT_VERIFICATION_FILENAME
 
 
@@ -3720,9 +3792,12 @@ def generate_passport_report(stats, out_path: str, target_path: str = None,
     interrupted (2026-08-07, Ctrl+C-пакет): _generate_from_model() не участвует в этом рендере
     (см. выше), баннер прерывания здесь прикладывается вручную, тем же принципом ("самая первая
     строка отчёта", см. _generate_from_model())."""
+    # Задача 10 (SESSION-HANDOFF.txt, 2026-08-09): один вызов strftime() на страницу,
+    # переиспользуется в заголовке _render_passport_summary() и в футере _page_shell() ниже.
+    generated_at = time.strftime("%Y-%m-%d %H:%M")
     body = _render_interrupted_banner() if interrupted else ""
     body += _render_trust_block("target", stats.n_broken_or_zero)
-    body += _render_passport_summary(stats, target_path)
+    body += _render_passport_summary(stats, target_path, generated_at=generated_at)
     # Задачи 4/5, речь пользователя 2026-08-02: страница "Полная сверка" пишется ДО основного
     # тела (тот же порядок, что уже использует _finalize_target_report() для обычного
     # пополнения, photosort_win.py) -- verify_link должен быть уже готов к моменту рендера
@@ -3741,4 +3816,5 @@ def generate_passport_report(stats, out_path: str, target_path: str = None,
     # паспорт получает диаграмму без похода в историю CSV-логов, тем же принципом "с нуля".
     body += _render_geo_card(stats.cities)
     body += _render_archive_tree_card(stats.tree_folder_counts, stats.tree_folder_bytes)
-    _write(out_path, _page_shell(f"{program_name} — паспорт архива", body, app_version=app_version))
+    _write(out_path, _page_shell(f"{program_name} — паспорт архива", body, app_version=app_version,
+                                  generated_at=generated_at))

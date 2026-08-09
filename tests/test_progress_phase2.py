@@ -87,7 +87,7 @@ def test_walk_dir_reports_folder_media_count_image_raw_video_only(tmp_path):
     cfg = _make_cfg(tmp_path)
     calls = []
     walker = m.SourceWalker(cfg, log=lambda *a, **k: None,
-                             object_line_cb=lambda tag, path, n: calls.append((tag, path, n)))
+                             object_line_cb=lambda tag, path, n, letter="": calls.append((tag, path, n)))
     list(walker.walk())
 
     folder_calls = [c for c in calls if c[0] == "folder" and c[1].endswith("Album")]
@@ -104,10 +104,56 @@ def test_walk_dir_object_line_cb_not_called_for_excluded_dirs(tmp_path):
     cfg = _make_cfg(tmp_path)
     calls = []
     walker = m.SourceWalker(cfg, log=lambda *a, **k: None,
-                             object_line_cb=lambda tag, path, n: calls.append((tag, path, n)))
+                             object_line_cb=lambda tag, path, n, letter="": calls.append((tag, path, n)))
     list(walker.walk())
 
     assert not any("node_modules" in c[1] for c in calls)
+
+
+def test_object_line_cb_shows_placement_letter_only_when_enabled(tmp_path):
+    """Задача пользователя, 2026-08-09 (--dry-run/[3] реальная сборка): буква "A" (альбом) --
+    у обычной, узнаваемой альбомной папки; "D" (по дате) -- у dump-именованной ("downloads").
+    show_placement_letter -- ТОЛЬКО --dry-run/реальная сборка (по прямой просьбе пользователя),
+    не analyze -- letter остаётся "" (пустой), если флаг не передан вовсе (значение по
+    умолчанию)."""
+    source = tmp_path / "source"
+    (source / "MyAlbum").mkdir(parents=True)
+    (source / "MyAlbum" / "a.jpg").write_bytes(b"x")
+    (source / "downloads").mkdir()
+    (source / "downloads" / "b.jpg").write_bytes(b"x")
+    (tmp_path / "target").mkdir()
+    cfg = _make_cfg(tmp_path)
+
+    calls = []
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None, show_placement_letter=True,
+                             object_line_cb=lambda tag, path, n, letter="": calls.append((tag, path, letter)))
+    list(walker.walk())
+    by_path = {path: letter for _tag, path, letter in calls}
+    assert by_path[str(source / "MyAlbum")] == "A"
+    assert next(letter for path, letter in by_path.items() if path.endswith("downloads")) == "D"
+
+    calls_off = []
+    walker_off = m.SourceWalker(cfg, log=lambda *a, **k: None,
+                                 object_line_cb=lambda tag, path, n, letter="": calls_off.append(letter))
+    list(walker_off.walk())
+    assert all(letter == "" for letter in calls_off)  # флаг не передан -- старое поведение
+
+
+def test_handle_archive_object_line_shows_placement_letter_when_enabled(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    with zipfile.ZipFile(source / "MyAlbum.zip", "w") as zf:
+        zf.writestr("a.jpg", b"x" * 100)
+    (tmp_path / "target").mkdir()
+    cfg = _make_cfg(tmp_path)
+
+    calls = []
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None, show_placement_letter=True,
+                             object_line_cb=lambda tag, path, n, letter="": calls.append((tag, path, letter)))
+    list(walker.walk())
+    archive_calls = [c for c in calls if c[0] == "archive"]
+    assert len(archive_calls) == 1
+    assert archive_calls[0][2] == "A"  # "MyAlbum" -- узнаваемое имя альбома, не dump
 
 
 def test_object_line_cb_deferred_stray_folder_announces_at_processing_not_discovery(tmp_path):
@@ -142,7 +188,7 @@ def test_object_line_cb_deferred_stray_folder_announces_at_processing_not_discov
     cfg = _make_cfg(tmp_path)
     calls = []
     walker = m.SourceWalker(cfg, log=lambda *a, **k: None,
-                             object_line_cb=lambda tag, path, n: calls.append((tag, path, n)))
+                             object_line_cb=lambda tag, path, n, letter="": calls.append((tag, path, n)))
 
     def loose_already_announced():
         return any(c[1].endswith("downloads") for c in calls)
@@ -203,6 +249,47 @@ def test_dvd_unit_yields_items_with_forced_dest_and_records_as_copied(tmp_path):
     assert unit["n_files"] == 1
     assert unit["total_bytes"] == 10
     assert walker.dvd_units_skipped_duplicate == []
+
+
+def test_dvd_unit_log_line_shows_placement_letter_when_enabled(tmp_path):
+    """Дополнение пользователя, 2026-08-09, к A/D-буквам после [папка]/[archive]: "[dvd_unit]"
+    -- та же буква, тот же принцип (сразу после "]", один пробел перед текстом). "Some_Movie_
+    DVD5" -- узнаваемое имя альбома (не dump), letter="A"; --dry-run/[3] реальная сборка
+    только (show_placement_letter), не analyze -- letter="" по умолчанию."""
+    source = tmp_path / "source"
+    disc = source / "Some_Movie_DVD5"
+    (disc / "VIDEO_TS").mkdir(parents=True)
+    (disc / "VIDEO_TS" / "VTS_01_0.VOB").write_bytes(b"x" * 10)
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)
+    lines = []
+    walker = m.SourceWalker(cfg, log=lines.append, show_placement_letter=True)
+    list(walker.walk())
+    assert any("[dvd_unit]A новый DVD-диск ->" in ln for ln in lines), lines
+
+    lines_off = []
+    walker_off = m.SourceWalker(cfg, log=lines_off.append)
+    disc2 = source / "Some_Movie_DVD6"
+    (disc2 / "VIDEO_TS").mkdir(parents=True)
+    (disc2 / "VIDEO_TS" / "VTS_01_0.VOB").write_bytes(b"x" * 10)
+    list(walker_off.walk())
+    assert any("[dvd_unit] новый DVD-диск ->" in ln for ln in lines_off), lines_off
+    assert not any("[dvd_unit]A" in ln or "[dvd_unit]D" in ln for ln in lines_off)
+
+
+def test_dvd_unit_log_line_letter_is_date_when_no_album_found(tmp_path):
+    source = tmp_path / "source"
+    disc = source / "downloads"  # известное dump-имя -- find_album() не найдёт альбом
+    (disc / "VIDEO_TS").mkdir(parents=True)
+    (disc / "VIDEO_TS" / "VTS_01_0.VOB").write_bytes(b"x" * 10)
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)
+    lines = []
+    walker = m.SourceWalker(cfg, log=lines.append, show_placement_letter=True)
+    list(walker.walk())
+    assert any("[dvd_unit]D новый DVD-диск ->" in ln for ln in lines), lines
 
 
 def test_dvd_unit_detection_is_case_insensitive(tmp_path):
@@ -385,7 +472,7 @@ def test_handle_archive_reports_media_count_before_extraction(tmp_path):
     cfg = _make_cfg(tmp_path)
     calls = []
     walker = m.SourceWalker(cfg, log=lambda *a, **k: None,
-                             object_line_cb=lambda tag, path, n: calls.append((tag, path, n)))
+                             object_line_cb=lambda tag, path, n, letter="": calls.append((tag, path, n)))
     list(walker.walk())
 
     archive_calls = [c for c in calls if c[0] == "archive"]
@@ -411,7 +498,7 @@ def test_handle_archive_object_line_shows_full_path_for_top_level_archive(tmp_pa
     cfg = _make_cfg(tmp_path)
     calls = []
     walker = m.SourceWalker(cfg, log=lambda *a, **k: None,
-                             object_line_cb=lambda tag, path, n: calls.append((tag, path, n)))
+                             object_line_cb=lambda tag, path, n, letter="": calls.append((tag, path, n)))
     list(walker.walk())
 
     archive_calls = [c for c in calls if c[0] == "archive"]
@@ -515,7 +602,7 @@ def test_handle_archive_no_media_is_not_printed_twice(tmp_path):
     lines = []
     object_lines = []
     walker = m.SourceWalker(cfg, log=lines.append,
-                             object_line_cb=lambda tag, path, n: object_lines.append((tag, path, n)))
+                             object_line_cb=lambda tag, path, n, letter="": object_lines.append((tag, path, n)))
     list(walker.walk())
 
     # object_line_cb (реальный источник консольной строки в production, см. run_analyze()/
@@ -620,6 +707,79 @@ def test_quick_media_count_estimate_single_file_source(tmp_path):
     (tmp_path / "target").mkdir()
     cfg = _make_cfg(tmp_path, source=str(source))
     assert m._quick_media_count_estimate(str(source), cfg) == 1
+
+
+def test_quick_media_count_estimate_counts_video_ts_unit_as_one(tmp_path):
+    # SESSION-HANDOFF.txt, 2026-08-09 (боевой прогон, вторая находка): раньше оценка спускалась
+    # ВНУТРЬ VIDEO_TS и считала каждый .vob/.ifo/.bup отдельно, тогда как реальный обход
+    # (_tick_object()) тикает VIDEO_TS-юнит как ОДНО целое -- X (реальные тики) никогда не
+    # догонял Y (эта оценка) на источниках с DVD-рипами. Синтетика: 5 фото в обычной папке + 1
+    # VIDEO_TS с 3 файлами -- тот же случай, что test_object_progress_dvd_unit_ticks_once_as_a_whole.
+    source = tmp_path / "source"
+    (source / "Photos").mkdir(parents=True)
+    for i in range(5):
+        (source / "Photos" / f"{i}.jpg").write_bytes(b"x")
+    disc = source / "Video"
+    (disc / "VIDEO_TS").mkdir(parents=True)
+    (disc / "VIDEO_TS" / "VTS_01_0.VOB").write_bytes(b"v" * 200)
+    (disc / "VIDEO_TS" / "VIDEO_TS.IFO").write_bytes(b"i" * 20)
+    (disc / "VIDEO_TS" / "VIDEO_TS.BUP").write_bytes(b"i" * 20)
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)
+    y = m._quick_media_count_estimate(str(source), cfg)
+    assert y == 6  # 5 фото + 1 VIDEO_TS-юнит целиком, не +3 отдельных файла внутри него
+
+    ticks = []
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None, object_progress_cb=ticks.append)
+    list(walker.walk())
+    assert sum(ticks) == y  # X (реальные тики) == Y (оценка), это и есть цель фикса
+
+
+def test_quick_media_count_estimate_skips_skip_marker_folder_entirely(tmp_path):
+    # Та же находка, вторая причина расхождения: реальный обход пропускает SKIP_MARKER-папку
+    # целиком (0 тиков, см. _walk_dir()), прежняя оценка о разметке SKIP_MARKER не знала вообще
+    # и считала её файлы.
+    source = tmp_path / "source"
+    (source / "Photos").mkdir(parents=True)
+    (source / "Photos" / "a.jpg").write_bytes(b"x")
+    skipped = source / "Skipped"
+    skipped.mkdir()
+    (skipped / m.SKIP_MARKER).write_bytes(b"")
+    (skipped / "hidden1.jpg").write_bytes(b"x")
+    (skipped / "hidden2.jpg").write_bytes(b"x")
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)
+    y = m._quick_media_count_estimate(str(source), cfg)
+    assert y == 1  # только Photos/a.jpg -- Skipped/* не считается вовсе
+
+    ticks = []
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None, object_progress_cb=ticks.append)
+    list(walker.walk())
+    assert sum(ticks) == y
+
+
+def test_quick_media_count_estimate_skip_marker_at_root_does_not_skip_root(tmp_path):
+    # _walk_dir(): SKIP_MARKER пропускает папку целиком, КРОМЕ самого корня SOURCE (ПРАВИЛО
+    # ЯВНОГО УКАЗАНИЯ) -- оценка должна повторять то же исключение, не пропускать SOURCE
+    # целиком только потому, что маркер лежит прямо в его корне.
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / m.SKIP_MARKER).write_bytes(b"")
+    (source / "a.jpg").write_bytes(b"x")
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)
+    # Корень не пропускается -- считаются ОБА файла, включая сам SKIP_PHOTOSORT.txt (оценка не
+    # классифицирует тип файла, см. докстринг функции), не только a.jpg.
+    y = m._quick_media_count_estimate(str(source), cfg)
+    assert y == 2
+
+    ticks = []
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None, object_progress_cb=ticks.append)
+    list(walker.walk())
+    assert sum(ticks) == y
 
 
 # ---------------------------------------------------------------------------
@@ -911,18 +1071,22 @@ def test_two_line_status_media_count_defaults_to_processed_count():
 
 
 def test_two_line_status_media_count_from_objects_ignores_batching_lag():
-    # SESSION-HANDOFF.txt п.1: run_analyze()'s бар (media_count_from_objects=True) -- "всего
+    # SESSION-HANDOFF.txt п.1: run_analyze()'s бар (media_count_from_objects=True) -- "найдено
     # медиа" растёт по write_object_line()'s n_found ПРИ ВХОДЕ в объект, не дожидаясь update()
     # -- живой баг был именно в задержке между "объект найден" и "экзифтул батч протегирован".
+    # Подпись "найдено медиа" (не "всего медиа") -- отдельная находка того же боевого прогона
+    # 2026-08-09 (SESSION-HANDOFF.txt, "всего медиа" читалось как "обработано", а по факту это
+    # "найдено", с опережением факта обработки) -- TARGET-режим (media_count_from_objects=False)
+    # сохраняет старую подпись, см. test_two_line_status_media_count_defaults_to_processed_count.
     bar = _two_line_bar(media_count_from_objects=True)
     bar.write_object_line("folder", "some/folder", 50)
     line = bar._build_two_line_status()
-    assert "всего медиа       50" in line
+    assert "найдено медиа       50" in line
     # update() (реальная обработка файлов) не задваивает счётчик отображения -- он по-прежнему
     # читает self._media_declared, не self.count.
     bar.update(3)
     line2 = bar._build_two_line_status()
-    assert "всего медиа       50" in line2
+    assert "найдено медиа       50" in line2
     bar.close()
 
 
@@ -1006,6 +1170,35 @@ def test_write_object_line_format_and_no_bar_write_used(capsys):
     bar.close()
 
 
+def test_write_object_line_shows_placement_letter_when_given(capsys):
+    """Задача пользователя, 2026-08-09 (--dry-run/[3] реальная сборка): "A" (альбом)/"D" (по
+    дате) сразу после закрывающей "]" тега, с ровно ОДНИМ пробелом перед путём для ОБОИХ тегов
+    -- "[папка]" короче "[archive]" на 2 символа, поэтому у нее на 2 паддинг-пробела больше
+    ПЕРЕД буквой, не после (наивная вставка буквы в старый фиксированный хвостовой паддинг дала
+    бы 1 пробел у archive и 3 у папка -- разное расстояние до пути, что и не нужно)."""
+    bar = _two_line_bar()
+    bar.write_object_line("archive", "Foto.zip", 5, "A")
+    bar.write_object_line("folder", "Album", 3, "D")
+    captured = capsys.readouterr()
+    assert "  [archive]A Foto.zip: найдено медиафайлов 5" in captured.err
+    assert "  [папка]D   Album: найдено медиафайлов 3" in captured.err
+    bar.close()
+
+
+def test_write_object_line_without_letter_keeps_old_format(capsys):
+    """letter="" (по умолчанию, analyze/[4] Паспорт архива -- буква не показывается вовсе) --
+    старый формат без изменений, никакой буквы/лишнего пробела."""
+    bar = _two_line_bar()
+    bar.write_object_line("archive", "Foto.zip", 5, "")
+    bar.write_object_line("folder", "Album", 3, "")
+    captured = capsys.readouterr()
+    assert "  [archive] Foto.zip: найдено медиафайлов 5" in captured.err
+    assert "  [папка]   Album: найдено медиафайлов 3" in captured.err
+    assert "[archive]A" not in captured.err
+    assert "[archive]D" not in captured.err
+    bar.close()
+
+
 def test_object_line_truncates_long_path_from_the_front(monkeypatch):
     bar = _two_line_bar()
     monkeypatch.setattr(m.sys.stderr, "isatty", lambda: True)
@@ -1034,6 +1227,55 @@ def test_object_line_indent_matches_source_walker_log_lines(monkeypatch):
     self_log_style = "  [archive] Foto.zip: archive_extracted 5 медиафайлов"
     assert archive_line[:2] == folder_line[:2] == self_log_style[:2] == "  "
     bar.close()
+
+
+def test_log_archive_budget_has_same_safety_margin_as_object_line(monkeypatch):
+    # SESSION-HANDOFF.txt, 2026-08-09 (боевой прогон, третья находка): _object_line_budget()
+    # ("[папка]" -- write_object_line()) резервировал фиксированный запас "+8" сверх точной
+    # длины хвоста, тогда как _log_archive() ("[archive]") звал _console_tag_line_budget() с
+    # ТОЧНОЙ длиной хвоста БЕЗ какого-либо запаса -- на одной и той же ширине терминала бюджет
+    # [archive] оказывался на 6 символов ШИРЕ (меньше запас прочности перед краем терминала),
+    # чем у [папка], хотя оба тега/отступ идентичной ширины. Margin теперь общий, внутри
+    # _console_tag_line_budget() -- разница между двумя бюджетами должна объясняться ТОЛЬКО
+    # точной разницей длины текста хвоста (23 символа archive_no_media vs 21 символ у
+    # object_line's "универсального" резерва под неизвестное число), не отдельным
+    # необъяснённым запасом в одном месте и его отсутствием в другом.
+    monkeypatch.setattr(m.sys.stderr, "isatty", lambda: True)
+    monkeypatch.setattr(m.shutil, "get_terminal_size",
+                         lambda fallback=(80, 24): m.os.terminal_size((80, 24)))
+    # Реальные вызывающие методы, не переизобретённая вручную арифметика -- иначе тест мог бы
+    # незаметно перестать проверять фактическое поведение _object_line_budget()/_log_archive().
+    bar = _two_line_bar()
+    object_budget = bar._object_line_budget()
+    archive_no_media_tail = ": найдено медиафайлов 0"
+    archive_budget = m._console_tag_line_budget(len(archive_no_media_tail))
+    object_line_tail_reserve = len(" найдено медиафайлов ")
+    assert object_budget - archive_budget == len(archive_no_media_tail) - object_line_tail_reserve
+    bar.close()
+
+
+def test_log_archive_truncates_long_path_same_as_object_line(tmp_path, monkeypatch):
+    # Регресс на сам перенос строки из боевого прогона, с путём НАРОЧНО подобранной длины
+    # (columns=80, tail="архив без медиа" -> new budget 37, old budget без margin был бы 45):
+    # 44-символьный путь укладывался бы в СТАРЫЙ бюджет [archive] (45) БЕЗ обрезки -- строка
+    # печаталась бы целиком и переносилась по краю терминала -- но не укладывается в новый
+    # (37, после фикса), значит теперь обрезается "…"-префиксом так же, как обрезалась бы
+    # эквивалентная по длине строка [папка] (см. test_object_line_truncates_long_path_from_the_front).
+    cfg = _make_cfg(tmp_path)
+    lines = []
+    walker = m.SourceWalker(cfg, log=lines.append)
+    monkeypatch.setattr(m.sys.stderr, "isatty", lambda: True)
+    monkeypatch.setattr(m.shutil, "get_terminal_size",
+                         lambda fallback=(80, 24): m.os.terminal_size((80, 24)))
+    prefix = "F:\\" + "Отпуск 2015\\" + "Фото\\"  # placeholder-имена, не реальные с боевого прогона
+    long_path = prefix + "x" * 20 + ".zip"
+    assert len(long_path) == 44
+    walker._log_archive(long_path, "archive_no_media")
+    assert len(lines) == 1
+    line = lines[0]
+    assert line.startswith("  [archive] …")
+    assert line.endswith(": найдено медиафайлов 0")
+    assert len(line) <= 80
 
 
 # ---------------------------------------------------------------------------
