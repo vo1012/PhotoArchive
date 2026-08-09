@@ -66,7 +66,7 @@ import report  # PROMPT_archive_report.md, границы: отдельный м
 # blanket ignore of all warnings, so any other future PIL/library warning still surfaces.
 warnings.filterwarnings("ignore", message="Palette images with Transparency.*", category=UserWarning)
 
-__version__ = "0.4.1"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
+__version__ = "0.4.2"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
                                  # с RULES_VERSION ниже (та про совместимость архива, а не exe)
 RULES_VERSION = "2026-08-08"   # дата последнего изменения бизнес-правил -- см. RULES.md;
                                 # менять руками при изменении логики раскладки/дедупа/дат
@@ -663,6 +663,14 @@ class ProgressReporter:
         # total_estimate (архив = 1 объект, не заглядывая внутрь, см. object_progress_cb в
         # SourceWalker.__init__()) -- НЕ то же самое, что self.count (медиафайлы, см. выше).
         self._obj_count = 0
+        # Речь пользователя, 2026-08-09: "объектов X/Y" читался как расхождение/баг, когда
+        # total_estimate (оценка, не точный подсчёт) не совпадал с фактом -- ни X могло обогнать
+        # Y (недооценка), ни X==Y гарантированно к концу прогона (легитимные пропуски: нет
+        # доступа к папке и т.п.). Заменено на "обработано объектов XX.X%" (см.
+        # _build_two_line_status()) -- по завершении БЕЗ прерывания форсируется ровно 100%
+        # (mark_interrupted() ниже -- вызывающий код помечает прерванный прогон явно, close()
+        # не форсирует 100% в этом случае, раз работа реально не закончена).
+        self._run_interrupted = False
         # SESSION-HANDOFF.txt п.1 (2026-08-05, боевой прогон): run_analyze()'s бар оборачивает
         # обход в _walk_with_exif_prefetch() (батч-спавн exiftool, до 200 файлов) -- update()
         # для файла происходит только когда его батч целиком протегирован, поэтому self.count
@@ -790,14 +798,14 @@ class ProgressReporter:
             return "н/д"
         return f"{free / 1024**3:.1f}ГБ"
 
-    def _build_two_line_status(self) -> str:
+    def _build_two_line_status(self, force_complete: bool = False) -> str:
         """Статус-строка Фазы 2 (SESSION-HANDOFF.txt, редизайн живого вывода): формат
         зафиксирован пользователем поколоночно --
         <операция, лево, _TWO_LINE_OP_FIELD_WIDTH> | всего медиа <счётчик, право, 8> |
-        объектов <X/Y, право, 13> | занято <ЧЧ:ММ:СС> | <скорость, право, 9, 2 знака>с/файл[ |
-        своб.<место, право, 10>]. Ширина поля операции -- см. _TWO_LINE_OP_FIELD_WIDTH
-        (2026-08-05, боевой прогон: хардкодная 33 была на 1 символ короче dry-run текста,
-        колонки сдвигались). "|" между КАЖДОЙ
+        обработано объектов <XX.X%, право, 6> | занято <ЧЧ:ММ:СС> | <скорость, право, 9, 2
+        знака>с/файл[ | своб.<место, право, 10>]. Ширина поля операции -- см.
+        _TWO_LINE_OP_FIELD_WIDTH (2026-08-05, боевой прогон: хардкодная 33 была на 1 символ
+        короче dry-run текста, колонки сдвигались). "|" между КАЖДОЙ
         парой блоков -- речь пользователя 2026-08-02 ("необходим разделитель между блоками
         информации"), раньше блоки отделялись только пробелами и сливались на глаз. Обычный
         ASCII "|", не символ рисования рамок (│, U+2502) -- проверено эмпирически: попытка с
@@ -811,7 +819,7 @@ class ProgressReporter:
         2026-07-25, живой "тающий" остаток на TARGET вводил в заблуждение в read-only режиме,
         см. _disk_usage_path в run_for_source()).
 
-        "объектов X/Y" (2026-08-01, живой репорт пользователя): заменяет прежний [прошло/план]
+        "объектов X/Y" (2026-08-01, живой репорт пользователя): заменяло прежний [прошло/план]
         целиком -- любая экстраполяция времени по своей природе ненадёжна, когда среди файлов
         попадаются архивы/видео с непредсказуемой длительностью распаковки/хеширования (живые
         примеры прошлой итерации того же дня: план 267ч/323ч при факте 2-3ч, см. историю EMA/
@@ -821,6 +829,20 @@ class ProgressReporter:
         та же гранулярность (архив = 1 объект целиком, не по файлам внутри, см.
         SourceWalker.__init__()'s object_progress_cb/_quick_media_count_estimate()), поэтому Y
         не ставится под сомнение сменой скорости, в отличие от старого "план".
+
+        "обработано объектов XX.X%" (2026-08-09, речь пользователя): X/Y выше читалось как
+        расхождение/баг, когда Y (оценка, не точный подсчёт -- см. _quick_media_count_estimate())
+        не совпадал с фактом: X мог обогнать Y (недооценка), и X==Y не гарантировано к концу
+        прогона даже на успешном прогоне (легитимные пропуски -- нет доступа к папке и т.п.).
+        Тот же честный X/Y, просто в процентах -- min(X/Y, 100%) защищает от "101%" при
+        недооценённом Y. Точность: целые проценты до 99% (не создавать иллюзию точности,
+        которой у Y-оценки нет), 1 знак после запятой от 99% и выше (иначе "99%" мог бы
+        провисеть неизменным долго на большом архиве и читаться как зависание). force_complete
+        (см. close()) форсирует ровно "100%" на успешном (не прерванном Ctrl+C) завершении
+        прогона -- по прямой просьбе пользователя "в конце работы всегда должно быть 100%",
+        та же логика, что и у стандартных прогресс-баров (apt/npm и т.п.), даже если реальный
+        X/Y к этому моменту не сошлись бы день в день. total_estimate=0/None (оценка
+        недоступна) -- откатывается на голый счётчик X без "%", там процент не определён.
 
         "занято ЧЧ:ММ:СС" (2026-08-07, речь пользователя): общее время работы текущей фазы с
         момента __init__() (self._t0), тот же elapsed, что и раньше считался только для rate,
@@ -842,7 +864,13 @@ class ProgressReporter:
         # то дёргалось то вверх, то вниз при разбросе стоимости файлов). None -- ни одного
         # реального (n>0) update() ещё не было -- падаем обратно на кумулятивное среднее.
         rate = self._ema_rate if self._ema_rate is not None else elapsed / max(self.count, 1)
-        obj_part = f"{self._obj_count}/{self.total_estimate}" if self.total_estimate else str(self._obj_count)
+        if not self.total_estimate:
+            obj_part = str(self._obj_count)
+        elif force_complete:
+            obj_part = "100%"
+        else:
+            pct = min(self._obj_count / self.total_estimate * 100, 100.0)
+            obj_part = f"{pct:.1f}%" if pct >= 99.0 else f"{pct:.0f}%"
         # Речь пользователя, 2026-08-02 ("в строке статуса необходим разделитель между блоками
         # информации"): раньше блоки (операция/всего медиа/объектов/скорость/своб.) отделялись
         # только пробелами -- на глаз сливались в одну нечитаемую полосу цифр, особенно при
@@ -850,7 +878,7 @@ class ProgressReporter:
         # консольной кодовой странице (см. докстринг метода за разбором, почему НЕ Unicode │).
         # Внутреннее форматирование самих блоков (выравнивание/ширина полей) не тронуто --
         # только разделители между ними, тесты на конкретные подстроки внутри блока
-        # ("объектов         7/100", "2.00с/файл") не задеты.
+        # ("обработано объектов    42%", "2.00с/файл") не задеты.
         sep = " | "
         free_part = f"{sep}своб.{self._two_line_free_str():>10}" if self._disk_usage_path is not None else ""
         media_count = self._media_declared if self.media_count_from_objects else self.count
@@ -860,15 +888,15 @@ class ProgressReporter:
         # рисования рамок вроде │ выше по докстрингу, тот действительно падал в cp1251).
         media_label = "найдено медиа" if self.media_count_from_objects else "всего медиа"
         base = (f"{op:<{_TWO_LINE_OP_FIELD_WIDTH}}{sep}{media_label} {media_count:>8}{sep}"
-                f"объектов {obj_part:>13}")
+                f"обработано объектов {obj_part:>6}")
         tail = f"{sep}{rate:>9.2f}с/файл{free_part}"
         elapsed_part = f"{sep}занято {_tqdm.format_interval(elapsed):>8}"
         line = base + elapsed_part + tail
         # Речь пользователя, 2026-08-07 ("нужно не допустить переноса строки статуса"): это
         # единственное место во всей two_line-строке, где реально проверяется реальная ширина
-        # терминала перед добавлением поля -- остальные поля (op/всего медиа/объектов/скорость/
-        # своб.) фиксированной ширины и добавляются безусловно (см. "Числа НЕ обрезаются" выше в
-        # докстринге), но "занято" -- НОВОЕ поле, добавленное этой правкой, а не часть уже
+        # терминала перед добавлением поля -- остальные поля (op/всего медиа/обработано
+        # объектов/скорость/своб.) фиксированной ширины и добавляются безусловно (см. "Числа НЕ
+        # обрезаются" выше в докстринге), но "занято" -- НОВОЕ поле, добавленное этой правкой, а не часть уже
         # проверенного пользователем на практике формата -- если из-за него строка не влезает в
         # реальную ширину консоли (перенос сломал бы самообновление \r), поле просто не
         # показывается, вместо переноса. sys.stderr.isatty() -- та же проверка, что и у
@@ -944,6 +972,13 @@ class ProgressReporter:
         здесь же (иначе троттлинг статус-строки, см. _STATUS_REFRESH_EVERY_N, потерял бы смысл
         -- этот колбэк вызывается чаще, чем медиа-тики, включая пропущенные не-медиа файлы)."""
         self._obj_count += n
+
+    def mark_interrupted(self) -> None:
+        """Речь пользователя, 2026-08-09 ("обработано объектов XX%"): вызывающий код зовёт это
+        из своего `except KeyboardInterrupt:` (см. run_analyze()/_run_impl()) ДО close() --
+        close()/_build_two_line_status() форсируют 100% только на НЕПРЕРВАННОМ прогоне, раз
+        "обработано" при прерывании -- буквально неправда, работа реально не закончена."""
+        self._run_interrupted = True
 
     def _object_line_budget(self, letter: str = "", min_width: int = 15) -> int:
         """Бюджет под путь в объект-строке (см. write_object_line()) -- своя, отдельная от
@@ -1144,13 +1179,23 @@ class ProgressReporter:
         return self._objects_seen
 
     def close(self):
+        # Речь пользователя, 2026-08-09 ("в конце работы всегда должно быть 100%"): последний
+        # реально отрисованный _build_two_line_status() мог застыть на любом X/Y-проценте --
+        # обычный тик просто больше не приходит после последнего файла, close() раньше не
+        # перерисовывал строку сам. force_complete=True только если прогон НЕ прерван (см.
+        # mark_interrupted()/её докстринг) -- "готово" при реальном Ctrl+C было бы неправдой.
+        if self.two_line:
+            final_line = self._build_two_line_status(force_complete=not self._run_interrupted)
+            if self._bar is not None:
+                self._bar.set_description(final_line)
+                self._bar.refresh()
         if self._bar is not None:
             self._bar.close()
             if self in _ACTIVE_BARS:
                 _ACTIVE_BARS.remove(self)
         elif self.count:
             if self.two_line:
-                print(self._build_two_line_status(), file=sys.stderr)
+                print(final_line, file=sys.stderr)
             else:
                 self._emit_plain_line(note="фаза завершена")
 
@@ -3033,6 +3078,14 @@ class SourceWalker:
         self._excluded_dir_hits = {}
         self.system_dir_skips = []  # list of (dirpath,)
         self._target_real = os.path.realpath(cfg.target)
+        # Живая находка (боевой прогон, 2026-08-09) -- см. is_under_system_dir()-гейт ниже в
+        # _walk_dir(): содержимое, РАСПАКОВАННОЕ ИЗ АРХИВА, физически лежит под cfg.tmp_extract
+        # (может оказаться под системной директорией, если TARGET там -- например
+        # _NO_TARGET_PLACEHOLDER под %TEMP%) -- такой путь нужно узнавать безусловно, не только
+        # по origin_prefix (пуст для САМОГО ВЕРХНЕГО архива, если он же и есть SOURCE -- см.
+        # walk()'s ветку "SOURCE is a single archive file", origin_prefix="" передаётся туда
+        # явно), иначе первая попытка фикса (через origin_prefix) не покрывала этот случай.
+        self._tmp_extract_prefix = os.path.normcase(cfg.tmp_extract).rstrip(os.sep) + os.sep
         # ROADMAP.md, analyze как "2 части": сырые пути (realpath) папок, чей родитель
         # оказался найденным архивом (__служебные_файлы встречена где-то в дереве SOURCE) --
         # см. классификацию/исключение вложенности в classify_found_archives().
@@ -3312,7 +3365,7 @@ class SourceWalker:
                 "name": display_name,
                 "dest_path": known_dest,
             })
-            self.log(f"  [dvd_unit] дубль уже архивированного диска, пропущен: {disp_base}")
+            self.log(f"  [DVD] дубль уже архивированного диска, пропущен: {disp_base}")
             return
 
         volume_label = _dvd_unit_volume_label_if_live_disc(video_ts_dirpath, check_volume_label)
@@ -3341,15 +3394,18 @@ class SourceWalker:
             "total_bytes": total_bytes, "fingerprint": fingerprint,
         })
         # Живая находка пользователя, 2026-08-09 (дополнение к A/D-буквам после [папка]/
-        # [archive]): "[dvd_unit]" -- та же буква, тем же принципом (сразу после "]", один
+        # [archive]): "[DVD]" -- та же буква, тем же принципом (сразу после "]", один
         # пробел перед текстом), но решение здесь уже известно (volume_label/album посчитаны
         # вызывающей стороной _walk_dir() ВЫШЕ, см. три приоритета в докстринге) -- пробный
         # find_album() не нужен, в отличие от _placement_letter() для папки/архива.
+        # Тег "[dvd_unit]" переименован в "[DVD]" по прямой просьбе пользователя (короче,
+        # 2026-08-09) -- тот же принцип, что и у остальных тегов, никакой особой логики
+        # выравнивания под старое имя не было (letter_part не завязан на длину тега).
         letter = ""
         if self._show_placement_letter:
             letter = "A" if (volume_label or album is not None) else "D"
         letter_part = f"{letter} " if letter else " "
-        self.log(f"  [dvd_unit]{letter_part}новый DVD-диск -> {dest_dir} "
+        self.log(f"  [DVD]{letter_part}новый DVD-диск -> {dest_dir} "
                  f"({len(records)} файлов, {disp_base})")
         for rel, size, mtime, full_path, sha in records:
             dest_path = os.path.join(dest_dir, *rel.split("/"))
@@ -3420,8 +3476,28 @@ class SourceWalker:
                 if base_lower in self.cfg.extra_exclude_dirs_lower:
                     self._record_excluded_dir(base_lower, "добавлено пользователем через extra_exclude_dirs")
                     continue
-                if (not self.cfg.scan_system_dirs and not self._root_under_system_dir
-                        and is_under_system_dir(cur_dirpath)):
+                # Живая находка (боевой прогон, 2026-08-09): is_under_system_dir() -- эвристика
+                # "это похоже на мусор ОС, не настоящее SOURCE-содержимое пользователя", не
+                # применима к содержимому, распакованному ИЗ АРХИВА -- такой путь физически
+                # лежит под cfg.tmp_extract (см. self._tmp_extract_prefix в __init__()),
+                # независимо от того, куда физически смотрит сам tmp_extract на диске. Без этой
+                # проверки — CLI/`[1]` `analyze` БЕЗ явного `--target` (cfg.target =
+                # _NO_TARGET_PLACEHOLDER, живёт под %TEMP%, а %TEMP% сам в SYSTEM_DIR_ENV_VARS)
+                # тихо считал содержимое ЛЮБОГО архива с непустой подпапкой внутри "системной
+                # папкой" и отбрасывал его целиком — воспроизведено живьём: архив с реальными
+                # медиафайлами по предварительному листингу показывал "найдено медиафайлов 0"
+                # после распаковки, файлы пропадали из total_files/n_images во всех счётчиках
+                # analyze. Реальная сборка (`archive`/`--dry-run`) не задета на практике -- там
+                # TARGET обязателен и выбирается пользователем (обычно не под системной папкой),
+                # но тот же баг сработал бы и там, укажи пользователь TARGET под системной
+                # директорией -- фикс общий, не завязан на конкретный вызывающий режим. Первая
+                # попытка фикса проверяла origin_prefix вместо пути -- он пуст для САМОГО
+                # ВЕРХНЕГО архива, если он же и есть SOURCE (walk()'s ветка "SOURCE is a single
+                # archive file" передаёт origin_prefix="" явно), не покрывала этот случай --
+                # поймано regression-тестом на этом же сценарии, не оставлено недиагностированным.
+                if (not os.path.normcase(cur_dirpath).startswith(self._tmp_extract_prefix)
+                        and not self.cfg.scan_system_dirs
+                        and not self._root_under_system_dir and is_under_system_dir(cur_dirpath)):
                     self.system_dir_skips.append(cur_dirpath)
                     continue
 
@@ -5022,8 +5098,19 @@ def resolve_dest_path(dest_dir: str, filename: str, candidate_sha256: str, sha25
     """Handle name collisions: identical content at an occupied name => duplicate (skip);
     otherwise append _1, _2, ... Returns (final_path, is_duplicate).
     stats (p.5.3а, optional): if given, counts a "warn_path_truncated" occurrence whenever
-    the filename actually had to be shortened -- surfaced in summary.txt."""
-    _makedirs_iterative(winlong(dest_dir))
+    the filename actually had to be shortened -- surfaced in summary.txt.
+
+    Живая находка пользователя (2026-08-09): dest_dir раньше создавался здесь БЕЗУСЛОВНО
+    (_makedirs_iterative()), включая dry_run=True -- эта функция зовётся из _process_record()
+    ДО проверки `if not is_dup and not cfg.dry_run:` (нужно решить, дубль ли файл, независимо
+    от режима), поэтому пробный прогон/CLI --dry-run реально создавал ByDate/Albums/...-ветки
+    на диске, хотя ни один файл не копировался -- пользователю приходилось чистить их вручную
+    перед реальной сборкой. Убрано -- НЕ нужно для самой проверки коллизии: os.path.exists()
+    ниже безопасно возвращает False для пути в ещё не существующей папке (нет исключения,
+    обычное поведение os.path.exists() для любого отсутствующего предка), значит "коллизий
+    нет" корректно определяется и без создания dest_dir. Реальное копирование (place_file()->
+    atomic_copy()) уже само создаёт dest_dir непосредственно перед записью -- этот вызов был
+    чистой избыточностью для реальной сборки и единственной причиной бага для dry-run."""
     name = truncate_segment(filename, max_len)
     if stats is not None and name != sanitize_windows_component(filename):
         # Compare against the SANITIZED (not raw) filename -- sanitize_windows_component()
@@ -6081,6 +6168,16 @@ def _flush_exif_prefetch_batch(pending: list, cache, log, rate_hint_cb=None):
             rate_hint_cb((time.time() - t0) / n, n)
 
 
+def _is_windows_abs_path(s: str) -> bool:
+    """Платформонезависимая проверка "это уже абсолютный Windows-путь" -- НЕ os.path.isabs()
+    (на POSIX-раннере, где os.path == posixpath, тот считает абсолютным только путь с
+    ведущим "/", "C:\\Users\\..." дал бы False -- тот же класс несовместимости, от которого
+    уже есть защита у _win_dirname()/_win_basename() в report.py). Буквенный диск ("C:\\...")
+    или UNC ("\\\\server\\share\\...") -- единственные формы, которые реально возвращает
+    _handle_dvd_unit()'s disp_base (см. _analyze_source_abs_path())."""
+    return (len(s) >= 3 and s[1] == ":" and s[2] == "\\") or s.startswith("\\\\")
+
+
 def _analyze_source_abs_path(cfg: Config, item) -> str:
     """SESSION-HANDOFF.txt, 2026-08-09 (задачи 4/6): реальный абсолютный путь для
     disputed_paths/unreadable_paths (рабочая file://-ссылка в отчёте) -- item.origin_display
@@ -6102,8 +6199,19 @@ def _analyze_source_abs_path(cfg: Config, item) -> str:
     же принцип, что rpartition("\\") у _win_dirname()) даёт identичный на Windows результат
     (единственная целевая платформа программы), но остаётся корректной строкой и на POSIX --
     сам путь всё равно никогда не читается с диска POSIX-раннером, только сравнивается как
-    текст в тестах."""
+    текст в тестах.
+
+    Живая находка (report.html, боевой прогон analyze без --target, 2026-08-09):
+    item.origin_display НЕ всегда SOURCE-относителен, вопреки исходному предположению этой
+    функции выше -- SourceWalker._handle_dvd_unit() (VIDEO_TS/DVD-юнит) строит его как
+    f"{disp_base}/{rel}", а disp_base ЗА ПРЕДЕЛАМИ архива -- это cur_dirpath, УЖЕ абсолютный
+    путь (см. её докстринг и _walk_dir()'s вызывающий код). Слепое приклеивание cfg.source к
+    уже-абсолютному пути давало "C:\\C:\\Users\\..." -- нерабочую file://-ссылку в отчёте.
+    _is_windows_abs_path() -- дешёвая проверка ДО склейки, покрывает и disputed_paths, и
+    unreadable_paths (оба вызывающих места используют эту же функцию)."""
     rel = item.origin_display.replace("/", "\\")
+    if _is_windows_abs_path(rel):
+        return rel
     return cfg.source.rstrip("\\") + "\\" + rel
 
 
@@ -6259,6 +6367,27 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
             if item.ftype in ("image", "raw", "video"):
                 stats.bytes_by_kind[item.ftype] += item.size
 
+            # Живая находка (боевой прогон, отчёт пользователя, 2026-08-09): VIDEO_TS/DVD-юнит
+            # (item.dvd_dest_path не None, см. SourceWalker._handle_dvd_unit()) -- ftype
+            # безусловно "video" для КАЖДОГО файла юнита (:3370-е, докстринг там же), включая
+            # .IFO/.BUP -- служебные файлы навигации/бэкапа DVD-структуры, не проигрываемое видео
+            # само по себе. analyze_batch() для ftype=="video" вызывает video_duration_and_
+            # resolution() (ffprobe) -- ГАРАНТИРОВАННО проваливается на .IFO/.BUP (это не
+            # видеопоток), помечая их "не удалось распознать" -- ложное срабатывание на КАЖДОМ
+            # отсканированном DVD-рипе, не краевой случай (Задача D, закрыта ранее в этой же
+            # сессии). Реальная сборка (_run_impl()) не даёт этим item попасть в analyze_batch()
+            # вовсе -- тот же принцип здесь, но ТОЛЬКО для analyze_batch()/sniff_signature()
+            # ниже: живая находка пользователя, 2026-08-09 ("2013 не попал в структуру") --
+            # первая версия фикса (безусловный `continue` здесь) пропускала ВЕСЬ блок
+            # классификации (find_album/tree_folder_counts/dates_by_year/tier_counts/
+            # n_dump_items и т.д.), не только broken-проверку -- DVD-содержимое пропадало из
+            # дерева структуры/диаграммы "по годам"/"надёжность дат" целиком, разъезжаясь с
+            # total_files/n_videos (те продолжали его считать). is_dvd_unit_item ниже пускает
+            # DVD-item через ОСТАЛЬНОЙ конвейер тем же путём, что и обычный файл без EXIF --
+            # только сама генерическая ffprobe/сигнатура-проверка (неприменимая к .IFO/.BUP)
+            # заменяется на заглушку-rec ("ничего не известно", не broken).
+            is_dvd_unit_item = item.dvd_dest_path is not None
+
             # 2026-08-08 (альбомный редизайн, живая находка на self_scan="Паспорт архива"):
             # "Albums" -- защищённое dump-имя (DUMP_SEGMENT_NAMES_PROTECTED, самозащита от
             # каскадного самопоедания), и под новым безусловным отравлением оно теперь топит
@@ -6271,16 +6400,31 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
             # "Albums\" без альбома под ним (_rest пуст либо сам find_album() не находит
             # ничего дальше) по-прежнему падает в "не найдено", это и есть настоящая находка
             # "файл добавлен мимо программы", см. _PASSPORT_SELF_SCAN_RECOGNIZED_TOP ниже.
-            find_album_rel_path, find_album_boundary = item.rel_path, item.archive_boundary_idx
-            if self_scan:
-                _top, _sep, _rest = item.rel_path.partition("/")
-                if _sep and _top.strip().lower() == "albums":
-                    find_album_rel_path = _rest
-                    find_album_boundary = (None if find_album_boundary is None
-                                            else max(0, find_album_boundary - 1))
-            album, subpath, album_prefix = find_album(find_album_rel_path, find_album_boundary,
-                                                       dump_names=cfg.dump_segment_names_lower,
-                                                       dump_prefixes=cfg.dump_segment_prefixes_tuple)
+            # is_dvd_unit_item: НЕ звать find_album() вовсе -- живая находка при реализации
+            # этого же фикса (2026-08-09): item.rel_path для DVD-юнита построен как
+            # f"{display_name}/VIDEO_TS/{rel}" (см. _handle_dvd_unit()), где display_name на
+            # глубине 0 -- ИМЯ РОДИТЕЛЬСКОЙ папки (не имя альбома) -- generic find_album()
+            # ошибочно принимает этот сегмент за настоящее имя альбома (не распознаётся как
+            # dump-имя), давая предсказание, не совпадающее с тем, что реально решает
+            # _handle_dvd_unit() (метка тома/альбом СНАРУЖИ video_ts/ByDate, три приоритета, её
+            # докстринг). Вместо повторной реализации той же логики здесь -- DVD-содержимое для
+            # статистики analyze/паспорта всегда считается по маршруту ByDate (album=None) --
+            # самый частый реальный случай (DVD без метки тома живого диска), не идеальное
+            # предсказание, но не хуже прежнего "молчания" и не вводит в заблуждение неверным
+            # именем альбома.
+            if is_dvd_unit_item:
+                album, subpath, album_prefix = None, [], None
+            else:
+                find_album_rel_path, find_album_boundary = item.rel_path, item.archive_boundary_idx
+                if self_scan:
+                    _top, _sep, _rest = item.rel_path.partition("/")
+                    if _sep and _top.strip().lower() == "albums":
+                        find_album_rel_path = _rest
+                        find_album_boundary = (None if find_album_boundary is None
+                                                else max(0, find_album_boundary - 1))
+                album, subpath, album_prefix = find_album(find_album_rel_path, find_album_boundary,
+                                                           dump_names=cfg.dump_segment_names_lower,
+                                                           dump_prefixes=cfg.dump_segment_prefixes_tuple)
             # SESSION-HANDOFF.txt, "большой разбор report.html", пункт A (дерево структуры
             # архива) -- бакет для этого элемента, тем же строителем путей, что и реальная
             # сборка (build_album_dest_dir()/build_bydate_dest_dir()), но с фиктивным
@@ -6337,78 +6481,92 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
             if item.ftype == "image" and not item.sibling_path:
                 stats.n_jpeg_without_raw += 1
 
-            # SESSION-HANDOFF.txt, 2026-08-09 (одиннадцатая задача): self_scan (Паспорт архива)
-            # -- проверка сигнатуры ВСЕГДА безусловна (полная проверка уже собранного архива).
-            # Обычный анализ ([1]/CLI analyze) -- только если пользователь явно включил флаг в
-            # конфиге (по умолчанию cfg.check_signature=False, проверка пропускается). Когда
-            # проверка не выполняется -- n_signature_mismatch не увеличивается вовсе (не может
-            # быть найдено то, что не проверялось) -- поле рендерится ТОЛЬКО в Паспорте архива
-            # (self_scan всегда True там), обычный [1]-отчёт этот пункт вообще не показывает,
-            # ни сейчас, ни после этой правки -- ложному "0" протечь некуда (обсуждено и
-            # закрыто с пользователем в этой же сессии).
-            if self_scan or cfg.check_signature:
-                real_kind = sniff_signature(item.read_path)
-                if real_kind is not None and real_kind != _coarse_kind(item.ftype):
-                    stats.n_signature_mismatch += 1
+            if is_dvd_unit_item:
+                # Речь пользователя, 2026-08-09: sniff_signature()/analyze_batch() (ffprobe)
+                # неприменимы к .IFO/.BUP (не видеопоток сами по себе, см. докстринг выше) --
+                # заглушка-rec ("ничего не известно", is_media=True по умолчанию, broken=False)
+                # пускает item дальше по конвейеру (resolve_date/tree_folder_counts/tier_counts/
+                # dates_by_year ниже) тем же путём, что и обычный файл без EXIF -- ни разу не
+                # "битый"/"не прочитано" (реальная сборка тоже никогда не оспаривает DVD-юнит
+                # поштучно, см. _process_dvd_item()).
+                rec = SourceRecord(item=item)
+            else:
+                # SESSION-HANDOFF.txt, 2026-08-09 (одиннадцатая задача): self_scan (Паспорт
+                # архива) -- проверка сигнатуры ВСЕГДА безусловна (полная проверка уже
+                # собранного архива). Обычный анализ ([1]/CLI analyze) -- только если
+                # пользователь явно включил флаг в конфиге (по умолчанию cfg.check_signature=
+                # False, проверка пропускается). Когда проверка не выполняется --
+                # n_signature_mismatch не увеличивается вовсе (не может быть найдено то, что не
+                # проверялось) -- поле рендерится ТОЛЬКО в Паспорте архива (self_scan всегда
+                # True там), обычный [1]-отчёт этот пункт вообще не показывает, ни сейчас, ни
+                # после этой правки -- ложному "0" протечь некуда (обсуждено и закрыто с
+                # пользователем в этой же сессии).
+                if self_scan or cfg.check_signature:
+                    real_kind = sniff_signature(item.read_path)
+                    if real_kind is not None and real_kind != _coarse_kind(item.ftype):
+                        stats.n_signature_mismatch += 1
 
-            if item.size == 0:
-                stats.n_broken_or_zero += 1
-                # Пустой файл -- содержимое НЕ распознано (TARGET-уровень назвал бы это
-                # "disputed", см. AnalyzeStats.disputed_paths выше), не путать с rec.read_error
-                # ниже ("не прочитано" -- I/O-сбой, файл вообще не открылся).
-                stats.disputed_paths.append(_analyze_source_abs_path(cfg, item))
-                # Битый/пустой файл всегда уходит в _Unsorted при реальной сборке (см. отчёт
-                # "N файлов не удалось распознать -- Лежат в _Unsorted"), независимо
-                # от того, что вычислил tree_key выше (реальный альбом/RAW тут не место назначения).
-                stats.tree_folder_counts["_Unsorted"] += 1
-                stats.tree_folder_bytes["_Unsorted"] += item.size
-                continue
-            if item.ftype not in ("image", "raw", "video"):
-                continue
-
-            cached = archive_cache.get(item.read_path) if archive_cache is not None else None
-            cache_hit = bool(cached and cached[0] == item.size and abs(cached[1] - item.mtime) < 1e-6)
-            exif_hit = bool(cache_hit and len(cached) > 8 and cached[8])
-            recs = analyze_batch([item], retries=cfg.read_retry_count, retry_delay=cfg.read_retry_delay,
-                                  small_image_px=cfg.small_image_px, log=log,
-                                  skip_hash=(mode == "analyze-quick"), pool=pool, cache=archive_cache,
-                                  tags_by_path=tags_by_path)
-            rec = recs[0]
-            if rec.read_error or rec.broken:
-                stats.n_broken_or_zero += 1
-                # rec.read_error -- файл физически не удалось прочитать (I/O-сбой, TARGET-
-                # уровень зовёт это "не прочитано"/unreadable.csv); rec.broken -- файл прочитан,
-                # но содержимое не распознано (та же категория, что item.size==0 выше, TARGET-
-                # уровень зовёт это "disputed"/disputes.csv). Этот участок уже ПОСЛЕ фильтра
-                # item.ftype in (image, raw, video) выше -- rec.read_error здесь гарантированно
-                # медиа, доп. проверка не нужна (в отличие от item.size==0 выше, тот срабатывает
-                # ДО фильтра типа).
-                if rec.read_error:
-                    stats.unreadable_paths.append(_analyze_source_abs_path(cfg, item))
-                else:
+                if item.size == 0:
+                    stats.n_broken_or_zero += 1
+                    # Пустой файл -- содержимое НЕ распознано (TARGET-уровень назвал бы это
+                    # "disputed", см. AnalyzeStats.disputed_paths выше), не путать с
+                    # rec.read_error ниже ("не прочитано" -- I/O-сбой, файл вообще не открылся).
                     stats.disputed_paths.append(_analyze_source_abs_path(cfg, item))
-                stats.tree_folder_counts["_Unsorted"] += 1
-                stats.tree_folder_bytes["_Unsorted"] += item.size
-                continue
-            # Речь пользователя, 2026-08-02: пишем, если ЛИБО хеш, ЛИБО EXIF были свежепосчитаны
-            # (не оба сразу нужны -- частый случай "хеш уже в кэше с прошлого паспорта, но эта
-            # версия кода только что впервые узнала дату/камеру/GPS для того же файла" тоже
-            # обязан записаться, иначе следующий паспорт снова спросит exiftool). Полностью
-            # тёплая строка (cache_hit и exif_hit оба True) ничего не пишет -- нечего обновлять.
-            if archive_cache_conn is not None and (not cache_hit or not exif_hit) and rec.sha256:
-                # Свежепосчитанный (не из кэша) файл -- сеем archive_cache тем же принципом, что
-                # и _seed_archive_cache() при обычной сборке: следующий паспорт/сборка того же
-                # архива увидит эти же (path,size,mtime) и не станет считать заново.
-                archive_cache_conn.execute(
-                    "INSERT OR REPLACE INTO archive_cache"
-                    "(path,size,mtime,sha256,phash,duration,width,height,bitrate,"
-                    "exif_cached,exif_dt,exif_dt_source,camera,gps_lat,gps_lon) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (item.read_path, item.size, item.mtime, rec.sha256, rec.phash,
-                     rec.duration, rec.width, rec.height, rec.bitrate,
-                     1, rec.exif_dt.isoformat() if rec.exif_dt else None, rec.exif_dt_source,
-                     rec.camera, rec.gps_lat, rec.gps_lon),
-                )
+                    # Битый/пустой файл всегда уходит в _Unsorted при реальной сборке (см.
+                    # отчёт "N файлов не удалось распознать -- Лежат в _Unsorted"), независимо
+                    # от того, что вычислил tree_key выше (реальный альбом/RAW тут не место
+                    # назначения).
+                    stats.tree_folder_counts["_Unsorted"] += 1
+                    stats.tree_folder_bytes["_Unsorted"] += item.size
+                    continue
+                if item.ftype not in ("image", "raw", "video"):
+                    continue
+
+                cached = archive_cache.get(item.read_path) if archive_cache is not None else None
+                cache_hit = bool(cached and cached[0] == item.size and abs(cached[1] - item.mtime) < 1e-6)
+                exif_hit = bool(cache_hit and len(cached) > 8 and cached[8])
+                recs = analyze_batch([item], retries=cfg.read_retry_count, retry_delay=cfg.read_retry_delay,
+                                      small_image_px=cfg.small_image_px, log=log,
+                                      skip_hash=(mode == "analyze-quick"), pool=pool, cache=archive_cache,
+                                      tags_by_path=tags_by_path)
+                rec = recs[0]
+                if rec.read_error or rec.broken:
+                    stats.n_broken_or_zero += 1
+                    # rec.read_error -- файл физически не удалось прочитать (I/O-сбой, TARGET-
+                    # уровень зовёт это "не прочитано"/unreadable.csv); rec.broken -- файл
+                    # прочитан, но содержимое не распознано (та же категория, что
+                    # item.size==0 выше, TARGET-уровень зовёт это "disputed"/disputes.csv).
+                    # Этот участок уже ПОСЛЕ фильтра item.ftype in (image, raw, video) выше --
+                    # rec.read_error здесь гарантированно медиа, доп. проверка не нужна (в
+                    # отличие от item.size==0 выше, тот срабатывает ДО фильтра типа).
+                    if rec.read_error:
+                        stats.unreadable_paths.append(_analyze_source_abs_path(cfg, item))
+                    else:
+                        stats.disputed_paths.append(_analyze_source_abs_path(cfg, item))
+                    stats.tree_folder_counts["_Unsorted"] += 1
+                    stats.tree_folder_bytes["_Unsorted"] += item.size
+                    continue
+                # Речь пользователя, 2026-08-02: пишем, если ЛИБО хеш, ЛИБО EXIF были
+                # свежепосчитаны (не оба сразу нужны -- частый случай "хеш уже в кэше с
+                # прошлого паспорта, но эта версия кода только что впервые узнала
+                # дату/камеру/GPS для того же файла" тоже обязан записаться, иначе следующий
+                # паспорт снова спросит exiftool). Полностью тёплая строка (cache_hit и
+                # exif_hit оба True) ничего не пишет -- нечего обновлять.
+                if archive_cache_conn is not None and (not cache_hit or not exif_hit) and rec.sha256:
+                    # Свежепосчитанный (не из кэша) файл -- сеем archive_cache тем же
+                    # принципом, что и _seed_archive_cache() при обычной сборке: следующий
+                    # паспорт/сборка того же архива увидит эти же (path,size,mtime) и не
+                    # станет считать заново.
+                    archive_cache_conn.execute(
+                        "INSERT OR REPLACE INTO archive_cache"
+                        "(path,size,mtime,sha256,phash,duration,width,height,bitrate,"
+                        "exif_cached,exif_dt,exif_dt_source,camera,gps_lat,gps_lon) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (item.read_path, item.size, item.mtime, rec.sha256, rec.phash,
+                         rec.duration, rec.width, rec.height, rec.bitrate,
+                         1, rec.exif_dt.isoformat() if rec.exif_dt else None, rec.exif_dt_source,
+                         rec.camera, rec.gps_lat, rec.gps_lon),
+                    )
 
             dirname = os.path.dirname(item.rel_path)
             date_value, tier, conf, evidence, precision = resolve_date(
@@ -6521,6 +6679,7 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                     pool.add(entry)
     except KeyboardInterrupt:
         stats.interrupted = True
+        bar.mark_interrupted()  # "обработано объектов XX%" не форсирует 100% на прерванном прогоне
 
     stats.n_objects_total = bar.object_count  # SESSION-HANDOFF.txt п.4 -- ДО close(), не после
     bar.close()  # ДО того, как вызывающий код продолжит писать в консоль -- не портить формат бара
@@ -7568,6 +7727,7 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
             # баннером прерывания и заново возбуждает KeyboardInterrupt -- поведение "Ctrl+C
             # останавливает программу" не меняется, только теперь есть отчёт перед выходом.
             st.interrupted = True
+            bar.mark_interrupted()  # "обработано объектов XX%" не форсирует 100% на прерванном прогоне
 
         # Живая находка пользователя, 2026-08-09: временные распакованные папки архива
         # (__служебные_файлы\tmp_extract\<hash>\...) оставались на диске после Ctrl+C ВО ВРЕМЯ
@@ -7660,7 +7820,7 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
             # "удалена", когда физически удалять было нечего.
             if os.path.isdir(winlong(u["dest_path"])):
                 cleanup_dir(u["dest_path"])
-                run_logs.action(f"[dvd_unit] недокопированная папка удалена: {u['dest_path']}")
+                run_logs.action(f"[DVD] недокопированная папка удалена: {u['dest_path']}")
 
         # 2026-07-11 (сессия про управляемый список служебных папок): раньше пропуски по
         # HARD_EXCLUDE_DIRS/default_exclude_dirs/extra_exclude_dirs и по гейту системных
@@ -7702,6 +7862,7 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
                     bar.update(1, note="повтор чтения (диск может быть медленным)")
             except KeyboardInterrupt:
                 st.interrupted = True  # см. комментарий у основного цикла выше
+                bar.mark_interrupted()  # "обработано объектов XX%" не форсирует 100% на прерванном прогоне
 
     if st.cache_conn is not None:
         st.cache_conn.commit()
@@ -8308,10 +8469,12 @@ class RunResult:
 
 def run_for_source(source, target, dry_run, sample_limit, log=print, suppress_logs=False,
                     shared_pool=None, print_summary=True) -> RunResult:
-    """print_summary (пакет п.4, SESSION-HANDOFF.txt): False только у _bare_launch_run_build()
-    ([3] голого меню) -- подавляет техническую консольную сводку внутри _run_impl() (дублирует
-    report.html), не трогая write_summary()/CSV-логи. Обычный CLI archive не передаёт этот
-    параметр (остаётся True по умолчанию) -- контракт для headless-автоматизации не меняется."""
+    """print_summary (пакет п.4, SESSION-HANDOFF.txt; 2026-08-09 -- распространено на [2]
+    _bare_launch_run_dryrun(), раньше пропущено там, живая находка пользователя): False у
+    _bare_launch_run_build() ([3] голого меню) и _bare_launch_run_dryrun() ([2]) -- подавляет
+    техническую консольную сводку внутри _run_impl() (дублирует report.html), не трогая
+    write_summary()/CSV-логи. Обычный CLI archive не передаёт этот параметр (остаётся True по
+    умолчанию) -- контракт для headless-автоматизации не меняется."""
     yaml_overrides = load_yaml_config(CONFIG_YAML_PATH, log=log)
     try:
         cfg = Config(source=source, target=target, dry_run=dry_run, sample_limit=sample_limit,
@@ -8428,7 +8591,8 @@ def _reclaim_console_focus() -> None:
 
 def _finalize_target_report(target: str, level: str, any_succeeded: bool, total_processed: int,
                              open_browser: bool, log=print, run_stats: dict = None,
-                             run_start: str = None, interrupted: bool = False) -> str:
+                             run_start: str = None, interrupted: bool = False,
+                             source_paths: list = None) -> str:
     """PROMPT_archive_report.md, разделы 1.1/1.1а/1.2: report.html после archive-прогона
     (level="target", файл персистентно в TARGET\\__служебные_файлы\\) или CLI --dry-run
     (level="workdir", файл эфемерно в WORKDIR) -- ОБА читают одни и те же CSV-логи TARGET
@@ -8485,7 +8649,7 @@ def _finalize_target_report(target: str, level: str, any_succeeded: bool, total_
         data = report.parse_target_logs(os.path.join(photosort_dir, "logs"))
         report.generate_report(data, out_path, level=level, run_stats=run_stats,
                                 run_start=run_start, target_path=target, interrupted=interrupted,
-                                app_version=__version__)
+                                app_version=__version__, source_paths=source_paths)
     if not interrupted:
         log(f"Отчёт: {out_path}")
     if level == "workdir":
@@ -8495,11 +8659,15 @@ def _finalize_target_report(target: str, level: str, any_succeeded: bool, total_
     return out_path if open_browser else None
 
 
-def _finalize_analyze_report(stats, open_browser: bool, log=print) -> str:
+def _finalize_analyze_report(stats, open_browser: bool, log=print, source_path: str = None) -> str:
     """analyze/analyze-quick/analyze-full (раздел 1.2): "один слот, не персистентно
     per-источник" -- вызывается ВНУТРИ цикла по source (не после), каждый анализ
     перезаписывает WORKDIR\\report.html независимо от исхода предыдущего (см. раздел 1.2,
     "отчёт по последней операции"), в отличие от _finalize_target_report выше.
+
+    source_path (речь пользователя, 2026-08-09): SOURCE именно ЭТОГО вызова -- рендерится в
+    заголовке отчёта (report._render_report_meta()), см. report.generate_report_from_analyze_
+    stats()'s докстринг.
 
     Возвращает путь к отчёту (или None, если stats is None -- ошибка конфига, отчёт не
     формировался). 2026-07-21: голое меню (_bare_launch_run_view()) теперь вызывает это с
@@ -8528,7 +8696,8 @@ def _finalize_analyze_report(stats, open_browser: bool, log=print) -> str:
         # прерывания сам объясняет пустоту честнее, чем текст про "недоступен или пуст".
         report.generate_report_from_analyze_stats(stats, out_path, level="analyze",
                                                     interrupted=stats.interrupted,
-                                                    app_version=__version__)
+                                                    app_version=__version__,
+                                                    source_path=source_path)
     log(f"Отчёт: {out_path}")
     if open_browser:
         _open_report_in_browser(out_path)
@@ -9196,7 +9365,8 @@ def _bare_launch_run_view(sources: list, log=print) -> str:
     # Пакет п.4 (SESSION-HANDOFF.txt): числовая консольная сводка (_print_human_view_summary(),
     # удалена целиком выше) дублировала то, что и так показывает report.html -- убрано ТОЛЬКО
     # после того, как отчёт стал самодостаточным источником этих цифр (пп.1-3 той же задачи).
-    report_path = _finalize_analyze_report(stats, open_browser=False, log=log)
+    report_path = _finalize_analyze_report(stats, open_browser=False, log=log,
+                                            source_path=sources[0])
     if stats.interrupted:
         # Ctrl+C-пакет (2026-08-07, распространено с [3]/CLI archive на [1]): тот же приём,
         # что и _bare_launch_run_build() -- отчёт уже сформирован выше (баннер прерывания
@@ -9273,8 +9443,13 @@ def _bare_launch_run_dryrun(sources: list, target: str, input_fn=input, log=prin
         for s in expanded:
             if len(expanded) > 1:
                 log(f"\n########## SOURCE = {s} ##########")
+            # Живая находка пользователя (2026-08-09): [3] (_bare_launch_run_build()) уже
+            # передаёт print_summary=False (техническая консольная сводка "===== Прогон ...
+            # ====="/"Итог прогона" дублирует report.html) -- [2] эту же настройку не
+            # передавал, единственный пункт меню, где сводка всё ещё дублировалась на экран.
             result = run_for_source(s, target, dry_run=True, sample_limit=0, log=log,
-                                     suppress_logs=True, shared_pool=shared_pool)
+                                     suppress_logs=True, shared_pool=shared_pool,
+                                     print_summary=False)
             if not result.failed:
                 results.append(result.stats)
                 total_processed += result.processed_count
@@ -9336,7 +9511,8 @@ def _bare_launch_run_dryrun(sources: list, target: str, input_fn=input, log=prin
         report.generate_report(combined_rows, out_path, level="workdir", run_stats=merged,
                                 run_start=run_start if full_workdir else None,
                                 full_workdir=full_workdir, interrupted=any_interrupted,
-                                app_version=__version__)
+                                app_version=__version__, target_path=target,
+                                source_paths=expanded)
     log(f"Отчёт: {out_path}")
     if any_interrupted:
         # Ctrl+C-пакет: тот же приём, что и _bare_launch_run_build() -- отчёт с баннером
@@ -9415,7 +9591,8 @@ def _bare_launch_run_build(sources: list, target: str, input_fn=input, log=print
         merged["stopped_for_space"] = any_stopped_for_space
         report_path = _finalize_target_report(target, "target", any_succeeded, total_processed,
                                                open_browser=True, log=log, run_stats=merged,
-                                               run_start=run_start, interrupted=True)
+                                               run_start=run_start, interrupted=True,
+                                               source_paths=expanded)
         if report_path:
             log(f"\n  Отчёт (данные на момент остановки): {_display_path(report_path)}")
         raise _InterruptedRunReport(report_path)
@@ -9427,7 +9604,8 @@ def _bare_launch_run_build(sources: list, target: str, input_fn=input, log=print
     merged["stopped_for_space"] = any_stopped_for_space
     report_path = _finalize_target_report(target, "target", any_succeeded, total_processed,
                                            open_browser=True, log=log,
-                                           run_stats=merged, run_start=run_start)
+                                           run_stats=merged, run_start=run_start,
+                                           source_paths=expanded)
     log("")
     log(f"  Готово. Архив собран в {_display_path(target)}")
     log("")
@@ -9792,7 +9970,7 @@ def _main():
                 # персистентно per-источник", каждый анализ перезаписывает WORKDIR\report.html
                 # -- внутри цикла, не после (в отличие от archive ниже).
                 report_path = _finalize_analyze_report(stats, open_browser=interactive_mode,
-                                                        log=console_log)
+                                                        log=console_log, source_path=s)
                 if stats is not None and stats.interrupted:
                     # Ctrl+C-пакет (2026-08-07, распространено с archive-ветки выше на CLI
                     # analyze --source): отчёт уже записан (баннер прерывания внутри) --
@@ -9817,7 +9995,7 @@ def _main():
         report_path = _finalize_target_report(target, level, any_succeeded, total_processed,
                                                open_browser=interactive_mode, log=console_log,
                                                run_stats=_sum_stats(results), run_start=run_start,
-                                               interrupted=True)
+                                               interrupted=True, source_paths=expanded)
         if report_path:
             console_log(f"\n  Отчёт (данные на момент остановки): {_display_path(report_path)}")
         raise KeyboardInterrupt
@@ -9827,7 +10005,8 @@ def _main():
         level = "workdir" if args.dry_run else "target"
         report_path = _finalize_target_report(target, level, any_succeeded, total_processed,
                                                open_browser=interactive_mode, log=console_log,
-                                               run_stats=_sum_stats(results), run_start=run_start)
+                                               run_stats=_sum_stats(results), run_start=run_start,
+                                               source_paths=expanded)
 
     _pause_before_exit(interactive_mode, report_path=report_path)
     return exit_code

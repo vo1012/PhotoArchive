@@ -182,17 +182,20 @@ def test_render_found_archives_empty_top_level_renders_nothing():
 
 
 def test_render_found_archives_single_archive_no_logs(tmp_path):
+    """Речь пользователя, 2026-08-09: "На этом диске" убрано (SOURCE не обязательно "этот
+    диск") -- заголовок теперь "Найден архив PhotoArchive"."""
     root = tmp_path / "archive1"
     (root / "__служебные_файлы" / "logs").mkdir(parents=True)
     html_out = r._render_found_archives([str(root)], {})
-    assert "На этом диске найден архив PhotoArchive" in html_out
+    assert "Найден архив PhotoArchive" in html_out
+    assert "На этом диске" not in html_out
     assert str(root) in html_out
     assert "НЕДОСТОВЕРНЫ" not in html_out  # без вложенности -- обычная оговорка, не жёсткая
 
 
 def test_render_found_archives_plural_heading_for_multiple():
     html_out = r._render_found_archives(["/a", "/b"], {})
-    assert "найдено 2 архива" in html_out
+    assert "Найдено 2 архива" in html_out
 
 
 def test_render_found_archives_nested_escalates_caveat_and_adds_checklist_item():

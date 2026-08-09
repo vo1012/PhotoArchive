@@ -295,6 +295,38 @@ def test_date_issues_checklist_item_degrades_without_rows():
     assert "Папка:" not in joined
 
 
+def test_date_issues_checklist_wording_matches_analyze_vs_target_level():
+    """Живая находка пользователя (2026-08-09): "файл всё равно сохранён" (ед. число,
+    прошедшее время) было корректно только для TARGET-уровня (реальная сборка уже прошла) --
+    на analyze-уровне (ничего ещё не записано на диск) та же фраза вводила в заблуждение.
+    date_issues_detail -- уже существующий сигнал analyze/target (см. соседний тест выше и
+    докстринг _build_checklist_items()). Заодно проверяет разбивку по тирам построчно
+    (<br> между пунктами), не одной строкой через "; "."""
+    # analyze-уровень: date_issues_detail отсутствует вовсе (см. соседний тест выше).
+    analyze_fields = r._build_checklist_fields({})
+    analyze_fields["date_issues_b_total"] = 2
+    analyze_fields["date_issues_d_total"] = 1
+    del analyze_fields["date_issues_detail"]
+    analyze_joined = "".join(r._build_checklist_items(analyze_fields))
+    assert "эти файлы всё равно будут сохранены в архиве корректно" in analyze_joined
+    assert "уже сохранены" not in analyze_joined
+    assert "они попадут" in analyze_joined  # мн. число, не "он попадёт"
+
+    # TARGET-уровень: реальные строки логов -- date_issues_detail заполнен.
+    target_data = {"undated_media": [
+        {"timestamp": "2026-01-01 00:00:00", "source": "F:\\a.jpg",
+         "dest": "D:\\Archive\\ByDate\\0000-undated\\Отпуск\\a.jpg"},
+    ]}
+    target_fields = r._build_checklist_fields(target_data)
+    target_joined = "".join(r._build_checklist_items(target_fields))
+    assert "эти файлы уже сохранены в архиве корректно" in target_joined
+    assert "будут сохранены" not in target_joined
+
+    # Разбивка -- построчно (<br>), не "; " одной строкой.
+    assert "Разбивка:<br>" in analyze_joined
+    assert "; " not in analyze_joined.split("Разбивка:")[1].split("</div>")[0]
+
+
 def test_parse_target_logs_skips_corrupted_rotated_file_without_crashing(tmp_path):
     """ci/windows_ci_test.py::test_log_rotation -- живая регрессия от фикса ротации выше:
     ротированный файл -- переименованный "как есть" файл на момент ротации, не гарантированно
@@ -493,6 +525,22 @@ def test_render_this_run_shows_bytes_appended_free_disk_and_undated():
     assert "свободно на диске сейчас" in html_out
     assert ">3<" in html_out
     assert "не удалось бы распознать дату" in html_out
+
+
+def test_render_this_run_shows_meta_line_with_paths_and_date():
+    """Речь пользователя, 2026-08-09: раньше "Пробный прогон"/"Пополнение архива" НЕ получали
+    дату вовсе (прежнее решение задачи 10 явно исключало этот заголовок) -- пользователь прямо
+    отменил это. Теперь source_paths/target_path/generated_at рендерятся тем же
+    _render_report_meta(), что и у "Что нашлось в источнике"."""
+    run_stats = {"appended_images": 5, "appended_videos": 0}
+    html_out = r._render_this_run(run_stats, level="workdir", generated_at="2026-08-09 21:00",
+                                   source_paths=["C:\\Pictures", "D:\\Photos"],
+                                   target_path="E:\\__PhotoArchive__")
+    assert "<h2>Пробный прогон</h2>" in html_out
+    assert "Источники:" in html_out
+    assert "C:\\Pictures<br>D:\\Photos" in html_out
+    assert "Архив: E:\\__PhotoArchive__" in html_out
+    assert 'report-meta-date">по состоянию на 2026-08-09 21:00' in html_out
 
 
 def test_render_this_run_hides_free_disk_when_absent():
@@ -2089,29 +2137,74 @@ def test_render_sheet1_analyze_level_does_not_claim_an_archive_exists():
     analyze_html = r._render_sheet1(model, "analyze")
     assert "Ваш архив" in target_html and "пополнении" in target_html
     assert "Ваш архив" not in analyze_html and "пополнении" not in analyze_html
-    assert "Что нашлось на этом диске" in analyze_html
+    assert "Что нашлось в источнике" in analyze_html
 
 
 def test_render_sheet1_embeds_generated_at_in_heading_when_given():
-    """Задача 10 (SESSION-HANDOFF.txt, 2026-08-09): "по состоянию на ГГГГ-ММ-ДД ЧЧ:ММ" --
-    точный образец текста от пользователя, дописывается прямо в <h1>, дублируя общий футер
-    страницы. Обе ветки heading (is_scan True/False, задача 10 п.3 "Ваш архив" по аналогии)."""
+    """Задача 10 (SESSION-HANDOFF.txt, 2026-08-09) + речь пользователя, 2026-08-09: "по
+    состоянию на ГГГГ-ММ-ДД ЧЧ:ММ" раньше дописывалось прямо в <h1> -- теперь отдельной
+    строкой ПОД заголовком (_render_report_meta(), не раздувает текст заголовка). Заодно h1
+    уменьшен до h2 -- тот же уровень, что у "Пробный прогон"/"Пополнение архива"."""
     model = r.build_model_from_rows({"appended": [_appended_row(r"D:\T\ByDate\2026\2026-01-01 [PhotoArchive]\a.jpg")]})
     analyze_html = r._render_sheet1(model, "analyze", generated_at="2026-08-09 13:21")
     target_html = r._render_sheet1(model, "target", generated_at="2026-08-09 13:21")
-    assert "<h1>Что нашлось на этом диске по состоянию на 2026-08-09 13:21</h1>" in analyze_html
-    assert "<h1>Ваш архив по состоянию на 2026-08-09 13:21</h1>" in target_html
+    assert "<h2>Что нашлось в источнике</h2>" in analyze_html
+    assert "<h2>Ваш архив</h2>" in target_html
+    assert 'class="report-meta-date">по состоянию на 2026-08-09 13:21' in analyze_html
+    assert 'class="report-meta-date">по состоянию на 2026-08-09 13:21' in target_html
 
 
 def test_render_sheet1_omits_generated_at_when_not_given():
-    """generated_at=None (по умолчанию) -- заголовок БЕЗ даты, как раньше. Это и есть путь,
-    которым _render_found_archive_block() зовёт _render_sheet1() как ВНУТРЕННЮЮ карточку на
-    чужой странице (найденный архив внутри SOURCE) -- та страница не должна получить дату
-    задним числом просто потому, что _render_sheet1() её теперь умеет показывать."""
+    """generated_at=None (по умолчанию) -- заголовок БЕЗ мета-строки вовсе (ни даты, ни путей
+    -- см. _render_report_meta()'s "пустой результат"). Это и есть путь, которым
+    _render_found_archive_block() зовёт _render_sheet1() как ВНУТРЕННЮЮ карточку на чужой
+    странице (найденный архив внутри SOURCE) -- та страница не должна получить дату задним
+    числом просто потому, что _render_sheet1() её теперь умеет показывать."""
     model = r.build_model_from_rows({"appended": []})
     html_out = r._render_sheet1(model, "analyze")
-    assert "<h1>Что нашлось на этом диске</h1>" in html_out
+    assert "<h2>Что нашлось в источнике</h2>" in html_out
     assert "по состоянию на" not in html_out
+    assert "report-meta" not in html_out
+
+
+class TestRenderReportMeta:
+    """Речь пользователя, 2026-08-09: общая подпись-подзаголовок под каждым головным
+    заголовком отчёта -- путь(и) SOURCE/TARGET слева, "по состоянию на ДАТА" справа."""
+
+    def test_single_source_one_line(self):
+        html_out = r._render_report_meta(["C:\\Users\\x\\Pictures"], None, "2026-08-09 21:00")
+        assert "Источник: C:\\Users\\x\\Pictures" in html_out
+        assert 'report-meta-date">по состоянию на 2026-08-09 21:00' in html_out
+        assert "Источники" not in html_out  # ед. число для одного источника
+
+    def test_multiple_sources_each_on_own_line(self):
+        """Прямая формулировка пользователя: "несколько источников показывать каждый с новой
+        строки" -- <br> между путями, не через запятую/точку с запятой одной строкой."""
+        html_out = r._render_report_meta(
+            ["C:\\Pictures", "D:\\Backup\\Photos", "E:\\"], None, "2026-08-09 21:00")
+        assert "Источники:" in html_out
+        assert "C:\\Pictures<br>D:\\Backup\\Photos<br>E:\\" in html_out
+
+    def test_target_only_no_sources(self):
+        """[4] Паспорт архива: self-scan, SOURCE==TARGET -- показываем только "Архив", без
+        отдельной строки "Источник"."""
+        html_out = r._render_report_meta(None, "D:\\__PhotoArchive__", "2026-08-09 21:00")
+        assert "Архив: D:\\__PhotoArchive__" in html_out
+        assert "Источник" not in html_out
+
+    def test_both_source_and_target(self):
+        """[2]/[3]: SOURCE (что сканируем) И TARGET (куда собираем/собрали) -- обе строки."""
+        html_out = r._render_report_meta(["C:\\Pictures"], "D:\\__PhotoArchive__", "2026-08-09 21:00")
+        assert "Источник: C:\\Pictures" in html_out
+        assert "Архив: D:\\__PhotoArchive__" in html_out
+
+    def test_empty_result_when_nothing_to_show(self):
+        assert r._render_report_meta(None, None, None) == ""
+
+    def test_paths_are_html_escaped(self):
+        html_out = r._render_report_meta(["C:\\<script>"], None, None)
+        assert "<script>" not in html_out
+        assert "&lt;script&gt;" in html_out
 
 
 def test_generate_report_from_analyze_stats_heading_and_footer_share_one_timestamp(tmp_path, monkeypatch):
@@ -2131,7 +2224,8 @@ def test_generate_report_from_analyze_stats_heading_and_footer_share_one_timesta
     r.generate_report_from_analyze_stats(stats, str(out_path))
     html_out = out_path.read_text(encoding="utf-8")
 
-    heading_m = re.search(r"Что нашлось на этом диске по состоянию на ([\d\-]+ [\d:]+)</h1>", html_out)
+    assert "<h2>Что нашлось в источнике</h2>" in html_out
+    heading_m = re.search(r'report-meta-date">по состоянию на ([\d\-]+ [\d:]+)</div>', html_out)
     footer_m = re.search(r"Сформировано PhotoArchive[^·]*· ([\d\-]+ [\d:]+)</div>", html_out)
     assert heading_m and footer_m, html_out
     assert heading_m.group(1) == footer_m.group(1)
@@ -2139,9 +2233,12 @@ def test_generate_report_from_analyze_stats_heading_and_footer_share_one_timesta
 
 
 def test_render_passport_summary_embeds_generated_at_in_heading():
+    """2026-08-09, речь пользователя: дата теперь в отдельной строке _render_report_meta()
+    ПОД заголовком, не приклеена в текст <h1> -- заодно h1->h2."""
     stats = _FakeAnalyzeStats()
     html_out = r._render_passport_summary(stats, generated_at="2026-08-09 13:21")
-    assert "<h1>Архив сейчас по состоянию на 2026-08-09 13:21</h1>" in html_out
+    assert "<h2>Архив сейчас</h2>" in html_out
+    assert 'report-meta-date">по состоянию на 2026-08-09 13:21' in html_out
 
 
 def test_generate_passport_report_heading_and_footer_share_one_timestamp(tmp_path, monkeypatch):
@@ -2157,7 +2254,8 @@ def test_generate_passport_report_heading_and_footer_share_one_timestamp(tmp_pat
     r.generate_passport_report(stats, str(out_path))
     html_out = out_path.read_text(encoding="utf-8")
 
-    heading_m = re.search(r"Архив сейчас по состоянию на ([\d\-]+ [\d:]+)</h1>", html_out)
+    assert "<h2>Архив сейчас</h2>" in html_out
+    heading_m = re.search(r'report-meta-date">по состоянию на ([\d\-]+ [\d:]+)</div>', html_out)
     footer_m = re.search(r"Сформировано PhotoArchive[^·]*· ([\d\-]+ [\d:]+)</div>", html_out)
     assert heading_m and footer_m, html_out
     assert heading_m.group(1) == footer_m.group(1)
@@ -2444,8 +2542,8 @@ class TestPassportVerificationPage:
         r.generate_passport_verification_page(stats, str(out_path))
         html_out = (tmp_path / r.PASSPORT_VERIFICATION_FILENAME).read_text(encoding="utf-8")
 
-        heading_m = re.search(r"Полная сверка — Паспорт архива по состоянию на ([\d\-]+ [\d:]+)</h1>",
-                               html_out)
+        assert "<h2>Полная сверка — Паспорт архива</h2>" in html_out
+        heading_m = re.search(r'report-meta-date">по состоянию на ([\d\-]+ [\d:]+)</div>', html_out)
         footer_m = re.search(r"Сформировано PhotoArchive[^·]*· ([\d\-]+ [\d:]+)</div>", html_out)
         assert heading_m and footer_m, html_out
         assert heading_m.group(1) == footer_m.group(1)

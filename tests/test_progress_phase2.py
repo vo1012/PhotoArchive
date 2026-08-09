@@ -252,7 +252,7 @@ def test_dvd_unit_yields_items_with_forced_dest_and_records_as_copied(tmp_path):
 
 
 def test_dvd_unit_log_line_shows_placement_letter_when_enabled(tmp_path):
-    """Дополнение пользователя, 2026-08-09, к A/D-буквам после [папка]/[archive]: "[dvd_unit]"
+    """Дополнение пользователя, 2026-08-09, к A/D-буквам после [папка]/[archive]: "[DVD]"
     -- та же буква, тот же принцип (сразу после "]", один пробел перед текстом). "Some_Movie_
     DVD5" -- узнаваемое имя альбома (не dump), letter="A"; --dry-run/[3] реальная сборка
     только (show_placement_letter), не analyze -- letter="" по умолчанию."""
@@ -266,7 +266,7 @@ def test_dvd_unit_log_line_shows_placement_letter_when_enabled(tmp_path):
     lines = []
     walker = m.SourceWalker(cfg, log=lines.append, show_placement_letter=True)
     list(walker.walk())
-    assert any("[dvd_unit]A новый DVD-диск ->" in ln for ln in lines), lines
+    assert any("[DVD]A новый DVD-диск ->" in ln for ln in lines), lines
 
     lines_off = []
     walker_off = m.SourceWalker(cfg, log=lines_off.append)
@@ -274,8 +274,8 @@ def test_dvd_unit_log_line_shows_placement_letter_when_enabled(tmp_path):
     (disc2 / "VIDEO_TS").mkdir(parents=True)
     (disc2 / "VIDEO_TS" / "VTS_01_0.VOB").write_bytes(b"x" * 10)
     list(walker_off.walk())
-    assert any("[dvd_unit] новый DVD-диск ->" in ln for ln in lines_off), lines_off
-    assert not any("[dvd_unit]A" in ln or "[dvd_unit]D" in ln for ln in lines_off)
+    assert any("[DVD] новый DVD-диск ->" in ln for ln in lines_off), lines_off
+    assert not any("[DVD]A" in ln or "[DVD]D" in ln for ln in lines_off)
 
 
 def test_dvd_unit_log_line_letter_is_date_when_no_album_found(tmp_path):
@@ -289,7 +289,7 @@ def test_dvd_unit_log_line_letter_is_date_when_no_album_found(tmp_path):
     lines = []
     walker = m.SourceWalker(cfg, log=lines.append, show_placement_letter=True)
     list(walker.walk())
-    assert any("[dvd_unit]D новый DVD-диск ->" in ln for ln in lines), lines
+    assert any("[DVD]D новый DVD-диск ->" in ln for ln in lines), lines
 
 
 def test_dvd_unit_detection_is_case_insensitive(tmp_path):
@@ -1023,12 +1023,16 @@ def test_two_line_status_drops_elapsed_field_when_terminal_too_narrow(monkeypatc
 
 def test_two_line_status_shows_object_progress_with_total_estimate():
     # Живой репорт пользователя (2026-08-01): заменяет прежний [прошло/план] -- честный
-    # счётчик "объектов X/Y" (X = self._obj_count, Y = total_estimate), без экстраполяции
-    # времени. Обе величины -- ОДНА гранулярность (архив = 1 объект, см. add_object_progress()).
+    # счётчик X/Y (X = self._obj_count, Y = total_estimate), без экстраполяции времени. Обе
+    # величины -- ОДНА гранулярность (архив = 1 объект, см. add_object_progress()).
+    # 2026-08-09 (речь пользователя): X/Y-дробь заменена на процент ("обработано объектов
+    # XX%") -- та же причина, что видно ниже в test_two_line_status_forces_100_percent_on_
+    # completion: сырые X/Y читались как расхождение/баг, когда total_estimate (оценка) не
+    # совпадал с фактом.
     bar = _two_line_bar(total_estimate=100)
     bar.add_object_progress(7)
     line = bar._build_two_line_status()
-    assert "объектов         7/100" in line
+    assert "обработано объектов     7%" in line
     bar.close()
 
 
@@ -1049,14 +1053,70 @@ def test_two_line_status_op_field_width_covers_analyze_passport_desc():
 
 
 def test_two_line_status_object_progress_without_total_estimate():
-    # total_estimate=None (предпересчёт недоступен/не передан) -- показываем голый счётчик
-    # без "/Y", не притворяемся, что знаменатель есть.
+    # total_estimate=None (предпересчёт недоступен/не передан) -- показываем голый счётчик,
+    # не притворяемся, что знаменатель (и значит процент) есть.
     bar = _two_line_bar()
     bar.add_object_progress(3)
     line = bar._build_two_line_status()
-    assert "объектов             3" in line
-    assert "/" not in line.split("объектов")[1].split("с/файл")[0]
+    assert "обработано объектов      3" in line
+    assert "%" not in line.split("объектов")[1].split("с/файл")[0]
     bar.close()
+
+
+def test_two_line_status_percent_is_integer_below_99_and_one_decimal_above():
+    """Речь пользователя, 2026-08-09: целые проценты до 99% (не создавать иллюзию точности,
+    которой у total_estimate-оценки нет), 1 знак после запятой от 99% и выше (иначе "99%" мог
+    бы провисеть неизменным долго на большом архиве и читаться как зависание)."""
+    bar = _two_line_bar(total_estimate=1000)
+    bar.add_object_progress(500)  # 50.0% -- ниже порога, целое число
+    assert "обработано объектов    50%" in bar._build_two_line_status()
+
+    bar._obj_count = 0
+    bar.add_object_progress(991)  # 99.1% -- на пороге и выше, один знак после запятой
+    assert "обработано объектов  99.1%" in bar._build_two_line_status()
+    bar.close()
+
+
+def test_two_line_status_percent_clamped_at_100_when_estimate_undershoots():
+    """total_estimate -- оценка (_quick_media_count_estimate()), не точный подсчёт -- реальный
+    X может обогнать её мимо конца прогона (недооценка). Раньше это дало бы X/Y > 1 в дроби --
+    в процентах это выглядело бы как "142%", что читается сломанным сильнее, чем сама причина."""
+    bar = _two_line_bar(total_estimate=100)
+    bar.add_object_progress(142)
+    line = bar._build_two_line_status()
+    assert "обработано объектов 100.0%" in line
+    assert "142" not in line
+    bar.close()
+
+
+def test_two_line_status_forces_100_percent_on_successful_completion(capsys):
+    """Речь пользователя, 2026-08-09 ("в конце работы всегда должно быть 100%"): реальный X/Y
+    (тут 7/100 -- 7%) необязательно сойдётся к концу прогона даже при полном успехе
+    (легитимные пропуски -- нет доступа к папке и т.п.) -- close() форсирует ровно "100%" на
+    успешном (не прерванном) завершении, не показывает застрявший процент. Тот же принцип,
+    что у стандартных прогресс-баров (apt/npm)."""
+    bar = _two_line_bar(total_estimate=100)
+    bar.add_object_progress(7)
+    bar.update(1)  # self.count > 0 -- иначе close() в не-tty окружении вообще ничего не печатает
+    capsys.readouterr()  # discard update()'s own output
+    bar.close()
+    captured = capsys.readouterr()
+    assert "обработано объектов   100%" in captured.err
+    assert "7%" not in captured.err
+
+
+def test_two_line_status_does_not_force_100_percent_when_interrupted(capsys):
+    """mark_interrupted() (вызывается из except KeyboardInterrupt: в run_analyze()/_run_impl())
+    -- close() НЕ форсирует 100% на реально прерванном прогоне, "готово" было бы неправдой."""
+    bar = _two_line_bar(total_estimate=100)
+    bar.add_object_progress(7)
+    bar.update(1)
+    capsys.readouterr()
+    bar.mark_interrupted()
+    bar.close()
+    captured = capsys.readouterr()
+    assert "обработано объектов     7%" in captured.err
+    assert "100%" not in captured.err
 
 
 def test_two_line_status_media_count_defaults_to_processed_count():
@@ -1534,9 +1594,9 @@ def test_ordinary_ticks_are_throttled(monkeypatch):
     calls = {"n": 0}
     original = m.ProgressReporter._build_two_line_status
 
-    def counting(self):
+    def counting(self, force_complete=False):
         calls["n"] += 1
-        return original(self)
+        return original(self, force_complete=force_complete)
 
     monkeypatch.setattr(m.ProgressReporter, "_build_two_line_status", counting)
     calls["n"] = 0  # discount whatever __init__/update(0) already did
@@ -1557,9 +1617,9 @@ def test_note_or_n_zero_updates_bypass_throttle(monkeypatch):
     calls = {"n": 0}
     original = m.ProgressReporter._build_two_line_status
 
-    def counting(self):
+    def counting(self, force_complete=False):
         calls["n"] += 1
-        return original(self)
+        return original(self, force_complete=force_complete)
 
     monkeypatch.setattr(m.ProgressReporter, "_build_two_line_status", counting)
     calls["n"] = 0
@@ -1587,9 +1647,9 @@ def test_bare_n_zero_precursor_does_not_bypass_throttle(monkeypatch):
     calls = {"n": 0}
     original = m.ProgressReporter._build_two_line_status
 
-    def counting(self):
+    def counting(self, force_complete=False):
         calls["n"] += 1
-        return original(self)
+        return original(self, force_complete=force_complete)
 
     monkeypatch.setattr(m.ProgressReporter, "_build_two_line_status", counting)
     calls["n"] = 0

@@ -1154,6 +1154,17 @@ h1 {{ color: var(--accent); font-size: 28px; margin: 0 0 6px; }}
 h2 {{ color: var(--accent); font-size: 19px; margin: 0 0 12px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }}
 p {{ margin: 8px 0; }}
 .subtitle {{ color: var(--muted); margin: 0 0 18px; }}
+/* Речь пользователя, 2026-08-09: путь(и) SOURCE/TARGET + "по состоянию на ДАТА" -- отдельной
+   строкой ПОД заголовком, не приклеены в текст <h1> (раньше длинная дата в самом заголовке
+   визуально читалась как "увеличенный шрифт" -- по факту шрифт был тем же 28px, просто текст
+   длиннее). Меньше субтитра (13px против обычных 14px .subtitle) -- вспомогательная мета-
+   информация, не основной текст карточки. */
+.report-meta {{
+  display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap;
+  gap: 4px 16px; color: var(--muted); font-size: 13px; margin: 0 0 18px; overflow-wrap: anywhere;
+}}
+.report-meta-paths {{ min-width: 0; }}
+.report-meta-date {{ white-space: nowrap; flex-shrink: 0; }}
 .stat-row {{ display: flex; flex-wrap: wrap; gap: 18px 28px; margin-bottom: 6px; }}
 .stat {{ flex: 1 1 140px; min-width: 130px; }}
 .stat .value {{ font-size: 25px; font-weight: 600; color: var(--accent); }}
@@ -1362,7 +1373,53 @@ def generate_placeholder_report(reason: str, out_path: str, program_name: str = 
 # ============================================================================
 
 
-def _render_sheet1(model: dict, level: str = "target", generated_at: str = None) -> str:
+def _render_report_meta(source_paths: list = None, target_path: str = None,
+                         generated_at: str = None) -> str:
+    """Речь пользователя, 2026-08-09: общая подпись-подзаголовок под КАЖДЫМ головным
+    заголовком отчёта ("Что нашлось в источнике"/"Ваш архив"/"Пробный прогон"/"Пополнение
+    архива"/"Архив сейчас" и т.п.) -- путь(и) SOURCE/TARGET слева, "по состоянию на ДАТА"
+    справа, обычным текстом внутри .report-meta (13px, var(--muted)). Раньше дата
+    приклеивалась прямо в текст <h1> (см. историю в git blame этого файла) -- визуально
+    раздувала заголовок на длинных вариантах и нигде не показывала, ЧТО именно
+    просканировано/собрано.
+
+    source_paths: список путей SOURCE, каждый на своей строке (речь пользователя: "несколько
+    источников показывать каждый с новой строки" -- это касается и одного источника тоже,
+    просто список из одного элемента, тот же код без спецслучая). None/[] -- строка
+    "Источник(и)" не рендерится (например, [4] Паспорт архива -- SOURCE==TARGET, отдельно не
+    показываем).
+
+    target_path: путь TARGET/архива. None -- строка "Архив" не рендерится (analyze-уровень
+    без self_scan -- реального TARGET ещё нет).
+
+    generated_at: готовая строка времени (см. _page_shell()'s докстринг про один strftime()
+    на страницу, не независимые вызовы, которые могут разойтись на границе минуты). None --
+    дата не показывается (не должно происходить у вызывающих мест этой функции на практике,
+    но не самое подходящее место падать, если всё же произошло).
+
+    Пустой результат (ни путей, ни даты) -- пустая строка, не пустой <div>, вызывающий код не
+    должен думать об этом сам."""
+    left_parts = []
+    if source_paths:
+        label = "Источник" if len(source_paths) == 1 else "Источники"
+        paths_html = "<br>".join(html.escape(p) for p in source_paths)
+        left_parts.append(f"{label}: {paths_html}")
+    if target_path:
+        left_parts.append(f"Архив: {html.escape(target_path)}")
+    date_html = f"по состоянию на {html.escape(generated_at)}" if generated_at else ""
+    if not left_parts and not date_html:
+        return ""
+    left_html = "<br>".join(left_parts)
+    return (
+        '<div class="report-meta">'
+        f'<div class="report-meta-paths">{left_html}</div>'
+        f'<div class="report-meta-date">{date_html}</div>'
+        '</div>'
+    )
+
+
+def _render_sheet1(model: dict, level: str = "target", generated_at: str = None,
+                    source_paths: list = None, target_path: str = None) -> str:
     # 2026-07-24: level=="analyze" -- SOURCE ещё только просканирован, ничего не собрано и не
     # "пополнено" -- заголовок/подписи "Ваш архив"/"с учётом только что добавленного в этом
     # пополнении" были бы неправдой (живая находка 2026-07-21, подтверждена чтением кода в
@@ -1371,12 +1428,13 @@ def _render_sheet1(model: dict, level: str = "target", generated_at: str = None)
     # затронут -- level там не передаётся, остаётся по умолчанию "target", и это корректно:
     # для найденного архива "Ваш архив" -- правда, там реально есть история прошлых прогонов.
     #
-    # generated_at (задача 10, SESSION-HANDOFF.txt, 2026-08-09): "по состоянию на ГГГГ-ММ-ДД
-    # ЧЧ:ММ" прямо в заголовке, дублирует общий футер страницы -- ТОЛЬКО когда эта функция
-    # рендерит СОБСТВЕННЫЙ верхний заголовок страницы (_generate_from_model(), см. её
-    # докстринг/вызов ниже). None (по умолчанию, в т.ч. вызов из _render_found_archive_block())
-    # -- заголовок без даты, как раньше: там это ВНУТРЕННЯЯ карточка на чужой странице
-    # ("Что нашлось на этом диске" самого analyze-скана), свой футер не сформирован.
+    # generated_at/source_paths/target_path (задача 10, SESSION-HANDOFF.txt, 2026-08-09;
+    # 2026-08-09 -- дата вынесена из <h1> в отдельную строку _render_report_meta(), туда же
+    # добавлены пути): рендерятся ОДНОЙ строкой под заголовком ТОЛЬКО когда эта функция рендерит
+    # СОБСТВЕННЫЙ верхний заголовок страницы (_generate_from_model(), см. её докстринг/вызов
+    # ниже). None/[] (по умолчанию, в т.ч. вызов из _render_found_archive_block()) -- строка не
+    # рендерится вовсе: там это ВНУТРЕННЯЯ карточка на чужой странице ("Что нашлось в источнике"
+    # самого analyze-скана), свой футер/мета-строка не сформированы.
     is_scan = level == "analyze"
     total_media = model["total_media"]
     years = model["years"]
@@ -1405,7 +1463,7 @@ def _render_sheet1(model: dict, level: str = "target", generated_at: str = None)
                       f'<div class="label">папок и архивов</div></div>')
 
     if is_scan:
-        heading, subtitle = "Что нашлось на этом диске", (
+        heading, subtitle = "Что нашлось в источнике", (
             'Цифры — по всему, что программа увидела при сканировании прямо сейчас. Сборка '
             'архива ещё не запускалась — ничего не скопировано и не изменено.')
     else:
@@ -1417,10 +1475,14 @@ def _render_sheet1(model: dict, level: str = "target", generated_at: str = None)
             'Цифры — по архиву целиком, с учётом только что добавленного в этом пополнении, '
             'за всё время, что вы пользуетесь программой с этим архивом.')
 
-    if generated_at:
-        heading = f"{heading} по состоянию на {generated_at}"
-
-    parts = ['<div class="card">', f"<h1>{heading}</h1>",
+    # Речь пользователя, 2026-08-09: этот заголовок и "Пробный прогон"/"Пополнение архива"
+    # (_render_this_run()) играют одну и ту же роль -- главный заголовок ПЕРВОЙ карточки
+    # отчёта (в зависимости от level ровно один из них -- голова страницы) -- но раньше были
+    # РАЗНОГО уровня (h1 здесь против h2 там), из-за чего этот выглядел заметно крупнее.
+    # Уменьшено до h2 -- по прямой просьбе пользователя ("уменьшить до размера заголовка по
+    # dry-run"), не наоборот (dry-run не трогаем -- его размер уже устраивал).
+    meta = _render_report_meta(source_paths, target_path, generated_at)
+    parts = ['<div class="card">', f"<h2>{heading}</h2>", meta,
              f'<p class="subtitle">{subtitle}</p>',
              '<div class="stat-row">'] + stats + ["</div>"]
 
@@ -1529,7 +1591,9 @@ def _render_trust_block(level: str, unreadable_count: int = 0) -> str:
     return f'{banner}<ul class="trust-list">{li}</ul>'
 
 
-def _render_this_run(run_stats: dict, level: str = "target", verify_link: str = None) -> str:
+def _render_this_run(run_stats: dict, level: str = "target", verify_link: str = None,
+                      generated_at: str = None, source_paths: list = None,
+                      target_path: str = None) -> str:
     """Секция "Пополнение архива"/"Пробный прогон" -- в отличие от остального отчёта
     (кумулятивная история архива из CSV-логов, см. _render_sheet1/build_model_from_rows), эти
     цифры -- только то, что сделал ИМЕННО ЭТОТ вызов программы. `run_stats` -- сумма
@@ -1548,7 +1612,13 @@ def _render_this_run(run_stats: dict, level: str = "target", verify_link: str = 
 
     verify_link (2026-08-08, Пакет B п.7): ссылка на "Полную сверку дублей" (см.
     generate_dedup_verification_page()) -- используется секцией "Дубли из другого места" ниже,
-    None -- строка показывается без ссылки (level!="target", страница не строится)."""
+    None -- строка показывается без ссылки (level!="target", страница не строится).
+
+    generated_at/source_paths/target_path (речь пользователя, 2026-08-09): раньше эта секция
+    сознательно НЕ получала дату вовсе (задача 10, "заголовок _render_this_run() этой задачи
+    не касается... дата и так есть в общем футере") -- пользователь прямо отменил это решение
+    ("во всех головных файлах отчётов"). _render_report_meta() -- тот же общий рендер, что и у
+    _render_sheet1()."""
     if not run_stats:
         return ""
 
@@ -1678,8 +1748,9 @@ def _render_this_run(run_stats: dict, level: str = "target", verify_link: str = 
         stats_html.append(f'<div class="stat"><div class="value">{_fmt_run_duration(duration_seconds)}</div>'
                            f'<div class="label">{duration_label}</div></div>')
 
+    meta = _render_report_meta(source_paths, target_path, generated_at)
     parts = [
-        '<div class="card">', f"<h2>{html.escape(heading)}</h2>",
+        '<div class="card">', f"<h2>{html.escape(heading)}</h2>", meta,
         f'<p class="muted">{intro}</p>',
     ]
     if stopped_for_space:
@@ -2409,11 +2480,22 @@ def _build_checklist_items(fields: dict, target_path: str = None, verify_link: s
             breakdown_parts.append(f"{_n_files(c_total)} — оценочно, по соседним файлам в папке")
         if d_total:
             breakdown_parts.append(f"{_n_files(d_total)} — дата не определилась вовсе")
+        # Живая находка пользователя (2026-08-09): "файл всё равно сохранён" -- ед. число и
+        # прошедшее время были верны только для TARGET-уровня (реальная сборка уже прошла,
+        # файлы физически на месте) -- на analyze-уровне (сырой предпросмотр SOURCE, ничего ещё
+        # не записано на диск) та же фраза вводила в заблуждение. date_issues_detail -- уже
+        # существующий сигнал "TARGET-уровень" (см. её докстринг чуть ниже -- None только на
+        # analyze), тот же принцип, что disputes_detail/dispute_groups выше в этой функции
+        # различает analyze/target для соседнего пункта чек-листа.
+        already_saved = fields.get("date_issues_detail") is not None
+        save_note = ("эти файлы уже сохранены в архиве корректно" if already_saved
+                     else "эти файлы всё равно будут сохранены в архиве корректно")
+        breakdown_html = "<br>".join(breakdown_parts)
         items.append(_li(
             f"{_n_files(date_issues_total)} — дата определена неточно или не определена вовсе",
-            "Не проблема для дальнейшей обработки — файл всё равно сохранён в архиве "
-            "корректно. Влияет только на автоматическую сортировку по дате (в какую папку "
-            f"ByDate/ГГГГ-ММ он попадёт). Разбивка: {'; '.join(breakdown_parts)}.",
+            f"Не проблема для дальнейшей обработки — {save_note}. Влияет только на "
+            "автоматическую сортировку по дате (в какую папку ByDate/ГГГГ-ММ они попадут)."
+            f"<br>Разбивка:<br>{breakdown_html}",
         ))
         # detail_groups -- None на analyze-уровне (build_model_from_analyze_stats не отслеживает
         # source/dest поштучно, см. _cluster_date_issues()) -- сводка выше уже полная доступная
@@ -2810,12 +2892,17 @@ def _render_found_archives(top_level: list, nested: dict, program_name: str = "P
         return ""
     n = len(top_level)
     if n == 1:
-        heading = f"На этом диске найден архив {html.escape(program_name)}"
+        heading = f"Найден архив {html.escape(program_name)}"
     else:
         label = _plural(n, "архив", "архива", "архивов")
-        heading = f"На этом диске найдено {n} {label} {html.escape(program_name)}"
+        heading = f"Найдено {n} {label} {html.escape(program_name)}"
     blocks = "".join(_render_found_archive_block(r, nested.get(r, []), program_name) for r in top_level)
-    return f'<div class="card"><h1>{heading}</h1></div>' + blocks
+    # Речь пользователя, 2026-08-09: тот же уровень заголовка, что и у главного заголовка
+    # отчёта (_render_sheet1()/_render_this_run(), теперь оба h2) -- раньше здесь был h1,
+    # заметно крупнее соседних секций без причины (это не "главный" заголовок страницы, а
+    # рядовая секция "часть 2" analyze-отчёта). "На этом диске" убрано -- то же замечание, что
+    # и у "Что нашлось на этом диске" (SOURCE не обязательно "этот диск").
+    return f'<div class="card"><h2>{heading}</h2></div>' + blocks
 
 
 def build_model_from_analyze_stats(stats) -> dict:
@@ -3183,7 +3270,7 @@ def _generate_from_model(model: dict, out_path: str, level: str, program_name: s
                           found_archives: tuple = None,
                           target_path: str = None, interrupted: bool = False,
                           full_workdir: bool = False, verify_link: str = None,
-                          app_version: str = None) -> None:
+                          app_version: str = None, source_paths: list = None) -> None:
     # level=="workdir" (CLI --dry-run/интерактивный [2], решение пользователя 2026-07-20,
     # третий заход) -- по умолчанию ТОЛЬКО часть 1 ("Пробный прогон" + рекомендации по нему),
     # без "Ваш архив"/диаграмм: и содержательно нечего показывать (для [2] данные чисто
@@ -3204,27 +3291,32 @@ def _generate_from_model(model: dict, out_path: str, level: str, program_name: s
     # строками этого прогона и посчитал run_start" -- отдельный флаг, снаружи неотличимый от
     # обычного checklist_new (оба -- тот же тип/форма), поэтому не выводится неявно из его
     # значения, а передаётся явным параметром.
-    # Задача 10 (SESSION-HANDOFF.txt, 2026-08-09): "по состоянию на ГГГГ-ММ-ДД ЧЧ:ММ" прямо в
-    # заголовке страницы -- ОДИН вызов strftime() на страницу, переиспользуется и в заголовке
-    # (_render_sheet1() ниже), и в футере (_page_shell() в конце), а не два независимых
-    # вызова, которые в теории могут разойтись на границе минуты. Решение пользователя:
-    # ТОЛЬКО заголовок _render_sheet1() ("Что нашлось на этом диске"/"Ваш архив") -- заголовок
-    # _render_this_run() ("Пробный прогон"/"Пополнение архива") этой задачи не касается (иногда
-    # делит страницу с заголовком _render_sheet1(), задваивать дату на одной странице не
-    # нужно, дата и так есть в общем футере).
+    # Задача 10 (SESSION-HANDOFF.txt, 2026-08-09): "по состоянию на ГГГГ-ММ-ДД ЧЧ:ММ" -- ОДИН
+    # вызов strftime() на страницу, переиспользуется в заголовках (_render_sheet1()/
+    # _render_this_run() ниже) и в футере (_page_shell() в конце), а не независимые вызовы,
+    # которые в теории могут разойтись на границе минуты. 2026-08-09 (речь пользователя,
+    # отменяет прежнее решение "только _render_sheet1()"): дата+пути SOURCE/TARGET теперь в
+    # ОБОИХ головных заголовках -- через общий _render_report_meta(), не приклеены в текст
+    # заголовка (см. её докстринг).
     generated_at = time.strftime("%Y-%m-%d %H:%M")
     if level == "workdir" and not full_workdir:
         fields = checklist_new if checklist_new is not None else model
-        body = (_render_this_run(run_stats, level, verify_link=verify_link if level == "target" else None)
+        body = (_render_this_run(run_stats, level, verify_link=verify_link if level == "target" else None,
+                                  generated_at=generated_at, source_paths=source_paths,
+                                  target_path=target_path)
                 + _render_dryrun_structure_recommendations(run_stats or {})
                 + _render_sheet3_single(fields, level))
     # level=="analyze" (никогда не передаёт run_start, checklist_new всегда None здесь) --
     # единственный оставшийся потребитель полной кумулятивной картины (Sheet1/Sheet2, "Что
-    # нашлось на этом диске") -- это ОДНОразовый скан SOURCE, не история архива, "паспорт"
+    # нашлось в источнике") -- это ОДНОразовый скан SOURCE, не история архива, "паспорт"
     # (см. ниже) её не заменяет.
     elif checklist_new is None:
-        body = (_render_this_run(run_stats, level, verify_link=verify_link if level == "target" else None)
-                + _render_sheet1(model, level, generated_at=generated_at) + _render_sheet2(model)
+        body = (_render_this_run(run_stats, level, verify_link=verify_link if level == "target" else None,
+                                  generated_at=generated_at, source_paths=source_paths,
+                                  target_path=target_path)
+                + _render_sheet1(model, level, generated_at=generated_at,
+                                  source_paths=source_paths, target_path=target_path)
+                + _render_sheet2(model)
                 + _render_exact_dup_examples(model, "Дубли — примеры", intro=EXACT_DUP_INTRO,
                                               verify_link=verify_link if level == "target" else None)
                 + _render_sheet3_single(model, level))
@@ -3243,7 +3335,9 @@ def _generate_from_model(model: dict, out_path: str, level: str, program_name: s
                 f"{_plural(n_disp, 'спорный', 'спорных', 'спорных')} — ничего не потеряно."
             )
         body = (
-            _render_this_run(run_stats, level, verify_link=verify_link if level == "target" else None)
+            _render_this_run(run_stats, level, verify_link=verify_link if level == "target" else None,
+                              generated_at=generated_at, source_paths=source_paths,
+                              target_path=target_path)
             + _render_recommendations(checklist_new, "Новое в этом пополнении", intro=new_intro,
                                        target_path=target_path,
                                        verify_link=verify_link if level == "target" else None)
@@ -3280,10 +3374,14 @@ def generate_report(data: dict, out_path: str, level: str = "target",
                      program_name: str = "PhotoArchive", run_stats: dict = None,
                      run_start: str = None, target_path: str = None,
                      interrupted: bool = False, full_workdir: bool = False,
-                     app_version: str = None) -> None:
+                     app_version: str = None, source_paths: list = None) -> None:
     """level: "target" (полный archive-прогон) | "workdir" ([2]/--dry-run) — оба читают
     dict[str, list[dict]] (CSV TARGET или CollectingRunLogs.rows). Для
     analyze/analyze-full/analyze-quick см. generate_report_from_analyze_stats().
+
+    source_paths (речь пользователя, 2026-08-09): пути SOURCE этого вызова (может быть
+    несколько -- `--source` повторяемый флаг/`--source all`), каждый на своей строке в
+    _render_report_meta(). None/[] -- строка "Источник(и)" не рендерится.
 
     run_stats: сумма RunResult.stats по всем SOURCE этого вызова (см. photosort_win.py:
     _bare_launch_run_build/_bare_launch_run_dryrun/_main) -- тот же словарь, что уже питает
@@ -3329,14 +3427,15 @@ def generate_report(data: dict, out_path: str, level: str = "target",
                           checklist_new=checklist_new,
                           target_path=target_path, interrupted=interrupted,
                           full_workdir=full_workdir, verify_link=verify_link,
-                          app_version=app_version)
+                          app_version=app_version, source_paths=source_paths)
 
 
 def generate_report_from_analyze_stats(stats, out_path: str, level: str = "analyze",
                                         program_name: str = "PhotoArchive",
                                         found_archives: tuple = None,
                                         interrupted: bool = False,
-                                        app_version: str = None) -> None:
+                                        app_version: str = None,
+                                        source_path: str = None) -> None:
     """found_archives: (top_level: list[str], nested: dict[str, list[str]]) -- уже
     классифицированные photosort_win.classify_found_archives() пути найденных архивов внутри
     просканированного SOURCE (ROADMAP.md, analyze как "2 части"). None/([], {}) -- часть 2 не
@@ -3344,10 +3443,16 @@ def generate_report_from_analyze_stats(stats, out_path: str, level: str = "analy
 
     interrupted (2026-08-07, Ctrl+C-пакет распространён с архивного report.generate_report()
     на analyze-отчёты): stats -- снимок на момент прерывания (photosort_win.py:run_analyze()),
-    та же семантика, что и у interrupted= там."""
+    та же семантика, что и у interrupted= там.
+
+    source_path (речь пользователя, 2026-08-09): один SOURCE этого вызова -- в отличие от
+    generate_report() (может быть несколько --source за раз), analyze-отчёт "один слот, не
+    персистентно per-источник" (см. photosort_win.py:_finalize_analyze_report()) -- всегда
+    ровно один SOURCE на вызов. None -- строка "Источник" не рендерится."""
     model = build_model_from_analyze_stats(stats)
     _generate_from_model(model, out_path, level, program_name, found_archives=found_archives,
-                          interrupted=interrupted, app_version=app_version)
+                          interrupted=interrupted, app_version=app_version,
+                          source_paths=[source_path] if source_path else None)
 
 
 # ============================================================================
@@ -3374,11 +3479,15 @@ def _addition_date_range(target_path: str) -> tuple:
 
 
 def _render_passport_summary(stats, target_path: str = None, generated_at: str = None) -> str:
-    # generated_at (задача 10, SESSION-HANDOFF.txt, 2026-08-09): "по состоянию на ГГГГ-ММ-ДД
-    # ЧЧ:ММ" -- тот же приём, что у _render_sheet1(), эта карточка -- верхний заголовок
-    # ОТДЕЛЬНОЙ страницы generate_passport_report() (свой _page_shell()), см. её вызов.
-    heading = "Архив сейчас" + (f" по состоянию на {generated_at}" if generated_at else "")
-    parts = ['<div class="card">', f'<h1>{heading}</h1>']
+    # generated_at/target_path (задача 10, SESSION-HANDOFF.txt, 2026-08-09; 2026-08-09, речь
+    # пользователя -- дата вынесена из <h1> в отдельную строку _render_report_meta(), заодно
+    # h1->h2, тот же уровень, что у остальных головных заголовков отчёта, см. _render_sheet1()):
+    # эта карточка -- верхний заголовок ОТДЕЛЬНОЙ страницы generate_passport_report() (свой
+    # _page_shell()), см. её вызов. SOURCE==TARGET здесь (self-scan) -- source_paths не
+    # передаём, только target_path.
+    heading = "Архив сейчас"
+    meta = _render_report_meta(target_path=target_path, generated_at=generated_at)
+    parts = ['<div class="card">', f'<h2>{heading}</h2>', meta]
     where = html.escape(target_path) if target_path else "архива"
     parts.append(f'<p class="subtitle">Полная проверка {where} заново, с нуля — не из истории '
                  'прошлых прогонов программы.</p>')
@@ -3679,14 +3788,15 @@ def _render_passport_verification_page(exact_multi: list, near_multi: list, targ
     фильтр, что и у обычного пополнения, Раунд 52 (придирка 2)) -- однопапочные уже полностью
     показаны в самой "Целостности архива" (превью там не обрезает файлы внутри одной папки).
 
-    generated_at (задача 10, SESSION-HANDOFF.txt, 2026-08-09): "по состоянию на ГГГГ-ММ-ДД
-    ЧЧ:ММ" в заголовке -- эта страница пишется в ОТДЕЛЬНЫЙ файл, свой собственный
-    _page_shell()/футер (см. generate_passport_verification_page())."""
+    generated_at (задача 10, SESSION-HANDOFF.txt, 2026-08-09; 2026-08-09, речь пользователя --
+    дата вынесена из <h1> в отдельную строку _render_report_meta(), заодно h1->h2): в заголовке
+    -- эта страница пишется в ОТДЕЛЬНЫЙ файл, свой собственный _page_shell()/футер (см.
+    generate_passport_verification_page())."""
     if not exact_multi and not near_multi:
         return ""
-    heading = "Полная сверка — Паспорт архива" + (
-        f" по состоянию на {generated_at}" if generated_at else "")
-    parts = [f'<div class="card"><h1>{heading}</h1>'
+    heading = "Полная сверка — Паспорт архива"
+    meta = _render_report_meta(target_path=target_path, generated_at=generated_at)
+    parts = [f'<div class="card"><h2>{heading}</h2>{meta}'
              '<p class="subtitle">Полный список файлов каждой группы, без сокращения — '
              'построено этим же сканированием архива, не из истории прошлых прогонов.</p></div>']
     parts.append(_render_passport_dup_group_card("Точные дубли", exact_multi, target_path))

@@ -43,3 +43,31 @@ def test_source_archive_file_without_subfolder_still_works(tmp_path):
     items = list(walker.walk())
 
     assert [it.origin_display for it in items] == ["photo.jpg"]
+
+
+def test_archive_subfolder_not_lost_when_target_under_system_dir(tmp_path, monkeypatch):
+    """Живая находка (боевой прогон analyze без --target, 2026-08-09): is_under_system_dir()
+    (гейт для настоящего SOURCE-содержимого, живущего под %TEMP%/AppData/Program Files/...)
+    ошибочно применялся и к содержимому, РАСПАКОВАННОМУ ИЗ АРХИВА -- если cfg.tmp_extract (а
+    значит любая подпапка внутри распакованного архива) физически лежит под системной
+    директорией, эта подпапка тихо считалась "системным мусором" и пропадала из результата
+    целиком, хотя origin_prefix однозначно говорит, что это НЕ настоящий путь SOURCE, а наша
+    собственная временная распаковка. Воспроизводится безусловно для CLI/`[1]` `analyze` БЕЗ
+    явного `--target` -- там cfg.target=_NO_TARGET_PLACEHOLDER всегда живёт под %TEMP%, а
+    %TEMP% -- в SYSTEM_DIR_ENV_VARS."""
+    source_zip = tmp_path / "vacation.zip"
+    with zipfile.ZipFile(source_zip, "w") as zf:
+        zf.writestr("Album/photo.jpg", b"x" * 100)  # subfolder inside the archive -- the trigger
+    target = tmp_path / "system_like_target"
+    target.mkdir()
+    # Симулирует cfg.target, физически лежащий под системной директорией (см. SYSTEM_DIRS/
+    # is_under_system_dir()) -- та же ситуация, что и у _NO_TARGET_PLACEHOLDER под %TEMP%,
+    # без реальной зависимости теста от переменных окружения текущей машины.
+    import os as _os
+    monkeypatch.setattr(m, "SYSTEM_DIRS", [_os.path.normcase(_os.path.realpath(str(target)))])
+
+    cfg = _make_cfg(tmp_path, source=str(source_zip), target=str(target))
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None)
+    items = list(walker.walk())
+
+    assert [it.origin_display for it in items] == ["Album/photo.jpg"]

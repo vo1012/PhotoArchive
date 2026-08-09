@@ -6,6 +6,9 @@ decode (image_phash_and_size: full PIL decode + DCT; video_phash_3frames: three 
 exiftool_batch()/ffprobe-backed helpers are stubbed out here -- this suite is about the
 phash short-circuit, not about exercising the real bundled binaries."""
 import hashlib
+import os
+from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -368,6 +371,30 @@ class TestArchiveHashCacheReuse:
 
         assert not result.failed
         assert not cache_path.exists()  # ключевая проверка -- TARGET остаётся нетронутым
+
+    def test_dry_run_does_not_create_any_directory_on_fresh_target(self, tmp_path):
+        """Живая находка пользователя (2026-08-09): "после dry-run осталась структура архива
+        (не удалена)" -- [2] Пробный прогон (suppress_logs=True) реально создавал
+        Albums/ByDate/RAW/_Unsorted-ветки на диске (пришлось чистить руками перед реальной
+        сборкой), хотя ни один файл не копировался. Причина: resolve_dest_path() (проверка
+        занятости имени, вызывается ДО решения "дубль или нет", независимо от dry_run) звала
+        _makedirs_iterative(dest_dir) безусловно -- реальное копирование (place_file()) и так
+        уже гейтится cfg.dry_run, но этот makedirs стоял РАНЬШЕ той проверки. TARGET здесь --
+        свежая, ещё не существующая на диске папка (не просто "пустая", а полностью
+        отсутствующая) -- если после прогона на диске появилась ХОТЬ ОДНА подпапка, дефект
+        воспроизведён."""
+        source = tmp_path / "NewBatch"
+        source.mkdir()
+        _make_jpeg(source / "undated.jpg")  # без EXIF-даты -- маршрут в ByDate, тот же путь,
+                                             # что и в живой находке пользователя
+        target = tmp_path / "MyArchive"
+        assert not target.exists()
+
+        result = m.run_for_source(str(source), str(target), dry_run=True, sample_limit=0,
+                                   log=lambda *a, **k: None, suppress_logs=True, shared_pool=None)
+
+        assert not result.failed
+        assert not target.exists()  # TARGET целиком отсутствует -- ничего не создано вовсе
 
 
 class TestExifCacheReuse:
@@ -918,6 +945,97 @@ class TestDisputedAndUnreadablePaths:
         assert stats.disputed_paths == [self._expected_abs_path(source, "Sub", "broken.jpg")]
         assert stats.disputed_paths[0].endswith("Sub\\broken.jpg")
         assert "Sub/broken.jpg" not in stats.disputed_paths[0]
+
+    def test_video_ts_disputed_path_not_doubled_with_source(self):
+        """Живая находка (report.html, боевой прогон analyze, 2026-08-09): VIDEO_TS/DVD-юнит
+        ВНЕ архива строит item.origin_display из disp_base=cur_dirpath (см.
+        SourceWalker._handle_dvd_unit()) -- уже АБСОЛЮТНЫЙ путь, в отличие от обычных файлов
+        (SOURCE-относительный, единственный случай, который _analyze_source_abs_path()
+        предполагала раньше). Слепое приклеивание cfg.source поверх уже-абсолютного пути давало
+        "C:\\C:\\Users\\..." в реальном отчёте -- нерабочая file://-ссылка.
+
+        Юнит-тест ПРЯМО на _analyze_source_abs_path(), не через полный run_analyze(): сам баг
+        воспроизводится только когда origin_display уже выглядит как Windows-абсолютный путь
+        (диск/UNC, см. _is_windows_abs_path()) -- у tmp_path-фикстуры на POSIX-раннере
+        (публичный репозиторий гоняет tests/ на ubuntu-latest в CI) не бывает вида "C:\\...",
+        сквозной прогон через реальный SourceWalker не воспроизвёл бы задвоение на этой
+        платформе вовсе -- не то же самое, что "фикс не нужен на POSIX" (программа только для
+        Windows, см. CLAUDE.md/докстринг _is_windows_abs_path())."""
+        cfg = SimpleNamespace(source="C:\\Users\\test\\NewBatch")
+        item = SimpleNamespace(origin_display="C:\\Users\\test\\Desktop\\VIDEO_TS/VIDEO_TS.BUP")
+
+        result = m._analyze_source_abs_path(cfg, item)
+
+        assert result == "C:\\Users\\test\\Desktop\\VIDEO_TS\\VIDEO_TS.BUP"
+        assert result.count("C:") == 1
+
+    def test_video_ts_files_not_flagged_broken_in_analyze(self, tmp_path, monkeypatch):
+        """Живая находка (отчёт пользователя, боевой прогон, 2026-08-09): `analyze` показывал
+        VIDEO_TS.BUP/.IFO как «6 файлов не удалось распознать» на КАЖДОМ отсканированном
+        DVD-рипе -- SourceWalker._handle_dvd_unit() ставит ftype="video" безусловно для ВСЕХ
+        файлов юнита (включая .IFO/.BUP -- служебные файлы навигации/бэкапа DVD-структуры, не
+        сами по себе проигрываемое видео), а run_analyze() гоняет каждый item с ftype="video"
+        через analyze_batch()'s video_duration_and_resolution() (ffprobe) -- гарантированно
+        проваливается на .IFO/.BUP, это не видеопоток. Реальная сборка не задета (dvd_dest_path
+        items не доходят до analyze_batch() там, см. её докстринг) -- баг был специфичен для
+        analyze-режима, не по данным пользователя ("не медиа файлы" -- фактически верное
+        наблюдение, .IFO/.BUP действительно не медиаконтент сам по себе).
+
+        video_duration_and_resolution() монкипатчена на явный отказ -- тест не зависит от
+        реального ffprobe/валидности содержимого файла, проверяет только, что DVD-юнит-item
+        вообще не доходит до этого вызова (см. item.dvd_dest_path is not None: continue)."""
+        source, cfg = self._cfg(tmp_path)
+        video_ts = source / "VIDEO_TS"
+        video_ts.mkdir()
+        (video_ts / "VTS_01_0.VOB").write_bytes(b"x" * 100)
+        (video_ts / "VIDEO_TS.IFO").write_bytes(b"not a real video stream" * 5)
+        (video_ts / "VIDEO_TS.BUP").write_bytes(b"not a real video stream" * 5)
+        monkeypatch.setattr(m, "video_duration_and_resolution",
+                             lambda path: (_ for _ in ()).throw(
+                                 AssertionError(f"should never be called for a DVD-unit item: {path}")))
+
+        stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
+
+        assert stats.disputed_paths == []
+        assert stats.unreadable_paths == []
+        assert stats.n_broken_or_zero == 0
+        assert stats.total_files == 3
+        assert stats.n_videos == 3
+
+    def test_video_ts_files_still_counted_in_years_structure_and_tiers(self, tmp_path):
+        """Живая находка пользователя, 2026-08-09 ("2013 не попал в структуру"): первая версия
+        фикса выше (безусловный `continue` для DVD-item) заодно вышибала DVD-содержимое из
+        ВСЕГО блока классификации -- dates_by_year ("Медиафайлы по годам"), tree_folder_counts
+        ("Структура архива"), n_dump_items/n_media_by_date -- не только broken-проверку.
+        total_files/n_videos (см. соседний тест выше) продолжали считать эти файлы -- разные
+        карточки одного отчёта показывали бы разные числа. Дата файлов выставлена явно
+        (os.utime) на 2013 -- тот же год, что в живой находке.
+
+        Разброс по тирам (некоторые файлы попадают в C "оценочно по соседним", не D) --
+        штатное поведение resolve_date() для группы файлов без EXIF с одинаковым mtime в одной
+        папке (та же неопределённость была бы и для любых НЕ-DVD файлов в такой ситуации) --
+        не проверяется здесь точным числом, важно только что данные ЕСТЬ (не потеряны целиком,
+        как было до фикса) и согласованы между n_dump_items/n_media_by_date/tree_folder_counts."""
+        source, cfg = self._cfg(tmp_path)
+        video_ts = source / "VIDEO_TS"
+        video_ts.mkdir()
+        files = [video_ts / "VTS_01_0.VOB", video_ts / "VIDEO_TS.IFO", video_ts / "VIDEO_TS.BUP"]
+        for f in files:
+            f.write_bytes(b"x" * 100)
+        old_ts = datetime(2013, 9, 15, 12, 0, 0).timestamp()
+        for f in files:
+            os.utime(f, (old_ts, old_ts))
+
+        stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
+
+        assert stats.disputed_paths == []  # соседний тест выше -- не регресс Задачи D
+        assert stats.dates_by_year[2013] >= 1  # раньше было 0 -- 2013 пропадал целиком
+        assert stats.n_dump_items == 3  # не в альбоме -- VIDEO_TS не имя альбома, всегда ByDate
+        assert stats.n_media_by_date == 3
+        assert any(k.startswith("ByDate/2013") for k in stats.tree_folder_counts)
+        # Согласованность между карточками отчёта -- ровно то, о чём спросил пользователь:
+        # сумма по структуре не должна расходиться с общим числом файлов юнита.
+        assert sum(stats.tree_folder_counts.values()) == stats.total_files == 3
 
 
 class TestDateTierBydateCounters:
