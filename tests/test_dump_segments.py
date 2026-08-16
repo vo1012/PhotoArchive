@@ -182,3 +182,69 @@ class TestIsTerminalBydateBranch:
         rel_path = "/".join(segments) + "/photo.jpg"
         album, _subpath, _prefix = m.find_album(rel_path, archive_boundary_idx=archive_boundary_idx)
         assert album is None
+
+
+class TestBydateOnlyDrive:
+    """2026-08-11 (запрос пользователя -- "хочу весь диск D: разложить по датам, тильку на
+    каждую папку верхнего уровня проставлять не хочу"): "D:" в dump_segment_names/
+    extra_dump_segment_names -- отдельный от обычных dump-имён механизм ("этот SOURCE целиком
+    -- по датам"), не запись в списке имён сегментов (двоеточие не может встретиться в реальном
+    имени папки, см. test_colon_is_a_forbidden_windows_filename_char ниже -- коллизия с
+    настоящей папкой в принципе невозможна)."""
+
+    def test_bydate_only_bypasses_album_detection_even_for_a_perfectly_real_looking_name(self):
+        # find_album(bydate_only=True) -- как если бы КАЖДЫЙ сегмент пути был отравлен, даже
+        # для имени, которое иначе стало бы совершенно нормальным альбомом.
+        assert m.find_album("Отпуск/Море/photo.jpg", bydate_only=True) == (None, None, None)
+
+    def test_bydate_only_false_is_the_default_and_unaffected(self):
+        # Параметр по умолчанию False -- существующее поведение (весь остальной класс тестов
+        # выше) не меняется молча для вызовов, которые про него не знают.
+        assert m.find_album("Отпуск/Море/photo.jpg") == ("Отпуск", ["Море"], "Отпуск")
+
+    def test_colon_is_a_forbidden_windows_filename_char(self):
+        # Обоснование безопасности синтаксиса "D:" -- двоеточие уже в списке символов,
+        # которые сама программа считает недопустимыми в имени файла/папки Windows (см.
+        # sanitize_windows_component()/_WINDOWS_INVALID_CHARS_RE) -- реальная папка не может
+        # называться буквально "D:" ни при каких обстоятельствах.
+        assert m._WINDOWS_INVALID_CHARS_RE.search("D:")
+
+    @pytest.mark.parametrize("names,expected_rest,expected_drives", [
+        ({"d:"}, set(), frozenset({"d:"})),
+        ({"d"}, {"d"}, frozenset()),  # без двоеточия -- обычное имя папки, не диск целиком
+        ({"dcim", "d:", "e:"}, {"dcim"}, frozenset({"d:", "e:"})),
+        (set(), set(), frozenset()),
+        ({"d:\\"}, {"d:\\"}, frozenset()),  # обратный слэш после ":" -- НЕ формат метки диска
+    ])
+    def test_split_drive_markers(self, names, expected_rest, expected_drives):
+        rest, drives = m._split_drive_markers(names)
+        assert rest == expected_rest
+        assert drives == expected_drives
+
+    @pytest.mark.parametrize("source,drives,expected", [
+        (r"D:\Photos\Отпуск", frozenset({"d:"}), True),
+        (r"D:\Photos\Отпуск", frozenset(), False),  # диск не в списке -- обычная маршрутизация
+        (r"E:\Photos", frozenset({"d:"}), False),  # другой диск -- не совпадает
+        (r"d:\photos", frozenset({"d:"}), True),  # регистр буквы диска не важен
+        ("/mnt/photos", frozenset({"d:"}), False),  # POSIX-путь -- у него вообще нет буквы диска
+    ])
+    def test_source_drive_is_bydate_only(self, source, drives, expected):
+        assert m._source_drive_is_bydate_only(source, drives) is expected
+
+    def test_config_wires_drive_marker_out_of_ordinary_dump_names(self, tmp_path):
+        # Config.__post_init__() -- "D:" реально вынимается из dump_segment_names_lower
+        # (не просто безобидно там дублируется -- ни один сегмент пути не может содержать
+        # ":", так что оставленным без дела оно бы всё равно никогда не совпало, но явное
+        # разделение -- часть контракта, не деталь реализации) и попадает в
+        # bydate_only_drives отдельным множеством.
+        source, target = tmp_path / "src", tmp_path / "tgt"
+        source.mkdir()
+        cfg = m.Config(source=str(source), target=str(target),
+                        extra_dump_segment_names=["D:", "YandexDisk"])
+        assert cfg.bydate_only_drives == frozenset({"d:"})
+        assert "d:" not in cfg.dump_segment_names_lower
+        assert "yandexdisk" in cfg.dump_segment_names_lower
+        # source здесь -- обычный tmp_path (никогда не диск "D:"), так что сам флаг не должен
+        # взвестись просто от присутствия "D:" где-то в конфиге -- он завязан на букву диска
+        # ИМЕННО этого source, не на факт наличия записи в списке.
+        assert cfg.source_bydate_only is False

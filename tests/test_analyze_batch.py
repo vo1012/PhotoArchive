@@ -6,7 +6,10 @@ decode (image_phash_and_size: full PIL decode + DCT; video_phash_3frames: three 
 exiftool_batch()/ffprobe-backed helpers are stubbed out here -- this suite is about the
 phash short-circuit, not about exercising the real bundled binaries."""
 import hashlib
+import io
 import os
+import zipfile
+from collections import Counter
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -18,6 +21,12 @@ import photosort_win as m
 
 def _make_jpeg(path, size=(800, 600), color=(10, 20, 30)):
     Image.new("RGB", size, color).save(path, "JPEG")
+
+
+def _jpeg_bytes(size=(800, 600), color=(10, 20, 30)):
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, "JPEG")
+    return buf.getvalue()
 
 
 def _item(path, ftype="image", **kwargs):
@@ -689,6 +698,45 @@ class TestExifPrefetchRateHint:
             iter(items), str(tmp_path / "_extract"), batch_size=2, rate_hint_cb=None))
         assert len(result) == 3
 
+    def test_object_progress_cb_ticks_whole_batch_once_before_its_exiftool_call(self, tmp_path, monkeypatch):
+        """REVIEW-HANDOFF.md, Раунд 86, замечание 2, follow-up (2026-08-10, речь пользователя):
+        object_progress_cb тикает ОДНИМ вызовом на весь батч (не по одному на файл), на
+        ОТПРАВКУ батча в exiftool_batch() -- перед самим вызовом, не после. Ограниченная
+        неточность (максимум один батч вперёд реального прогресса), не безграничная гонка,
+        как в исходном баге Раунда 86 -- следующий батч не тикает, пока не отправлен ОН САМ,
+        не все батчи разом в начале."""
+        items = self._items(tmp_path, 5)
+        events = []
+        real_exiftool_batch = m.exiftool_batch
+
+        def _spy(paths, **kw):
+            events.append(("batch", len(paths)))
+            return real_exiftool_batch(paths, **kw)
+
+        monkeypatch.setattr(m, "exiftool_batch", _spy)
+
+        list(m._walk_with_exif_prefetch(
+            iter(items), str(tmp_path / "_extract"), batch_size=2,
+            object_progress_cb=lambda n: events.append(("tick", n))))
+
+        # batch_size=2 на 5 файлов -> батчи [2, 2, 1], каждый тикает РОВНО один раз, СРАЗУ
+        # ПЕРЕД своим же exiftool_batch() -- строго чередование tick->batch, не все тики
+        # разом в начале и не по одному тику на файл.
+        assert events == [("tick", 2), ("batch", 2), ("tick", 2), ("batch", 2),
+                           ("tick", 1), ("batch", 1)], events
+
+    def test_object_progress_cb_excludes_dvd_unit_files(self, tmp_path):
+        """DVD-юнит-файлы (item.dvd_dest_path не None) уже тикают отдельно, целиком как одна
+        единица, внутри SourceWalker (не затронуто defer_media_object_tick) -- батч-тик здесь
+        не должен считать их ещё раз, иначе на источнике с DVD-рипами счёт задвоился бы."""
+        items = self._items(tmp_path, 3)
+        items[1].dvd_dest_path = "Z:\\Albums\\Disc\\VIDEO_TS\\x.vob"
+        ticks = []
+        list(m._walk_with_exif_prefetch(
+            iter(items), str(tmp_path / "_extract"), batch_size=10,
+            object_progress_cb=ticks.append))
+        assert ticks == [2]  # 3 файла в батче, но только 2 не-DVD
+
 
 class TestAnalyzeShowsObjectEta:
     """Речь пользователя, 2026-08-02 ("подумай, как сделать информативной интерактив при
@@ -1039,9 +1087,16 @@ class TestDisputedAndUnreadablePaths:
 
 
 class TestDateTierBydateCounters:
-    """Задача 5 (SESSION-HANDOFF.txt, 2026-08-09): n_tier_b_bydate/n_tier_c_bydate/
-    n_tier_d_bydate -- album-исключающие счётчики для объединённого чек-листа report.html,
-    та же семантика "тир X и не в альбоме", что n_tier_cd_bydate, просто тоньше на тир."""
+    """Задача 5 (SESSION-HANDOFF.txt, 2026-08-09), затем речь пользователя 2026-08-11 (живая
+    находка -- расхождение текста "Разбивка" с диаграммой "Надёжность дат"): n_tier_b_bydate/
+    n_tier_c_bydate/n_tier_d_bydate раньше исключали файлы внутри альбомов (та же семантика,
+    что n_tier_cd_bydate) -- убрано по прямым словам пользователя: "для анализа признак
+    альбома не существует. Анализ просто показывает, что есть на диске" -- album -- решение о
+    РАСКЛАДКЕ при реальной сборке, не факт о самом файле, не должно фильтровать analyze-
+    счётчики. Теперь считают ВСЕ non-RAW медиафайлы тем же тиром, что tier_counts_no_raw
+    (диаграмма) -- суммы совпадают. n_tier_cd_bydate (для _render_passport_integrity(),
+    self_scan УЖЕ построенного архива, где album -- реальный факт, не прогноз) не тронут,
+    album-фильтр там остаётся."""
     def _cfg(self, tmp_path):
         source = tmp_path / "NewBatch"
         source.mkdir()
@@ -1052,7 +1107,7 @@ class TestDateTierBydateCounters:
         return source, m.Config(source=str(source), target=str(target), sample_limit=0,
                                  workdir=str(workdir))
 
-    def test_tier_b_counts_only_outside_albums(self, tmp_path, monkeypatch):
+    def test_tier_b_counts_album_files_too(self, tmp_path, monkeypatch):
         monkeypatch.setattr(m, "exiftool_batch", lambda paths, **kw: {})
         monkeypatch.setattr(m, "resolve_date",
                              lambda *a, **kw: (None, "B", "medium", "filename_pattern", None))
@@ -1063,10 +1118,11 @@ class TestDateTierBydateCounters:
 
         stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
 
-        assert stats.n_tier_b_bydate == 1  # только loose.jpg -- in_album.jpg исключён
-        assert stats.tier_counts["B"] == 2  # сырой tier_counts по-прежнему считает ОБА файла
+        assert stats.n_tier_b_bydate == 2  # оба файла -- album больше не исключает
+        assert stats.tier_counts["B"] == 2
+        assert stats.n_tier_b_bydate == stats.tier_counts_no_raw["B"]  # совпадает с диаграммой
 
-    def test_tier_c_and_d_also_exclude_album_files(self, tmp_path, monkeypatch):
+    def test_tier_c_and_d_count_album_files_too(self, tmp_path, monkeypatch):
         monkeypatch.setattr(m, "exiftool_batch", lambda paths, **kw: {})
         source, cfg = self._cfg(tmp_path)
         (source / "Album").mkdir()
@@ -1085,9 +1141,31 @@ class TestDateTierBydateCounters:
 
         stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
 
-        assert stats.n_tier_c_bydate == 1  # только c_loose.jpg
-        assert stats.n_tier_d_bydate == 1  # только d_loose.jpg
-        assert stats.n_tier_cd_bydate == 2  # C+D вместе, не в альбоме -- уже существующий счётчик
+        assert stats.n_tier_c_bydate == 2  # оба C-файла, включая альбомный
+        assert stats.n_tier_d_bydate == 2  # оба D-файла, включая альбомный
+        # n_tier_cd_bydate -- отдельный счётчик для Паспорта (self_scan), album-фильтр там
+        # остаётся (album -- реальный факт уже собранного архива, не прогноз) -- считает
+        # ТОЛЬКО вне альбома, как и раньше, этим фиксом не тронут.
+        assert stats.n_tier_cd_bydate == 2
+
+    def test_tier_bydate_counters_exclude_raw(self, tmp_path, monkeypatch):
+        # REVIEW-HANDOFF.md, Раунд 89: album-фильтр сняли, но RAW-фильтр (тот же, что уже
+        # стоит у tier_counts_no_raw) не был повторён у n_tier_b/c/d_bydate -- эти счётчики
+        # молча включали RAW-файлы, хотя докстринг класса трижды заявляет точное совпадение
+        # с tier_counts_no_raw (диаграмма "Надёжность дат"), которая RAW исключает.
+        monkeypatch.setattr(m, "exiftool_batch", lambda paths, **kw: {})
+        monkeypatch.setattr(m, "resolve_date",
+                             lambda *a, **kw: (None, "D", "low", "no_signal", None))
+        source, cfg = self._cfg(tmp_path)
+        _make_jpeg(source / "loose.jpg")
+        (source / "loose.cr2").write_bytes(b"fake raw content")
+
+        stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
+
+        assert stats.tier_counts["D"] == 2  # RAW учтён "с RAW", как и tier_counts всегда
+        assert stats.tier_counts_no_raw["D"] == 1  # RAW исключён из диаграммы
+        assert stats.n_tier_d_bydate == 1  # должно совпадать с tier_counts_no_raw, не с tier_counts
+        assert stats.n_tier_d_bydate == stats.tier_counts_no_raw["D"]
 
 
 class TestCheckSignatureFlag:
@@ -1138,3 +1216,446 @@ class TestCheckSignatureFlag:
 
         assert cfg.check_signature is False
         assert stats.n_signature_mismatch == 1  # self_scan игнорирует флаг, проверяет всегда
+
+
+class TestReportRedesignTaskAInstrumentation:
+    """SESSION-HANDOFF.txt, 2026-08-11 ("большой разбор report.html", Задача A) -- новые поля
+    AnalyzeStats для редизайна report.html (Разделы 1-3, задачи B-D следующей сессии), без
+    изменений в report.py -- эта задача только инструментация."""
+
+    def _cfg(self, tmp_path):
+        source = tmp_path / "NewBatch"
+        source.mkdir()
+        target = tmp_path / "MyArchive"
+        target.mkdir()
+        workdir = tmp_path / "appdir"
+        workdir.mkdir()
+        return source, m.Config(source=str(source), target=str(target), sample_limit=0,
+                                 workdir=str(workdir))
+
+    def test_max_depth_counts_deepest_file_not_shallowest(self, tmp_path):
+        source, cfg = self._cfg(tmp_path)
+        _make_jpeg(source / "root.jpg")
+        (source / "A" / "B" / "C").mkdir(parents=True)
+        _make_jpeg(source / "A" / "B" / "C" / "deep.jpg")
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        assert stats.max_depth == 3  # "A/B/C/deep.jpg" -- 3 разделителя "/"
+
+    def test_max_depth_and_folders_with_media_ignore_non_media_branches(self, tmp_path):
+        """Речь пользователя, 2026-08-11 (живой боевой прогон по C:\\ целиком): глубже вложенная,
+        но совершенно не-медийная ветка (код/кэши на реальном диске) не должна раздувать
+        "глубина вложенности"/"папок" в отчёте -- max_depth/n_folders_with_media считают
+        ТОЛЬКО подтверждённые медиафайлы (см. run_analyze()'s is_media)."""
+        source, cfg = self._cfg(tmp_path)
+        (source / "Album").mkdir(parents=True)
+        _make_jpeg(source / "Album" / "photo.jpg")  # глубина 1, media
+        (source / "A" / "B" / "C" / "D").mkdir(parents=True)
+        (source / "A" / "B" / "C" / "D" / "notes.txt").write_bytes(b"not media" * 5)  # глубина 4, не-media
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        assert stats.max_depth == 1  # не 4 -- глубокая ветка не содержит ни одного медиафайла
+        assert stats.n_folders_with_media == 1  # только "Album", не "A"/"A/B"/"A/B/C"/"A/B/C/D"
+
+    def test_available_counters_exclude_disputed_files_found_counters_include_them(self, tmp_path):
+        source, cfg = self._cfg(tmp_path)
+        good = source / "good.jpg"
+        _make_jpeg(good)
+        (source / "broken.jpg").write_bytes(b"")  # size==0 -- disputed, уходит в _Unsorted
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        assert stats.n_images == 2  # found -- считает и битый файл тоже
+        assert stats.n_images_available == 1  # available -- без битого
+        assert stats.bytes_by_kind_available["image"] == good.stat().st_size
+
+    def test_dvd_unit_files_always_count_as_available(self, tmp_path):
+        source, cfg = self._cfg(tmp_path)
+        video_ts = source / "VIDEO_TS"
+        video_ts.mkdir()
+        (video_ts / "VTS_01_0.VOB").write_bytes(b"x" * 100)
+        (video_ts / "VIDEO_TS.IFO").write_bytes(b"y" * 50)
+        (video_ts / "VIDEO_TS.BUP").write_bytes(b"z" * 50)
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        assert stats.n_videos_available == 3  # DVD-юнит никогда не оспаривается поштучно
+
+    def test_tier_counts_no_raw_excludes_raw_but_tier_counts_includes_it(self, tmp_path):
+        source, cfg = self._cfg(tmp_path)
+        _make_jpeg(source / "photo.jpg")
+        (source / "photo.cr2").write_bytes(b"fake raw bytes" * 5)
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        assert sum(stats.tier_counts.values()) == 2
+        assert sum(stats.tier_counts_no_raw.values()) == 1  # RAW исключён
+
+    def test_dates_by_year_photo_and_video_split_raw_excluded_from_both(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(m, "video_duration_and_resolution", lambda path: (1.0, 640, 480, 1000))
+        source, cfg = self._cfg(tmp_path)
+        img = source / "photo.jpg"
+        _make_jpeg(img)
+        vid = source / "clip.mp4"
+        vid.write_bytes(b"fake video bytes")
+        raw = source / "photo.cr2"
+        raw.write_bytes(b"fake raw bytes" * 5)
+        year = datetime.now().year - 2
+        ts = datetime(year, 6, 1, 12, 0, 0).timestamp()
+        for f in (img, vid, raw):
+            os.utime(f, (ts, ts))
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        assert stats.dates_by_year_photo.get(year, 0) == 1
+        assert stats.dates_by_year_video.get(year, 0) == 1
+        # RAW не должен попасть НИ в одну из двух разбивок
+        assert sum(stats.dates_by_year_photo.values()) + sum(stats.dates_by_year_video.values()) == 2
+
+    def test_format_counts_grouped_by_kind_and_extension(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(m, "video_duration_and_resolution", lambda path: (1.0, 640, 480, 1000))
+        source, cfg = self._cfg(tmp_path)
+        _make_jpeg(source / "a.jpg")
+        _make_jpeg(source / "b.jpg")
+        Image.new("RGB", (40, 30), (1, 2, 3)).save(source / "c.png", "PNG")
+        (source / "d.cr2").write_bytes(b"fake raw bytes" * 5)
+        (source / "e.mp4").write_bytes(b"fake video bytes")
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        assert stats.format_counts_image[".jpg"] == 2
+        assert stats.format_counts_image[".png"] == 1
+        assert stats.format_counts_raw[".cr2"] == 1
+        assert stats.format_counts_video[".mp4"] == 1
+
+    def test_dvd_vob_count_counts_only_vob_not_ifo_or_bup(self, tmp_path):
+        source, cfg = self._cfg(tmp_path)
+        video_ts = source / "VIDEO_TS"
+        video_ts.mkdir()
+        (video_ts / "VTS_01_0.VOB").write_bytes(b"x" * 100)
+        (video_ts / "VTS_02_0.VOB").write_bytes(b"x" * 100)
+        (video_ts / "VIDEO_TS.IFO").write_bytes(b"y" * 50)
+        (video_ts / "VIDEO_TS.BUP").write_bytes(b"z" * 50)
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        assert stats.dvd_vob_count == 2
+        # DVD-юнит-файлы не должны попадать в общий Counter форматов видео -- иначе .ifo/.bup
+        # (служебные, не формат) перемешались бы с настоящими видеоформатами в топ-5.
+        assert not stats.format_counts_video
+
+    def test_n_dvd_units_counts_distinct_discs_not_vob_fragments(self, tmp_path, monkeypatch):
+        """Речь пользователя, 2026-08-11: "DVD -- это структура VIDEO_TS (считается как
+        единица) и отдельно стоящий vob -- просто отдельный формат видеофайла". n_dvd_units --
+        число РАЗЛИЧНЫХ дисков (1 в этом тесте, несмотря на 2 .vob-файла внутри него) --
+        отдельная единица счёта от dvd_vob_count (фрагменты, см. тест выше). Отдельностоящий
+        .vob (не внутри VIDEO_TS) должен попасть в format_counts_video как обычный формат, не
+        в n_dvd_units/dvd_vob_count -- этот путь не менялся (VIDEO_EXTS уже включает "vob")."""
+        monkeypatch.setattr(m, "video_duration_and_resolution", lambda path: (1.0, 640, 480, 1000))
+        source, cfg = self._cfg(tmp_path)
+        video_ts = source / "VIDEO_TS"
+        video_ts.mkdir()
+        (video_ts / "VTS_01_0.VOB").write_bytes(b"x" * 100)
+        (video_ts / "VTS_02_0.VOB").write_bytes(b"x" * 100)
+        (video_ts / "VIDEO_TS.IFO").write_bytes(b"y" * 50)
+        (video_ts / "VIDEO_TS.BUP").write_bytes(b"z" * 50)
+        (source / "standalone.vob").write_bytes(b"fake video bytes")
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        assert stats.n_dvd_units == 1  # один диск, не 2 (число .vob-файлов внутри него)
+        assert stats.dvd_vob_count == 2  # фрагменты по-прежнему считаются отдельно
+        assert stats.format_counts_video[".vob"] == 1  # отдельностоящий -- обычный формат
+
+    def test_n_dvd_units_counts_physically_distinct_folders_even_with_identical_content(
+            self, tmp_path):
+        """Живая находка боевого прогона пользователя (2026-08-14): два физически РАЗНЫХ диска
+        с ОДИНАКОВЫМ содержимым раньше схлопывались в "1 диск" (дедуп шёл по
+        dvd_unit_fingerprint -- хешу содержимого, тот же ключ, что решает "копировать ли
+        повторно при реальной сборке", RULES.md "объединение DVD-папок недопустимо") --
+        диаграмма "Топ форматов — видео" показывала обманчивое "12 файлов (1 диск)". Теперь
+        дедуп идёт по dvd_source_tree_key (реальный путь узла) -- разные физические папки
+        различаются, даже если их содержимое побайтово идентично."""
+        source, cfg = self._cfg(tmp_path)
+
+        def make_dvd(path):
+            path.mkdir(parents=True)
+            (path / "VTS_01_0.VOB").write_bytes(b"X" * 100)
+            (path / "VTS_01_1.VOB").write_bytes(b"Y" * 100)
+            (path / "VIDEO_TS.IFO").write_bytes(b"I" * 50)
+            (path / "VIDEO_TS.BUP").write_bytes(b"B" * 50)
+            (path / "VTS_01_2.VOB").write_bytes(b"Z" * 50)
+            (path / "VTS_01_3.VOB").write_bytes(b"W" * 50)
+
+        # Побайтово идентичное содержимое -- одинаковый dvd_unit_fingerprint, разные пути.
+        make_dvd(source / "BranchA" / "VIDEO_TS")
+        make_dvd(source / "BranchB" / "VIDEO_TS")
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        assert stats.n_dvd_units == 2  # не 1 -- физически два разных диска в источнике
+        assert stats.n_videos_available == 12  # 6 файлов на каждом из двух дисков
+
+    def test_n_archives_failed_counts_read_error_and_bomb_suspected_not_encrypted(self, tmp_path, monkeypatch):
+        source, cfg = self._cfg(tmp_path)
+        with zipfile.ZipFile(source / "unreadable_listing.zip", "w") as zf:
+            zf.writestr("photo.jpg", b"x" * 100)
+        with zipfile.ZipFile(source / "vanishes.zip", "w") as zf:
+            zf.writestr("photo.jpg", b"x" * 100)
+        with zipfile.ZipFile(source / "secret.zip", "w") as zf:
+            zf.writestr("photo.jpg", b"x" * 100)
+
+        real_list_archive = m.list_archive
+        real_getsize = os.path.getsize
+
+        def fake_list_archive(path, fmt):
+            if os.path.basename(path) == "unreadable_listing.zip":
+                return m.ArchiveInfo(ok=False)  # -> archive_bomb_suspected
+            if os.path.basename(path) == "secret.zip":
+                return m.ArchiveInfo(encrypted=True, ok=True)
+            return real_list_archive(path, fmt)
+
+        def fake_getsize(path):
+            if os.path.basename(path) == "vanishes.zip":
+                raise OSError("файл исчез")  # -> archive_read_error
+            return real_getsize(path)
+
+        monkeypatch.setattr(m, "list_archive", fake_list_archive)
+        monkeypatch.setattr(os.path, "getsize", fake_getsize)
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        assert stats.n_archives_failed == 2  # bomb_suspected + read_error, НЕ password_protected
+        assert stats.n_archives_encrypted == 1
+        assert len(stats.failed_archive_paths) == 2
+        for p in stats.failed_archive_paths:
+            assert os.path.basename(p) in ("unreadable_listing.zip", "vanishes.zip")
+
+    def test_disputed_records_mark_archive_membership_plain_file_gets_real_path(self, tmp_path):
+        source, cfg = self._cfg(tmp_path)
+        (source / "broken.jpg").write_bytes(b"")  # size==0 -- disputed, не внутри архива
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        assert len(stats.disputed_records) == 1
+        rec = stats.disputed_records[0]
+        assert rec["in_archive"] is False
+        assert rec["abs_path"] is not None
+        assert rec["abs_path"].rsplit("\\", 1)[-1] == "broken.jpg"  # os.path.basename -- POSIX-раннер, "\\" не разделитель
+
+    def test_disputed_records_mark_archive_membership_archived_file_has_no_dead_abs_path(self, tmp_path):
+        """Живая находка (SESSION-HANDOFF.txt, 2026-08-11): плоский disputed_paths для файла
+        ИЗНУТРИ архива уже сегодня даёт нерабочую file://-ссылку (tmp_extract к этому моменту
+        вычищен) -- disputed_records структурно отличает этот случай (abs_path=None,
+        in_archive=True), report.py (Задача D) должен рендерить его текстом, не ссылкой."""
+        source, cfg = self._cfg(tmp_path)
+        with zipfile.ZipFile(source / "Album.zip", "w") as zf:
+            zf.writestr("broken.jpg", b"")  # size==0 внутри архива
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        assert len(stats.disputed_records) == 1
+        rec = stats.disputed_records[0]
+        assert rec["in_archive"] is True
+        assert rec["abs_path"] is None
+        assert "Album.zip" in rec["display"]
+
+
+class TestSourceTreeCounts:
+    """2026-08-14, прямая просьба пользователя: "дерево, по аналогии с паспортом" для analyze
+    -- реальная структура SOURCE (AnalyzeStats.source_tree_counts_image/video/raw -- три
+    отдельных Counter'а, разбивка по типу для "x/y/z файлов" в отчёте), не предсказанная
+    раскладка Albums/ByDate/RAW/_Unsorted (tree_folder_counts, отдельное поле). Ключ --
+    родитель файла (папка/архив/VIDEO_TS-юнит), см. photosort_win.py:_source_tree_parent_key().
+    Тесты этого класса используют только image/video (jpg/DVD) -- отдельного теста на RAW-ветку
+    counters нет, инкремент в run_analyze() у всех трёх типов идентичен по структуре (тот же
+    if/elif/else), риск асимметрии между ними низкий."""
+
+    def _cfg(self, tmp_path):
+        source = tmp_path / "NewBatch"
+        source.mkdir()
+        target = tmp_path / "MyArchive"
+        target.mkdir()
+        workdir = tmp_path / "appdir"
+        workdir.mkdir()
+        return source, m.Config(source=str(source), target=str(target), sample_limit=0,
+                                 workdir=str(workdir))
+
+    def test_key_is_parent_folder_not_full_file_path(self, tmp_path):
+        source, cfg = self._cfg(tmp_path)
+        (source / "Album").mkdir()
+        _make_jpeg(source / "Album" / "photo.jpg")
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        assert stats.source_tree_counts_image == Counter({"Album": 1})
+
+    def test_root_level_file_uses_empty_string_key(self, tmp_path):
+        source, cfg = self._cfg(tmp_path)
+        _make_jpeg(source / "root.jpg")
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        assert stats.source_tree_counts_image == Counter({"": 1})
+
+    def test_nested_folders_each_get_their_own_node(self, tmp_path):
+        source, cfg = self._cfg(tmp_path)
+        (source / "A" / "B").mkdir(parents=True)
+        _make_jpeg(source / "A" / "top.jpg")
+        _make_jpeg(source / "A" / "B" / "deep.jpg")
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        assert stats.source_tree_counts_image == Counter({"A": 1, "A/B": 1})
+
+    def test_different_media_kinds_in_same_folder_go_to_separate_counters(self, tmp_path,
+                                                                            monkeypatch):
+        """2026-08-14, прямая просьба пользователя: дерево показывает разбивку "N фото/N видео/
+        N raw" на узел (report.py:_source_tree_stat_text()) -- это работает, только если разные
+        типы в ОДНОЙ папке действительно попадают в разные Counter'ы, не смешиваются в один."""
+        monkeypatch.setattr(m, "video_duration_and_resolution", lambda path: (1.0, 640, 480, 1000))
+        source, cfg = self._cfg(tmp_path)
+        (source / "Mixed").mkdir()
+        _make_jpeg(source / "Mixed" / "photo.jpg")
+        (source / "Mixed" / "clip.mp4").write_bytes(b"fake video bytes")
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        assert stats.source_tree_counts_image == Counter({"Mixed": 1})
+        assert stats.source_tree_counts_video == Counter({"Mixed": 1})
+        assert stats.source_tree_counts_raw == Counter()
+
+    def test_archive_becomes_its_own_path_segment_with_extension_like_a_folder(self, tmp_path):
+        """Ключ строится из item.source_tree_path (см. _source_tree_parent_key()) -- отдельного
+        от item.rel_path поля, специально заведённого под эту задачу (2026-08-14, прямая
+        просьба пользователя: архив должен показываться С расширением, ".zip"/".rar" и т.п.)."""
+        source, cfg = self._cfg(tmp_path)
+        with zipfile.ZipFile(source / "Album.zip", "w") as zf:
+            zf.writestr("photo.jpg", _jpeg_bytes())
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        assert stats.source_tree_counts_image == Counter({"Album.zip": 1})
+
+    def test_folder_containing_archive_keeps_both_as_separate_nodes(self, tmp_path):
+        source, cfg = self._cfg(tmp_path)
+        (source / "Incoming").mkdir()
+        with zipfile.ZipFile(source / "Incoming" / "Album.zip", "w") as zf:
+            zf.writestr("sub/photo.jpg", _jpeg_bytes())
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        assert stats.source_tree_counts_image == Counter({"Incoming/Album.zip/sub": 1})
+
+    def test_nested_archive_inside_archive_keeps_both_extensions_no_duplication(self, tmp_path):
+        """Живая находка при написании этих самых тестов (2026-08-14): наивная склейка
+        tree_rel_prefix+cur_rel_prefix задваивала сегмент архива ("Album.zip/Album" вместо
+        "Album.zip") -- см. _walk_dir()'s _tree_rel(). Архив внутри архива -- тот же класс
+        риска, ещё не покрытый отдельным тестом до этого исправления."""
+        source, cfg = self._cfg(tmp_path)
+        inner_buf = tmp_path / "_inner.zip"
+        with zipfile.ZipFile(inner_buf, "w") as zf:
+            zf.writestr("photo.jpg", _jpeg_bytes())
+        with zipfile.ZipFile(source / "Outer.zip", "w") as zf:
+            zf.write(inner_buf, "Inner.zip")
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        assert stats.source_tree_counts_image == Counter({"Outer.zip/Inner.zip": 1})
+
+    def test_phase2_deferred_tilde_named_archive_keeps_extension_and_real_order(self, tmp_path):
+        """Архив с собственным тильда-именем внутри реального альбома откладывается на Фазу 2
+        (_deferred_tilde_archives, см. test_tilde_named_archive_inside_real_album_goes_to_
+        bydate в tests/test_two_phase_album_priority.py -- тот же сценарий) -- source_tree_path
+        должен протянуться через отложенный кортеж так же корректно, как через обычный путь."""
+        source, cfg = self._cfg(tmp_path)
+        album = source / "RealAlbum"
+        album.mkdir()
+        with zipfile.ZipFile(album / "~backup.zip", "w") as zf:
+            zf.writestr("inner.jpg", _jpeg_bytes())
+
+        walker = m.SourceWalker(cfg, log=lambda *a, **k: None)
+        items = [it for it in walker.walk() if it.ftype == "image"]
+
+        assert len(items) == 1
+        assert items[0].source_tree_path == "RealAlbum/~backup.zip/inner.jpg"
+
+    def test_phase3_deferred_poisoned_branch_with_archive_inside_keeps_extension(self, tmp_path):
+        """Папка, отравленная тильда-подпапкой ниже уже найденного альбома, откладывается на
+        Фазу 3 (_deferred_bydate_roots, см. test_tilde_folder_nested_inside_real_album_goes_to_
+        bydate в tests/test_two_phase_album_priority.py -- тот же сценарий) -- архив ВНУТРИ
+        такой отложенной папки должен получить корректный source_tree_path после разворачивания."""
+        source, cfg = self._cfg(tmp_path)
+        poisoned = source / "RealAlbum" / "~synced"
+        poisoned.mkdir(parents=True)
+        with zipfile.ZipFile(poisoned / "Inner.zip", "w") as zf:
+            zf.writestr("photo.jpg", _jpeg_bytes())
+
+        walker = m.SourceWalker(cfg, log=lambda *a, **k: None)
+        items = [it for it in walker.walk() if it.ftype == "image"]
+
+        assert len(items) == 1
+        assert items[0].source_tree_path == "RealAlbum/~synced/Inner.zip/photo.jpg"
+
+    def test_dvd_unit_inside_archive_keeps_archive_extension_in_key(self, tmp_path):
+        source, cfg = self._cfg(tmp_path)
+        stage = tmp_path / "_stage" / "VIDEO_TS"
+        stage.mkdir(parents=True)
+        (stage / "VTS_01_0.VOB").write_bytes(b"x" * 100)
+        with zipfile.ZipFile(source / "DVDRip.zip", "w") as zf:
+            zf.write(stage / "VTS_01_0.VOB", "VIDEO_TS/VTS_01_0.VOB")
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        assert stats.source_tree_counts_video == Counter({"DVDRip.zip/VIDEO_TS": 1})
+
+    def test_source_is_a_single_plain_media_file_not_a_folder(self, tmp_path):
+        """SOURCE может указывать прямо на один медиафайл (не папку) -- отдельная ветка
+        SourceWalker.walk() (см. её докстрин "a single plain media file given directly as
+        SOURCE"), source_tree_path строится там отдельно, не через tree_rel_prefix-механику
+        обычного обхода -- стоило перепроверить отдельно, не полагаясь на то, что раз обычный
+        путь работает, этот тоже работает."""
+        single_file = tmp_path / "root.jpg"
+        _make_jpeg(single_file)
+        target = tmp_path / "MyArchive"
+        target.mkdir()
+        workdir = tmp_path / "appdir"
+        workdir.mkdir()
+        cfg = m.Config(source=str(single_file), target=str(target), sample_limit=0,
+                        workdir=str(workdir))
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        # Файл БЕЗ единой родительской папки внутри SOURCE -- та же семантика "корня", что и
+        # у root-level файла обычного обхода (см. test_root_level_file_uses_empty_string_key).
+        assert stats.source_tree_counts_image == Counter({"": 1})
+
+    def test_dvd_unit_collapses_every_internal_file_into_one_video_ts_node(self, tmp_path):
+        source, cfg = self._cfg(tmp_path)
+        video_ts = source / "VIDEO_TS"
+        video_ts.mkdir()
+        (video_ts / "VTS_01_0.VOB").write_bytes(b"x" * 100)
+        (video_ts / "VIDEO_TS.IFO").write_bytes(b"y" * 50)
+        (video_ts / "VIDEO_TS.BUP").write_bytes(b"z" * 50)
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        # Три реальных файла юнита -- ОДИН узел дерева "VIDEO_TS" со счётом 3, не три
+        # отдельных узла-листа (см. _source_tree_parent_key()'s is_dvd_unit-ветка).
+        assert stats.source_tree_counts_video == Counter({"VIDEO_TS": 3})
+
+    def test_broken_zero_byte_file_still_counted_same_as_available_counters_split(self, tmp_path):
+        """Прямое решение пользователя: дерево считает НАЙДЕННЫЕ фото/видео/raw, не только
+        "доступные для архива" -- та же семантика, что уже различает n_images (found) от
+        n_images_available (см. test_available_counters_exclude_disputed_files_found_counters_
+        include_them выше в этом файле)."""
+        source, cfg = self._cfg(tmp_path)
+        (source / "Album").mkdir()
+        (source / "Album" / "broken.jpg").write_bytes(b"")  # size==0 -- disputed
+
+        stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+        assert stats.source_tree_counts_image == Counter({"Album": 1})
+        assert stats.n_images_available == 0  # битый -- недоступен для архива, но в дереве есть

@@ -820,9 +820,15 @@ def test_analyze_target_cli():
 
 
 def test_analyze_closing_cta_mentions_archives_found():
-    print("\n=== REVIEW-HANDOFF.md, Раунд 33: analyze closing CTA -- рамка уязвимо/защищено "
-          "с числом архивов, найденных внутри ЭТОГО источника (n_archives_found), через "
-          "реальный analyze-пайплайн, не вручную подставленный model ===")
+    print("\n=== REVIEW-HANDOFF.md, Раунд 33 (2026-07-xx) -- ORIGINALLY: analyze closing CTA "
+          "рамка уязвимо/защищено с числом архивов, найденных внутри ЭТОГО источника. Речь "
+          "пользователя, 2026-08-11: и рамка 'уязвимо/защищено', и сам CTA-блок для "
+          "level==\"analyze\" убраны целиком (_render_cta_block() возвращает \"\" для analyze) "
+          "-- число архивов-контейнеров переехало в карточку 'Что нашлось в источнике' "
+          "('Медиафайлы расположены в N архивах'), той же формулировкой, что и у папок. Тест "
+          "проверяет ТЕКУЩЕЕ место этого числа через реальный analyze-пайплайн, не вручную "
+          "подставленный model -- см. ci/windows_ci_test.py TODO снятый REVIEW-HANDOFF.md "
+          "Раунд 93 ===")
     src = os.path.join(WORK, "src_analyze_cta_archives")
     os.makedirs(src, exist_ok=True)
     tmp_jpg = os.path.join(WORK, "_tmp_for_analyze_cta_zip.jpg")
@@ -839,12 +845,15 @@ def test_analyze_closing_cta_mentions_archives_found():
     if os.path.isfile(report_path):
         with open(report_path, encoding="utf-8") as f:
             html_out = f.read()
-        check("1 отдельном архиве" in html_out,
-              "analyze-cta-archives: closing CTA mentions the one archive found in this "
-              "source (live fix, verified end-to-end)")
-        check("испортиться независимо" in html_out,
-              "analyze-cta-archives: uses the vulnerable/protected framing, not the old "
-              "neutral 'Нравится результат?'")
+        check("Медиафайлы расположены в 1 архиве" in html_out,
+              "analyze-cta-archives: 'Что нашлось в источнике' mentions the one archive "
+              "found in this source (live fix, verified end-to-end)")
+        # _render_cta_block(): level=="analyze" -> "" -- никакой закрывающей карточки
+        # (ни старой "уязвимо/защищено", ни нейтральной "Нравится результат?") для analyze
+        # больше нет вовсе, по прямой просьбе пользователя.
+        check("Нравится результат?" not in html_out,
+              "analyze-cta-archives: no closing CTA card is rendered for analyze at all "
+              "(removed 2026-08-11, not just re-worded)")
         os.remove(report_path)
 
 
@@ -894,7 +903,11 @@ def test_oldest_file_line_shows_folder_and_name():
 def test_analyze_report_recommendations_section():
     print("\n=== REVIEW-HANDOFF.md, Раунд 36: секция «Рекомендации» в analyze-отчёте -- через "
           "реальный analyze-пайплайн (CLI analyze, внутренний mode=\"analyze-quick\"), не через "
-          "build_model_from_analyze_stats() с вручную подставленным stats ===")
+          "build_model_from_analyze_stats() с вручную подставленным stats. Речь пользователя, "
+          "2026-08-11: отдельная карточка «Рекомендации» слита с «Что стоит проверить» в одну "
+          "«Что стоит проверить и рекомендации» (_generate_from_model(), level==\"analyze\") -- "
+          "заголовок теста обновлён под слитую карточку, содержимое пунктов не изменилось. "
+          "ci/windows_ci_test.py TODO снятый REVIEW-HANDOFF.md Раунд 93 ===")
     src = os.path.join(WORK, "src_analyze_recommendations")
     os.makedirs(src, exist_ok=True)
     image(os.path.join(src, "photo.jpg"), 1600, 1200, exif=True, dt="2021:03:01 10:00:00")
@@ -929,8 +942,9 @@ def test_analyze_report_recommendations_section():
     if os.path.isfile(report_path):
         with open(report_path, encoding="utf-8") as f:
             html_out = f.read()
-        check("Рекомендации" in html_out,
-              "analyze-recommendations: section heading is rendered")
+        check("Что стоит проверить и рекомендации" in html_out,
+              "analyze-recommendations: merged section heading is rendered "
+              "(«Рекомендации» alone was retired 2026-08-11)")
         # SESSION-HANDOFF.txt п.6 (2026-08-05, боевой прогон): "Архиву потребуется примерно N"
         # убран целиком -- дублировал total_bytes, уже показанный плиткой статистики вверху
         # отчёта. Пункт больше не существует ни в каком режиме -- проверяем отсутствие, не
@@ -986,25 +1000,31 @@ def test_workdir_dryrun_on_existing_target_omits_old_history():
             html_out = f.read()
         check("Ваш архив" not in html_out,
               "workdir-full-history: cumulative 'Ваш архив' section is gone (2026-07-31) even "
-              "though full_workdir=True still merges real Target history internally")
-        # "Новое в этом пополнении"-заголовок здесь намеренно НЕ проверяется -- оба файла в
-        # этом фикстуре чистые (нет near-dup/disputed/unreadable ни у одного), чек-лист-карточка
-        # пуста и не рендерится вообще (_render_checklist_card() возвращает "" без items) --
-        # прямой пример покрыт отдельным unit-тестом с намеренно "грязными" данными, см.
-        # tests/test_report.py::test_generate_report_workdir_full_workdir_differs_from_default_minimal.
+              "though [2] on an existing Target still merges real Target history internally")
+        # PROMPT_report_run_redesign.md (2026-08-14): "Новое в этом пополнении"/"Дубли этого
+        # пополнения — примеры" (карточки, которые упоминал этот комментарий раньше) убраны из
+        # боевого пути целиком -- см. test_dedup_verification_page. Раздел 2 "Что не
+        # скопировано" сейчас показывает точные дубли ОДНОЙ агрегированной строкой, без папки
+        # совпадения -- этот путь ниже не проверяется отдельно, покрыт test_exact_dup_examples_
+        # in_report/test_run_report_section2_*.py.
         #
-        # "2019" САМО ПО СЕБЕ -- не годный маркер утечки: first.jpg (2019, из первого реального
-        # прогона) сидит и в SOURCE (фикстур его не убирал), поэтому этот повторный [2]-прогон
-        # ЗАКОННО находит его как точный повтор уже заархивированного файла и показывает папку
-        # совпадения ("ByDate\2019\...") в карточке "Дубли этого пополнения — примеры" -- это
-        # результат ИМЕННО этого прогона, не утёкшая история (живая находка первого запуска
-        # этого теста на реальных bin/, 2026-07-31 -- переписан заново до этого ни разу не
-        # исполнялся, см. CLAUDE.md "Самопроверка нетривиальных изменений"). Настоящий маркер
-        # кумулятивной истории -- заголовок Sheet2 ("Медиафайлы по годам"), который рендерится
-        # только вместе с убранным Sheet1/2, не с чек-листом "Новое в этом пополнении".
-        check("Медиафайлы по годам" not in html_out,
-              "workdir-full-history: cumulative Sheet2 ('Медиафайлы по годам', history-wide "
-              "years chart) no longer leaks into this run's preview")
+        # "Медиафайлы по годам" САМО ПО СЕБЕ -- больше не годный маркер утечки: Раздел 1 "Что
+        # скопировано" (_render_run_copied()) теперь ВСЕГДА рисует эту диаграмму для model_new
+        # (данные ТОЛЬКО этого прогона, _split_rows_by_time()) -- заголовок легитимно
+        # присутствует в любом прогоне с датированными файлами, не только при утечке
+        # кумулятивной истории (живая находка при актуализации этого теста, REVIEW-HANDOFF.md
+        # Раунд 93 -- заголовок сам по себе перестал быть маркером, когда Раздел 1 стал рисовать
+        # его для КАЖДОГО прогона). Настоящий маркер утечки -- конкретный ГОД: "2019" (год
+        # first.jpg, уже заархивированного ПРЕДЫДУЩИМ прогоном) не должен появиться нигде в
+        # отчёте ЭТОГО [2]-прогона, который добавляет только second.jpg (2021) -- если бы
+        # model_new мёржила реальную историю Target, "2019" оказался бы на графике/в "Самый
+        # старый файл" рядом с "2021".
+        check("2019" not in html_out,
+              "workdir-full-history: the archived file's own year (from a PREVIOUS real run) "
+              "does not leak into this [2]-run's year chart/oldest-file line")
+        check("2021" in html_out,
+              "workdir-full-history: this run's own year (second.jpg) is shown -- precondition, "
+              "confirms the chart isn't just empty")
         os.remove(report_path)
 
     dryrun_csv = os.path.join(ROOT, "dryrun_report.csv")
@@ -1390,17 +1410,21 @@ def test_top_cameras_chart_in_report():
 
 
 def test_exact_dup_examples_in_report():
-    print("\n=== REVIEW-HANDOFF.md, Раунд 31: report.html показывает примеры точных повторов "
-          "(папка + имя уже заархивированного файла), не только итоговое число -- через "
-          "реальный пайплайн (skipped.csv/decide()), не report.build_model_from_rows() "
-          "напрямую с вручную подставленными строками ===")
+    print("\n=== PROMPT_report_run_redesign.md (2026-08-14): в текущем дизайне Раздел 2 "
+          "«Что не скопировано» показывает точные дубли одной агрегированной строкой (число + "
+          "сэкономленные байты), без построчных примеров/карточки -- та детализация убрана по "
+          "прямой команде пользователя и вернулась с детализацией-xlsx "
+          "(PROMPT_report_detail_xlsx.md, Фаза 0/1 реализована 2026-08-16, report_detail.xlsx). "
+          "Тест проверяет ТЕКУЩИЙ "
+          "боевой путь через реальный пайплайн (skipped.csv/decide()), не старую убранную "
+          "карточку -- см. ci/windows_ci_test.py TODO снятый REVIEW-HANDOFF.md Раунд 93 ===")
     src = os.path.join(WORK, "src_exact_dup_examples")
     album_dir = os.path.join(src, "Album")
     jpg = os.path.join(album_dir, "a.jpg")
     image(jpg, 800, 600, exif=True, dt="2019:07:15 12:00:00")
     # Байт-в-байт копии (не image() повторно -- та сидирует пиксели путём, разные пути дали бы
     # разное содержимое и не задедуплились бы) -- две "лишних" копии одного и того же кадра в
-    # исходнике, ровно тот сценарий, что находка ревизора просит проиллюстрировать.
+    # исходнике.
     dup1 = os.path.join(album_dir, "a_copy1.jpg")
     dup2 = os.path.join(album_dir, "a_copy2.jpg")
     shutil.copy2(jpg, dup1)
@@ -1421,21 +1445,26 @@ def test_exact_dup_examples_in_report():
     if os.path.isfile(report_path):
         with open(report_path, encoding="utf-8") as f:
             html_out = f.read()
-        check("Дубли" in html_out and "примеры" in html_out,
-              "exact-dup-examples: report.html renders the new examples card heading")
-        check("Ничего делать не нужно" in html_out,
-              "exact-dup-examples: framed as no-action-needed, not as a checklist item")
-        check("a.jpg (×2)" in html_out,
-              "exact-dup-examples: matched file shown with its duplicate count "
-              "(live fix, verified end-to-end)")
+        check("Что не скопировано" in html_out,
+              "exact-dup-examples: report.html renders Section 2 heading")
+        # _render_run_not_copied(): "2 файла уже в архиве, повторно не копировались — сэкономлено X"
+        check("2 файла уже в архиве" in html_out,
+              "exact-dup-examples: Section 2 shows the aggregated duplicate count "
+              "(live pipeline, verified end-to-end)")
 
 
 def test_dedup_verification_page():
-    print("\n=== 2026-07-26, обсуждение с пользователем: отдельная страница "
-          "dedup_verification.html -- полная построчная сверка точных повторов (файл в "
-          "архиве, откуда скопирован, какие файлы источника были его дублями), "
-          "сгруппированная по папкам, со ссылкой из report.html -- через реальный "
-          "пайплайн, не report._render_dedup_verification_page() напрямую ===")
+    print("\n=== PROMPT_report_run_redesign.md (2026-08-14): отдельная страница "
+          "dedup_verification.html (построчная сверка точных повторов) и ссылка на неё из "
+          "report.html убраны из боевого пути вместе со старой карточкой «Дубли — примеры» -- "
+          "generate_report() больше не вызывает generate_dedup_verification_page() для "
+          "level в (target, workdir) с run_start (см. report.py:generate_report() докстринг, "
+          "комментарий про 'Промпты 1-3/3'). Тест проверяет ОТСУТСТВИЕ файла/ссылки через "
+          "реальный пайплайн -- регресс-тест на то, чтобы дизайн-решение не откатилось молча "
+          "при будущих правках. Полная построчная сверка вернулась с детализацией-xlsx "
+          "(PROMPT_report_detail_xlsx.md, report_detail.xlsx, реализовано 2026-08-16), эта "
+          "старая companion-страница по-прежнему не генерируется для этой ветки. "
+          "REVIEW-HANDOFF.md Раунд 93 ===")
     src = os.path.join(WORK, "src_dedup_verification")
     album_dir = os.path.join(src, "Album")
     jpg = os.path.join(album_dir, "a.jpg")
@@ -1448,33 +1477,15 @@ def test_dedup_verification_page():
     check(r.returncode == 0, "dedup-verification: run exits 0")
 
     verify_path = os.path.join(tgt, "__служебные_файлы", "dedup_verification.html")
-    check(os.path.isfile(verify_path), "dedup-verification: dedup_verification.html generated")
-    if os.path.isfile(verify_path):
-        with open(verify_path, encoding="utf-8") as f:
-            html_out = f.read()
-        check("Album" in html_out,
-              "dedup-verification: grouped under the archive folder (album name visible)")
-        check("скопировано из" in html_out and "a.jpg" in html_out,
-              "dedup-verification: shows where the kept file was copied from")
-        # 2026-08-08 (альбомный редизайн, вёрстка-таблица): "отклонён"/"отклонены" ушло вместе
-        # со старой <ul>-вёрсткой -- колонка "Число дублей" ("1 дубль") теперь несёт этот смысл.
-        check("a_copy1.jpg" in html_out and "1 дубль" in html_out,
-              "dedup-verification: shows the rejected duplicate's own source path")
+    check(not os.path.isfile(verify_path),
+          "dedup-verification: standalone verification page NOT generated on the live "
+          "production path (current design -- see docstring above)")
 
     report_path = os.path.join(tgt, "__служебные_файлы", "report.html")
     with open(report_path, encoding="utf-8") as f:
         report_html = f.read()
-    check("dedup_verification.html" in report_html and "полная сверка построчно" in report_html,
-          "dedup-verification: report.html links to the standalone verification page")
-    # 2026-07-26, живая находка пользователя: ссылка должна быть сразу под карточкой
-    # "Дубли этого пополнения — примеры", не оторвана от неё в хвосте страницы -- иначе
-    # непонятно, к чему она (обычный прогон с run_start рендерит именно этот заголовок, см.
-    # report.py:_generate_from_model()).
-    card_pos = report_html.index("Дубли этого пополнения — примеры")
-    link_pos = report_html.index("полная сверка построчно")
-    check(card_pos < link_pos < card_pos + 2000,
-          "dedup-verification: link sits right under the exact-dup-examples card, not detached "
-          "at the end of the page")
+    check("dedup_verification.html" not in report_html,
+          "dedup-verification: report.html does not link to the (unwritten) verification page")
 
 
 def test_this_run_stats_broken_down_by_media_type():
@@ -1514,7 +1525,15 @@ def test_undated_file_shows_folder_and_name_in_report():
           "папку+имя каждого файла в архиве, не только число -- через реальный пайплайн "
           "(тот же приём форсирования Tier D, что и test_undated_promotion). Формулировка "
           "обновлена задачей 5 (SESSION-HANDOFF.txt, 2026-08-09) -- Tier B/C/D объединены "
-          "в один пункт чек-листа. ===")
+          "в один пункт чек-листа. PROMPT_report_run_redesign.md, Промпт 3/3 (2026-08-14): "
+          "чек-лист-пункт Задачи 5 сам заменён Разделом 3 «Что программа решила сама» -- тот "
+          "явно документирует «только счётчики, никаких поштучных списков» "
+          "(_render_run_auto_decisions()), папка+имя файла из ЭТОГО чек-листа убраны по прямому "
+          "решению пользователя -- вернулись отдельным механизмом (детализация-xlsx, "
+          "PROMPT_report_detail_xlsx.md, report_detail.xlsx, реализовано 2026-08-16), не в этот "
+          "конкретный текст. Тест проверяет ТЕКУЩИЙ агрегатный текст, физическое попадание файла в "
+          "0000-undated по-прежнему проверяется напрямую по файловой системе, не по отчёту -- "
+          "см. ci/windows_ci_test.py TODO снятый REVIEW-HANDOFF.md Раунд 93 ===")
     src = os.path.join(WORK, "src_undated_report_path")
     for i in range(3):
         image(os.path.join(src, "dcim", f"plain{i}.jpg"), 1000, 800)
@@ -1529,19 +1548,19 @@ def test_undated_file_shows_folder_and_name_in_report():
     # см. test_undated_promotion: детерминированно последний из трёх (plain2.jpg) уходит в Tier D.
     undated_dest = os.path.join(tgt, "ByDate", "0000-undated", "dcim", "plain2.jpg")
     check(os.path.isfile(undated_dest),
-          "undated-report-path: precondition -- file with no date signal lands in 0000-undated")
+          "undated-report-path: precondition -- file with no date signal lands in 0000-undated "
+          "(checked on disk, not via the report -- Section 3 no longer names files)")
 
     report_path = os.path.join(tgt, "__служебные_файлы", "report.html")
     with open(report_path, encoding="utf-8") as f:
         html_out = f.read()
-    check("дата определена неточно или не определена вовсе" in html_out,
-          "undated-report-path: report.html renders the merged Tier B/C/D checklist item "
-          "(Задача 5, SESSION-HANDOFF.txt 2026-08-09 -- old separate Tier D wording retired)")
-    check("дата не определилась вовсе" in html_out,
-          "undated-report-path: item's tier breakdown mentions the Tier D bucket")
-    check("0000-undated" in html_out and "plain2.jpg" in html_out,
-          "undated-report-path: item shows the archive folder+filename, not just a bare count "
-          "(live fix, verified end-to-end)")
+    check("Что программа решила сама" in html_out,
+          "undated-report-path: report.html renders Section 3 heading")
+    # _render_run_auto_decisions(): "<b>1</b> файл — без надёжной даты (папка <code>0000-
+    # undated</code>). Дозреют при повторном прогоне..." -- агрегат, без имени файла.
+    check("без надёжной даты" in html_out and "0000-undated</code>" in html_out,
+          "undated-report-path: Section 3 mentions the Tier D bucket (aggregate wording, "
+          "live pipeline, verified end-to-end)")
 
 
 def test_dates_review_shows_folder_and_name_in_report():
@@ -1550,7 +1569,13 @@ def test_dates_review_shows_folder_and_name_in_report():
           "в архиве, не только число -- через реальный пайплайн (тот же приём форсирования "
           "Tier C, что и test_undated_promotion: plain0/plain1 получают mtime-guess дату, "
           "plain2 уходит в Tier D отдельно). Формулировка обновлена задачей 5 "
-          "(SESSION-HANDOFF.txt, 2026-08-09) -- Tier B/C/D объединены в один пункт чек-листа. ===")
+          "(SESSION-HANDOFF.txt, 2026-08-09) -- Tier B/C/D объединены в один пункт чек-листа. "
+          "PROMPT_report_run_redesign.md, Промпт 3/3 (2026-08-14): тот пункт сам заменён "
+          "Разделом 3 «Что программа решила сама» -- только счётчики, папка+имя файла из ЭТОГО "
+          "чек-листа убраны (вернулись отдельным механизмом -- детализация-xlsx, "
+          "PROMPT_report_detail_xlsx.md, report_detail.xlsx, реализовано 2026-08-16). Тест проверяет "
+          "ТЕКУЩИЙ агрегатный текст -- см. ci/windows_ci_test.py TODO снятый "
+          "REVIEW-HANDOFF.md Раунд 93 ===")
     src = os.path.join(WORK, "src_dates_review_report_path")
     for i in range(3):
         image(os.path.join(src, "dcim", f"plain{i}.jpg"), 1000, 800)
@@ -1571,20 +1596,17 @@ def test_dates_review_shows_folder_and_name_in_report():
     report_path = os.path.join(tgt, "__служебные_файлы", "report.html")
     with open(report_path, encoding="utf-8") as f:
         html_out = f.read()
-    check("дата определена неточно или не определена вовсе" in html_out,
-          "dates-review-report-path: report.html renders the merged Tier B/C/D checklist item "
-          "(Задача 5, SESSION-HANDOFF.txt 2026-08-09 -- old separate Tier B/C wording retired)")
-    check("оценочная" in html_out,
-          "dates-review-report-path: item shows the tier confidence label, not just a count")
-    if tier_c_rows:
-        name = os.path.basename(tier_c_rows[0]["dest"])
-        check(name in html_out,
-              f"dates-review-report-path: item shows the actual filename ({name}), not just "
-              "a bare count (live fix, verified end-to-end)")
+    check("Что программа решила сама" in html_out,
+          "dates-review-report-path: report.html renders Section 3 heading")
+    # _render_run_auto_decisions(): "<b>N</b> файла — дата определена приблизительно." --
+    # текущая формулировка Tier C (агрегат, заменила отдельное слово "оценочная").
+    check("дата определена приблизительно" in html_out,
+          "dates-review-report-path: Section 3 shows the Tier C aggregate wording "
+          "(live pipeline, verified end-to-end)")
 
 
 def test_processed_count_in_report():
-    print("\n=== REVIEW-HANDOFF.md, Раунд 32, задача 4: report.html показывает 'найдено на "
+    print("\n=== REVIEW-HANDOFF.md, Раунд 32, задача 4: report.html показывает 'обработано на "
           "источнике' -- база для сверки, что программа ничего не пропустила молча -- через "
           "реальный пайплайн, не вручную подставленный run_stats ===")
     src = os.path.join(WORK, "src_processed_count")
@@ -1600,7 +1622,7 @@ def test_processed_count_in_report():
     if os.path.isfile(report_path):
         with open(report_path, encoding="utf-8") as f:
             html_out = f.read()
-        check("найдено на источнике" in html_out,
+        check("обработано на источнике" in html_out,
               "processed-count: report.html renders the comparison-base stat")
         check(">2<" in html_out,
               "processed-count: value matches the 2 real files processed this run "

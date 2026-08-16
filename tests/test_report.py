@@ -5,6 +5,7 @@ REVIEW-HANDOFF.md, раунд 3 [ЗАМЕЧАНИЕ]: report.py не имел н
 ниже -- прямой regression на найденный тем же раундом [БЛОКЕР] (Tier D задваивался в Tier A)."""
 import re
 from collections import Counter
+from datetime import datetime
 
 import pytest
 
@@ -566,12 +567,25 @@ def test_render_this_run_shows_encrypted_archive_even_when_source_otherwise_empt
 
 
 def test_render_this_run_shows_processed_count_as_comparison_base():
-    """Раунд 32, задача 4 (REVIEW-HANDOFF.md): "всего найдено на источнике" -- база для
-    сверки, что отчёт ничего не потерял молча."""
+    """Раунд 32, задача 4 (REVIEW-HANDOFF.md): "обработано на источнике" -- база для
+    сверки, что отчёт ничего не потерял молча (та же цифра, что терминал печатает как
+    "Обработано: N файлов" -- речь пользователя, 2026-08-16, отличает от "найдено"
+    analyze-отчёта). Тот же тайл теперь ПЕРВЫЙ в ряду (2026-08-16), не предпоследний."""
     run_stats = {"appended_images": 5, "appended_videos": 0, "processed_count": 42}
     html_out = r._render_this_run(run_stats, level="target")
-    assert "найдено на источнике" in html_out
+    assert "обработано на источнике" in html_out
     assert ">42<" in html_out
+
+
+def test_render_this_run_processed_count_label_same_in_preview():
+    """Речь пользователя, 2026-08-16: сканирование/хеширование/решение по каждому элементу в
+    dry-run УЖЕ реально произошло -- preview не должен превращать лейбл в "было бы обработано"
+    (в отличие от "добавлено"/"объём", где разница реальная -- физической записи в TARGET
+    нет)."""
+    run_stats = {"appended_images": 5, "appended_videos": 0, "processed_count": 42}
+    html_out = r._render_this_run(run_stats, level="workdir")
+    assert "обработано на источнике" in html_out
+    assert "было бы обработано" not in html_out
 
 
 def test_render_this_run_shows_duration():
@@ -771,15 +785,31 @@ def test_dryrun_structure_recommendations_empty_when_no_profiles():
     assert r._render_dryrun_structure_recommendations({"album_profiles": {}}) == ""
 
 
-def test_generate_workdir_report_includes_structure_recommendations(tmp_path):
-    """Проводка через _generate_from_model(): level=="workdir" (не full_workdir) должен
-    показывать карточку, level=="target" -- не должен (тот же принцип, что у C1)."""
+def test_generate_workdir_report_wires_structure_recommendations(tmp_path):
+    """2026-08-16, речь пользователя: карточка "Рекомендации" про облачную синхронизацию
+    (снятая с рендера 2026-08-14 вместе с отдельной веткой level=="workdir", см. историю у
+    _generate_from_model()) снова подключена -- но только в предпросмотре (dry-run/[2] до
+    сборки), не после реальной сборки (см. следующий тест) -- совет "переименуйте и запустите
+    снова" не имеет смысла постфактум (дедуп не переносит уже скопированные файлы)."""
     run_stats = {"appended_images": 1, "appended_videos": 0,
                  "album_profiles": {"src/Отпуск": _cloudlike_profile()}}
     out_path = tmp_path / "report.html"
-    r.generate_report({}, str(out_path), level="workdir", run_stats=run_stats)
+    r.generate_report({}, str(out_path), level="workdir", run_stats=run_stats,
+                       run_start="2026-01-01 00:00:00")
     html_out = out_path.read_text(encoding="utf-8")
     assert "похож на папку облачной синхронизации" in html_out
+
+
+def test_generate_target_report_does_not_wire_structure_recommendations(tmp_path):
+    """Тот же сценарий, что и тест выше, но level=="target" (реальная сборка уже случилась) --
+    карточка не должна рендериться, см. её докстринг про постфактум-бессмысленный совет."""
+    run_stats = {"appended_images": 1, "appended_videos": 0,
+                 "album_profiles": {"src/Отпуск": _cloudlike_profile()}}
+    out_path = tmp_path / "report.html"
+    r.generate_report({}, str(out_path), level="target", run_stats=run_stats,
+                       run_start="2026-01-01 00:00:00")
+    html_out = out_path.read_text(encoding="utf-8")
+    assert "похож на папку облачной синхронизации" not in html_out
 
 
 def test_render_this_run_shows_encrypted_archive_paths():
@@ -866,6 +896,25 @@ def test_render_analyze_recommendations_nested_encrypted_archive_readable_not_or
     html_out = r._render_analyze_recommendations(model)
     assert "outer.zip → secret.zip" in html_out
     assert "; <a" not in html_out
+
+
+def test_render_analyze_recommendations_shows_failed_archive_paths():
+    """REVIEW-HANDOFF.md, Раунд 88, замечание 1 -- failed_archive_paths (read_error/
+    bomb_suspected, Задача A) считался, но нигде не рендерился до этого фикса."""
+    model = {"failed_archive_paths": [r"C:\S\corrupt.zip", r"C:\S\deep.zip"]}
+    html_out = r._render_analyze_recommendations(model)
+    assert "2 архива не открылись" in html_out
+    assert '<a href="file:///C:/S/corrupt.zip" target="_blank" rel="noopener">C:\\S\\corrupt.zip</a>' in html_out
+
+
+def test_render_analyze_recommendations_shows_listdir_failed_paths():
+    """SESSION-HANDOFF.txt, 2026-08-11 (отложенная задача) -- listdir_failed_paths считался
+    в SourceWalker, но нигде не пробрасывался в analyze-отчёт до этого фикса, тот же класс
+    пропажи, что и failed_archive_paths (Раунд 88) выше."""
+    model = {"listdir_failed_paths": [r"C:\S\blocked_dir"]}
+    html_out = r._render_analyze_recommendations(model)
+    assert "1 папку не удалось прочитать" in html_out
+    assert '<a href="file:///C:/S/blocked_dir" target="_blank" rel="noopener">C:\\S\\blocked_dir</a>' in html_out
 
 
 def test_render_this_run_no_breakdown_captions_without_typed_stats():
@@ -1109,16 +1158,18 @@ def test_render_sheet1_oldest_file_is_a_clickable_file_link():
     assert '<a href="file:///C:/T/dst/Albums/Отпуск 2015/Море/photo.jpg" target="_blank" rel="noopener">' in html_out
 
 
-def test_render_sheet1_oldest_file_analyze_level_has_no_folder_marker():
-    """level=="analyze" кладёт в oldest origin_display (путь в ИСТОЧНИКЕ, см.
-    build_model_from_analyze_stats()) -- ByDate/Albums там не бывает, _friendly_target_dir()
-    не находит маркер -- рендер должен деградировать до одного имени файла, не падать и не
-    показывать пустую "Папка: "."""
+def test_render_sheet1_oldest_file_origin_display_has_no_folder_marker():
+    """oldest иногда несёт origin_display-style путь (см. build_model_from_analyze_stats()) --
+    ByDate/Albums там не бывает, _friendly_target_dir() не находит маркер -- рендер должен
+    деградировать до одного имени файла, не падать и не показывать пустую "Папка: ". Раньше
+    вызывался как _render_sheet1(model, "analyze") -- `level`-параметр убран 2026-08-16 (Раунд
+    88 пп.2-3, мёртвая ветка is_scan, см. докстринг _render_sheet1()), сама проверка формата
+    oldest-пути остаётся актуальной независимо от того, откуда пришла модель."""
     stats = _FakeAnalyzeStats()
     stats.oldest_date = __import__("datetime").datetime(2015, 7, 1)
     stats.oldest_display = "original_photo.jpg"
     model = r.build_model_from_analyze_stats(stats)
-    html_out = r._render_sheet1(model, "analyze")
+    html_out = r._render_sheet1(model)
     assert "original_photo.jpg" in html_out
     assert "Папка: " not in html_out
 
@@ -1139,12 +1190,21 @@ def test_cta_block_target_without_path_skips_link():
     assert "резервную копию" in html_out  # совет про бэкап не зависит от наличия ссылки
 
 
-def test_cta_block_workdir_and_analyze_show_try_real_build_prompt():
-    for level in ("workdir", "analyze"):
-        html_out = r._render_cta_block(level)
-        assert "Нравится результат" in html_out
-        assert "резервную копию" not in html_out
-        assert "Открыть папку с архивом" not in html_out
+def test_cta_block_workdir_shows_try_real_build_prompt():
+    html_out = r._render_cta_block("workdir")
+    assert "Нравится результат" in html_out
+    assert "резервную копию" not in html_out
+    assert "Открыть папку с архивом" not in html_out
+
+
+def test_cta_block_analyze_renders_nothing():
+    """Речь пользователя, 2026-08-11: последний оставшийся здесь для analyze текст ("Нравится
+    результат?...") тоже убран -- эта карточка для analyze больше не рендерится вовсе (пустая
+    строка), независимо от модели. "workdir" по-прежнему получает этот текст (см.
+    test_cta_block_workdir_shows_try_real_build_prompt) -- решение касалось только analyze."""
+    assert r._render_cta_block("analyze") == ""
+    model = {"years": Counter({2020: 1}), "archives_with_media": 3, "total_bytes": 1000}
+    assert r._render_cta_block("analyze", model=model) == ""
 
 
 def test_generate_report_target_includes_cta_and_backup(tmp_path):
@@ -1172,10 +1232,9 @@ def test_generate_report_from_analyze_stats_includes_trust_banner(tmp_path):
     r.generate_report_from_analyze_stats(_FakeAnalyzeStats(), str(out_path))
     html_out = out_path.read_text(encoding="utf-8")
     assert "Оригиналы не изменены и не удалены" in html_out
-    # Раунд 33 (REVIEW-HANDOFF.md): _FakeAnalyzeStats имеет реальные годы/байты -- closing
-    # CTA теперь новая "уязвимо/защищено" формулировка, не старое нейтральное "Нравится
-    # результат?" (см. test_cta_block_analyze_* ниже для прямых тестов самой ветки).
-    assert "хранятся на одном источнике" in html_out
+    # Речь пользователя, 2026-08-11: closing CTA для analyze больше не рендерится вовсе (см.
+    # test_cta_block_analyze_renders_nothing ниже для прямого теста самой ветки).
+    assert "Нравится результат" not in html_out
 
 
 def test_cluster_near_dup_groups_transitively():
@@ -1316,39 +1375,13 @@ def test_render_dedup_verification_page_both_sections_have_distinct_anchors(tmp_
     # Порядок секций -- дубли первой, похожие серии второй -- ровно тот случай, где отсутствие
     # якорей раньше молча ломало ссылку "похожие серии".
     assert html_out.index('id="dedup-exact"') < html_out.index('id="dedup-near"')
-
-    out_path = tmp_path / "report.html"
-    r.generate_report(data, str(out_path), level="target", run_start="2026-01-01 00:00:00")
-    main_html = out_path.read_text(encoding="utf-8")
-    assert f"{r.DEDUP_VERIFICATION_FILENAME}#dedup-exact" in main_html
-    assert f"{r.DEDUP_VERIFICATION_FILENAME}#dedup-near" in main_html
-
-
-def test_generate_report_target_level_near_dup_multi_folder_links_to_verification_page(tmp_path):
-    """Сквозная проверка: похожая серия в разных папках на level="target" должна и ссылаться
-    на "Полную сверку", и сама страница должна реально содержать её полный список."""
-    data = {
-        "appended": [
-            {"timestamp": "2026-01-01 00:00:01", "source": "s0",
-             "dest": r"C:\T\dst\ByDate\2024\2024-06\a.jpg", "reason": "appended_new", "flags": ""},
-            {"timestamp": "2026-01-01 00:00:01", "source": "s1",
-             "dest": r"C:\T\dst\ByDate\2024\2024-07\b.jpg", "reason": "appended_near_dup", "flags": ""},
-        ],
-        "skipped": [],
-        "near_dup_edges": [
-            {"timestamp": "2026-01-01 00:00:01", "dest": r"C:\T\dst\ByDate\2024\2024-07\b.jpg",
-             "matched_dest": r"C:\T\dst\ByDate\2024\2024-06\a.jpg"},
-        ],
-    }
-    out_path = tmp_path / "report.html"
-    r.generate_report(data, str(out_path), level="target", run_start="2026-01-01 00:00:00")
-    html_out = out_path.read_text(encoding="utf-8")
-    assert "Похожая серия из 2 кадров" in html_out
-    assert "полная сверка похожих серий →" in html_out
-    assert "Кадры лежат в разных папках" in html_out
-    verify_out = (tmp_path / r.DEDUP_VERIFICATION_FILENAME).read_text(encoding="utf-8")
-    assert "<td>2</td>" in verify_out  # "Кадров в серии" -- вёрстка-таблица, не карточка
-    assert "2024-06\\a.jpg" in verify_out and "2024-07\\b.jpg" in verify_out
+    # PROMPT_report_run_redesign.md (2026-08-14), прямое решение пользователя: для
+    # run_start-ветки (checklist_new is not None -- реальный путь ЛЮБОГО production-вызова
+    # с level=="target") generate_dedup_verification_page() больше не вызывается вовсе --
+    # единственные потребители ссылки (_render_recommendations()/_render_exact_dup_examples())
+    # убраны из этой ветки. Сквозная проверка через generate_report() ЗДЕСЬ больше не
+    # применима -- сама функция _render_dedup_verification_page() выше по-прежнему рабочая
+    # и корректно расставляет якоря, просто на неё сейчас никто не ссылается.
 
 
 def test_render_exact_dup_examples_empty_renders_nothing():
@@ -1697,9 +1730,11 @@ def test_build_checklist_items_dispute_detail_links_unsorted_with_target_path():
     assert '<a href="file:///D:/__PhotoArchive__/_Unsorted" target="_blank" rel="noopener">_Unsorted</a>' in joined
 
 
-def test_generate_report_intro_says_all_files_saved_including_disputed(tmp_path):
-    """Пункт B.5: "сохранены ВСЕ N файлов, включая M спорных" -- не намекает, что со спорными
-    что-то не так/потеряно, в отличие от голого счётчика без контекста."""
+def test_generate_report_disputed_count_shown_via_section_three(tmp_path):
+    """Пункт B.5 (2026-07-26): "сохранены ВСЕ N файлов, включая M спорных" -- изначальная
+    вводная фраза _render_recommendations(). PROMPT_report_run_redesign.md (2026-08-14,
+    прямое решение пользователя): эта карточка убрана -- то же самое ("спорные СКОПИРОВАНЫ,
+    просто отдельно, не потеряны") теперь сообщает Раздел 3 (_render_run_auto_decisions())."""
     data = {
         "appended": [_appended_row(f"D:\\T\\ByDate\\2026\\2026-01\\a{i}.jpg") for i in range(5)],
         "disputes": [{"timestamp": "2026-01-01 09:00:00", "source": "s.gif",
@@ -1708,7 +1743,9 @@ def test_generate_report_intro_says_all_files_saved_including_disputed(tmp_path)
     out_path = tmp_path / "report.html"
     r.generate_report(data, str(out_path), level="target", run_start="2026-01-01 00:00:00")
     html_out = out_path.read_text(encoding="utf-8")
-    assert "Сохранены ВСЕ 6 файлов, включая 1 спорный" in html_out
+    assert "<b>1</b> файл сохранён в папке" in html_out
+    assert "_Unsorted" in html_out
+    assert "не потеряла" in html_out
 
 
 def test_render_this_run_explains_disputed_reasons_when_present():
@@ -1810,7 +1847,10 @@ def test_sheet2_tier_chart_caption_excludes_raw():
     ]
     model = r.build_model_from_rows({"appended": rows})
     html_out = r._render_sheet2(model)
-    assert "Надёжность дат — фото и видео, без RAW" in html_out
+    # 2026-08-15: "без RAW" теперь мелкой пометкой рядом с заголовком (_h2_title()), не частью
+    # текста самого заголовка -- см. решение пользователя про единый вид всех "без RAW"-диаграмм.
+    assert "Надёжность дат — фото и видео" in html_out
+    assert '<span class="h2-note">(без RAW)</span>' in html_out
 
 
 def test_near_dup_checklist_has_optional_disclaimer():
@@ -1838,76 +1878,11 @@ def test_cta_block_mentions_old_media_only_at_target_level():
     assert "торопиться" not in workdir_html and "не спешите" not in workdir_html.lower()
 
 
-def test_cta_block_analyze_no_model_falls_back_to_generic_text():
-    """Раунд 33: старые вызовы без model (level=="analyze") не должны падать -- откат на
-    прежний нейтральный текст."""
-    html_out = r._render_cta_block("analyze")
-    assert "Нравится результат" in html_out
-
-
-def test_cta_block_analyze_with_archives_uses_vulnerable_protected_framing():
-    """Раунд 33 (REVIEW-HANDOFF.md): при найденных внутри источника архивах (zip/rar) --
-    рамка "уязвимо/защищено", не нейтральная "можно запустить сборку". Уменьшенная версия
-    (только внутри одного источника, не "M мест" по нескольким прогонам)."""
-    model = {"years": Counter({2015: 2, 2020: 1}), "archives_with_media": 3, "total_bytes": 1000}
-    html_out = r._render_cta_block("analyze", model=model)
-    assert "3 отдельных архивах" in html_out
-    assert "испортиться независимо" in html_out
-    assert "Нравится результат" not in html_out
-
-
-def test_cta_block_analyze_with_archives_and_no_loose_files_omits_scatter_claim():
-    # SESSION-HANDOFF.txt п.4 (2026-08-05, боевой прогон): раньше "не только россыпью"
-    # утверждалось безусловно при archives_found>0 -- источник может состоять ЦЕЛИКОМ из
-    # архивов (files_by_location без root/folder), тогда "россыпи" вообще нет.
-    model = {
-        "years": Counter({2020: 1}), "archives_with_media": 2, "total_bytes": 1000,
-        "files_by_location": Counter({"archive": 50}),
-    }
-    html_out = r._render_cta_block("analyze", model=model)
-    assert "россыпью" not in html_out
-    assert "2 отдельных архивах" in html_out
-
-
-def test_cta_block_analyze_with_archives_and_loose_files_keeps_scatter_claim():
-    model = {
-        "years": Counter({2020: 1}), "archives_with_media": 2, "total_bytes": 1000,
-        "files_by_location": Counter({"root": 5, "archive": 50}),
-    }
-    html_out = r._render_cta_block("analyze", model=model)
-    assert "не только россыпью" in html_out
-
-
-def test_cta_block_analyze_without_archives_uses_single_source_framing():
-    model = {"years": Counter({2020: 1}), "archives_with_media": 0, "total_bytes": 500 * 1024**2}
-    html_out = r._render_cta_block("analyze", model=model)
-    assert "хранятся на одном источнике" in html_out
-    assert "500 МБ" in html_out
-    assert "отдельных архивах" not in html_out
-
-
-def test_cta_block_analyze_archives_found_without_media_omits_archive_claim():
-    """Живой боевой прогон 2026-08-06: источник (папка веб-проекта) содержал 108 архивов
-    (archives_found, RAW-счётчик, считает любой статус archive_*, в т.ч. archive_no_media/
-    battered/encrypted), но НИ ОДИН не дал ни одного медиафайла (все 237 файлов -- в папках,
-    files_by_location без "archive"). CTA раньше писал "108 отдельных архивов ... сборка
-    соберёт всё это", хотя собирать было нечего -- вводило в заблуждение. archives_found
-    (raw) в модели намеренно большой, archives_with_media=0 -- функция должна ориентироваться
-    именно на последнее."""
-    model = {
-        "years": Counter({2020: 1}), "archives_found": 108, "archives_with_media": 0,
-        "total_bytes": 500 * 1024**2, "files_by_location": Counter({"folder": 237}),
-    }
-    html_out = r._render_cta_block("analyze", model=model)
-    assert "отдельных архивах" not in html_out
-    assert "испортиться независимо" not in html_out
-    assert "хранятся на одном источнике" in html_out
-
-
-def test_cta_block_analyze_empty_model_falls_back_to_generic_text():
-    html_out = r._render_cta_block(
-        "analyze", model={"years": Counter(), "archives_with_media": 0, "total_bytes": 0})
-    assert "Нравится результат" in html_out
+def test_cta_block_analyze_no_model_renders_nothing():
+    """Раунд 33 (историческая проверка "не должен падать") + речь пользователя, 2026-08-11
+    (сама карточка для analyze больше не рендерится вовсе, см. test_cta_block_analyze_renders_
+    nothing) -- старые вызовы без model не должны падать."""
+    assert r._render_cta_block("analyze") == ""
 
 
 def test_cta_block_analyze_never_shows_album_date_grouping_prediction():
@@ -1993,11 +1968,40 @@ class _FakeAnalyzeStats:
         self.cities = Counter()
         # Пункт E -- "Топ камер/устройств съёмки".
         self.cameras = Counter()
-        # generate_passport_report() -- дерево структуры архива (_render_archive_tree_card()).
+        # _deep_nested_albums() в _render_passport_integrity() -- единственный оставшийся
+        # потребитель (дерево само теперь читает source_tree_counts_image/video/raw ниже).
         self.tree_folder_counts = Counter()
-        self.tree_folder_bytes = Counter()
         # Пункт B.2 -- полные пути запароленных архивов.
+        self.n_archives_encrypted = 0
         self.encrypted_archive_paths = []
+        # SESSION-HANDOFF.txt, 2026-08-11 ("большой разбор report.html", Задача A) -- новые
+        # поля AnalyzeStats под редизайн Разделов 1-3 analyze-отчёта, см. build_model_from_
+        # analyze_stats(). Значения по умолчанию согласованы с found-полями выше (available ==
+        # found -- ни один тест этого фейка не готовит битые/unreadable файлы отдельно).
+        self.max_depth = 0
+        self.n_folders_with_media = 0
+        self.n_dvd_units = 0
+        self.n_images_available = self.n_images
+        self.n_raw_available = self.n_raw
+        self.n_videos_available = self.n_videos
+        self.bytes_by_kind_available = Counter()
+        self.tier_counts_no_raw = Counter(self.tier_counts)
+        self.dates_by_year_photo = Counter()
+        self.dates_by_year_video = Counter()
+        self.format_counts_image = Counter()
+        self.format_counts_raw = Counter()
+        self.format_counts_video = Counter()
+        self.dvd_vob_count = 0
+        self.n_archives_failed = 0
+        self.failed_archive_paths = []
+        # SESSION-HANDOFF.txt, 2026-08-11 (отложенная задача) -- непрочитанные папки.
+        self.listdir_failed_paths = []
+        self.disputed_records = []
+        self.unreadable_records = []
+        # 2026-08-14 -- дерево реальной структуры SOURCE, см. build_model_from_analyze_stats().
+        self.source_tree_counts_image = Counter()
+        self.source_tree_counts_video = Counter()
+        self.source_tree_counts_raw = Counter()
 
 
 def test_build_model_from_analyze_stats_tier_counts_not_affected_by_the_target_level_bug():
@@ -2090,7 +2094,12 @@ def test_render_analyze_recommendations_no_longer_duplicates_approx_dates():
     assert html_out == ""
 
 
-def test_render_analyze_recommendations_shows_year_gap_found_archive_and_near_dup_series():
+def test_render_analyze_recommendations_shows_found_archive_and_near_dup_series():
+    """Речь пользователя, 2026-08-11: пункт "За {год} сохранилось заметно меньше снимков..."
+    (_find_year_gap()) убран целиком из рендера -- эта проверка (была test_render_analyze_
+    recommendations_shows_year_gap_found_archive_and_near_dup_series) больше не проверяет "2018"
+    в выдаче, только found_archive/near_dup, которые не менялись. _find_year_gap() сама функция
+    не удалена (см. test_find_year_gap_* выше), просто нигде не вызывается."""
     model = {
         "total_bytes": 0,
         "years": Counter({2016: 40, 2017: 40, 2018: 1, 2019: 40, 2020: 40}),
@@ -2099,19 +2108,22 @@ def test_render_analyze_recommendations_shows_year_gap_found_archive_and_near_du
         "tier_counts": Counter(),
     }
     html_out = r._render_analyze_recommendations(model)
-    assert "2018" in html_out
+    assert "сохранилось заметно меньше снимков" not in html_out
     assert "уже есть собранный архив" in html_out
     assert "2 серии похожих кадров" in html_out
 
 
 def test_generate_report_from_analyze_stats_includes_recommendations_section(tmp_path):
+    # Речь пользователя, 2026-08-11: "Рекомендации" объединены с "Что стоит проверить" в одну
+    # карточку "Что стоит проверить и рекомендации" -- отдельного заголовка "Рекомендации"
+    # (с большой буквы, как раньше) в тексте больше нет, только внутри объединённого заголовка.
     stats = _FakeAnalyzeStats()
     stats.found_archive_top_level = [r"D:\Old\PhotoArchive"]
     stats.near_dup_edges = [{"dest": "a", "matched_dest": "b"}]
     out_path = tmp_path / "report.html"
     r.generate_report_from_analyze_stats(stats, str(out_path))
     text = out_path.read_text(encoding="utf-8")
-    assert "Рекомендации" in text
+    assert "<h2>Что стоит проверить и рекомендации</h2>" in text
     assert "уже есть собранный архив" in text
 
 
@@ -2125,33 +2137,15 @@ def test_year_hbar_chart_single_year_bar_spans_full_width():
     assert float(m.group(1)) > 400  # почти вся plot_w (680 - 54 - 68 = 558), не крошечный бар
 
 
-def test_render_sheet1_analyze_level_does_not_claim_an_archive_exists():
-    """2026-07-21 finding, confirmed still present 2026-07-24: _render_sheet1() always said
-    "Ваш архив"/"с учётом только что добавленного в этом пополнении" even for analyze/
-    analyze-quick/analyze-full, where nothing has been archived yet -- just a SOURCE scan.
-    level="analyze" must use scan wording instead."""
-    model = r.build_model_from_rows({"appended": [_appended_row(r"D:\T\ByDate\2026\2026-01-01 [PhotoArchive]\a.jpg")],
-                                      "skipped": [], "disputes": [], "dates_review": [],
-                                      "unreadable": [], "near_dup_edges": []})
-    target_html = r._render_sheet1(model, "target")
-    analyze_html = r._render_sheet1(model, "analyze")
-    assert "Ваш архив" in target_html and "пополнении" in target_html
-    assert "Ваш архив" not in analyze_html and "пополнении" not in analyze_html
-    assert "Что нашлось в источнике" in analyze_html
-
-
 def test_render_sheet1_embeds_generated_at_in_heading_when_given():
     """Задача 10 (SESSION-HANDOFF.txt, 2026-08-09) + речь пользователя, 2026-08-09: "по
     состоянию на ГГГГ-ММ-ДД ЧЧ:ММ" раньше дописывалось прямо в <h1> -- теперь отдельной
     строкой ПОД заголовком (_render_report_meta(), не раздувает текст заголовка). Заодно h1
     уменьшен до h2 -- тот же уровень, что у "Пробный прогон"/"Пополнение архива"."""
     model = r.build_model_from_rows({"appended": [_appended_row(r"D:\T\ByDate\2026\2026-01-01 [PhotoArchive]\a.jpg")]})
-    analyze_html = r._render_sheet1(model, "analyze", generated_at="2026-08-09 13:21")
-    target_html = r._render_sheet1(model, "target", generated_at="2026-08-09 13:21")
-    assert "<h2>Что нашлось в источнике</h2>" in analyze_html
-    assert "<h2>Ваш архив</h2>" in target_html
-    assert 'class="report-meta-date">по состоянию на 2026-08-09 13:21' in analyze_html
-    assert 'class="report-meta-date">по состоянию на 2026-08-09 13:21' in target_html
+    html_out = r._render_sheet1(model, generated_at="2026-08-09 13:21")
+    assert "<h2>Ваш архив</h2>" in html_out
+    assert 'class="report-meta-date">по состоянию на 2026-08-09 13:21' in html_out
 
 
 def test_render_sheet1_omits_generated_at_when_not_given():
@@ -2161,8 +2155,8 @@ def test_render_sheet1_omits_generated_at_when_not_given():
     странице (найденный архив внутри SOURCE) -- та страница не должна получить дату задним
     числом просто потому, что _render_sheet1() её теперь умеет показывать."""
     model = r.build_model_from_rows({"appended": []})
-    html_out = r._render_sheet1(model, "analyze")
-    assert "<h2>Что нашлось в источнике</h2>" in html_out
+    html_out = r._render_sheet1(model)
+    assert "<h2>Ваш архив</h2>" in html_out
     assert "по состоянию на" not in html_out
     assert "report-meta" not in html_out
 
@@ -2224,7 +2218,7 @@ def test_generate_report_from_analyze_stats_heading_and_footer_share_one_timesta
     r.generate_report_from_analyze_stats(stats, str(out_path))
     html_out = out_path.read_text(encoding="utf-8")
 
-    assert "<h2>Что нашлось в источнике</h2>" in html_out
+    assert "<h2>Что нашлось в источнике. Общая информация</h2>" in html_out
     heading_m = re.search(r'report-meta-date">по состоянию на ([\d\-]+ [\d:]+)</div>', html_out)
     footer_m = re.search(r"Сформировано PhotoArchive[^·]*· ([\d\-]+ [\d:]+)</div>", html_out)
     assert heading_m and footer_m, html_out
@@ -2261,47 +2255,339 @@ def test_generate_passport_report_heading_and_footer_share_one_timestamp(tmp_pat
     assert heading_m.group(1) == footer_m.group(1)
 
 
-def test_render_sheet1_analyze_shows_object_count_tile():
-    # SESSION-HANDOFF.txt п.4 (2026-08-05, боевой прогон): плитка "папок и архивов" -- только
-    # для analyze (build_model_from_rows() для реальной сборки её не считает вовсе). Подпись
-    # "объектов (папок и архивов)" -> "папок и архивов" -- находка 2026-08-09 (боевой прогон):
-    # слово "объектов" в терминале означает другую гранулярность (файл, не папка/архив), не
-    # дублировать в отчёте, см. SESSION-HANDOFF.txt.
+def test_render_analyze_sheet1_shows_location():
+    """SESSION-HANDOFF.txt, 2026-08-11 ("большой разбор report.html", Задача B) -- новый
+    _render_analyze_sheet1() -- 1.1 "Расположение" (папки/архивы/макс. глубина). "Доступно для
+    архива" (1.2) переехала в свою отдельную карточку, _render_analyze_available_card() --
+    речь пользователя, 2026-08-11, см. тесты ниже.
+
+    Речь пользователя, 2026-08-11 (живой боевой прогон по C:\\ целиком): папки/архивы/глубина
+    теперь считаются ТОЛЬКО по тому, что реально ведёт к медиафайлу (n_folders_with_media/
+    archives_with_media/max_depth -- см. AnalyzeStats), не по общему числу папок-объектов/
+    архивов/глубине обхода -- n_objects_total/n_archives_found (сырой подсчёт) на этот рендер
+    больше не влияют вовсе.
+
+    Речь пользователя, 2026-08-11 (тем же заходом): отдельный заголовок "Расположение" и три
+    плитки под ним убраны -- одно предложение прозой без промежуточного заголовка, продолжающее
+    headline-плитки той же карточки. Формулировка уточнена тем же заходом ("Источник содержит
+    N папок" звучало как утверждение про источник целиком, хотя числа -- только про то, где
+    расположены НАЙДЕННЫЕ медиафайлы) -- "Медиафайлы расположены в N папках и M архивах"
+    (предложный падеж не различает 2-4 отдельной формой, в отличие от именительного -- только
+    "1" даёт особую форму единственного числа). Уточнена ЕЩЁ раз тем же заходом: "с K уровнями
+    вложенности" читалось двусмысленно (суммарно? у каждой папки?) -- отдельное предложение
+    "Максимальный уровень вложенности — K." однозначно называет это максимумом одного самого
+    глубокого пути. Уточнена ТРЕТИЙ раз тем же заходом: перенесена ПОСЛЕ "Из них ..." (была в
+    том же <p>, что и "Медиафайлы расположены..."), тем же приглушённым начертанием
+    (class="muted"), что и "Из них ..." рядом -- см. test_render_analyze_sheet1_depth_sentence_
+    comes_after_location_breakdown_with_muted_style ниже."""
     stats = _FakeAnalyzeStats()
-    stats.n_objects_total = 42
+    stats.n_folders_with_media = 10
+    stats.n_archives_with_media = 2
+    stats.max_depth = 4
     model = r.build_model_from_analyze_stats(stats)
-    html_out = r._render_sheet1(model, "analyze")
-    assert "42" in html_out
-    assert "папок и архивов" in html_out
-    assert "объектов" not in html_out
+    html_out = r._render_analyze_sheet1(model)
+
+    assert "<h2>Что нашлось в источнике. Общая информация</h2>" in html_out
+    assert "<h3>Расположение</h3>" not in html_out
+    assert "Медиафайлы расположены в 10 папках и 2 архивах." in html_out
+    assert "Максимальный уровень вложенности — 4." in html_out
+    assert "<h3>Доступно для архива</h3>" not in html_out
 
 
-def test_render_sheet1_target_level_omits_object_count_tile():
-    model = r.build_model_from_rows({"appended": [_appended_row(r"C:\T\dst\Albums\A\a.jpg")]})
-    html_out = r._render_sheet1(model, "target")
-    assert "папок и архивов" not in html_out
-
-
-def test_render_sheet1_analyze_shows_files_by_location_breakdown():
+def test_render_analyze_sheet1_depth_sentence_comes_after_location_breakdown_with_muted_style():
+    """Речь пользователя, 2026-08-11: "Максимальный уровень вложенности — K." перенесена ПОСЛЕ
+    "Из них ..." (не в том же <p>, что "Медиафайлы расположены...", сразу за ним) и тем же
+    приглушённым начертанием (class="muted"), что у "Из них ..." рядом."""
     stats = _FakeAnalyzeStats()
-    stats.files_by_location = Counter({"root": 5, "folder": 10, "archive": 3})
-    # Разбор накопления п.3а (2026-08-05, боевой прогон): объём рядом со штуками.
-    stats.bytes_by_location = Counter({"root": 1 * 1024**3, "folder": 2 * 1024**3,
-                                        "archive": 512 * 1024**2})
+    stats.n_folders_with_media = 10
+    stats.n_archives_with_media = 2
+    stats.max_depth = 9
+    stats.files_by_location = Counter({"folder": 244, "archive": 400})
     model = r.build_model_from_analyze_stats(stats)
-    html_out = r._render_sheet1(model, "analyze")
-    assert "5 файлов в корне источника (1.0 ГБ)" in html_out
-    assert "10 файлов в папках (2.0 ГБ)" in html_out
-    assert "3 файла внутри архивов (512 МБ)" in html_out
+    html_out = r._render_analyze_sheet1(model)
+
+    assert '<p class="muted">Максимальный уровень вложенности — 9.</p>' in html_out
+    location_pos = html_out.index("Из них")
+    depth_pos = html_out.index("Максимальный уровень вложенности")
+    assert location_pos < depth_pos
+    # Не в одном <p> с "Медиафайлы расположены..." -- то предложение закрывается ДО этой фразы.
+    assert "Медиафайлы расположены в 10 папках и 2 архивах.</p>" in html_out
 
 
-def test_render_sheet1_analyze_omits_breakdown_when_single_location():
-    # Один-единственный непустой бакет -- разбивка была бы бесполезным повтором общего числа.
+def test_render_analyze_sheet1_location_sentence_uses_singular_forms_for_count_one():
+    """N==1 даёт особую форму единственного числа ("в 1 папке", не "в 1 папках"), любое другое
+    количество -- одна и та же форма множественного (предложный падеж, в отличие от
+    именительного, не различает 2-4 отдельно)."""
     stats = _FakeAnalyzeStats()
-    stats.files_by_location = Counter({"folder": 10})
+    stats.n_folders_with_media = 1
+    stats.n_archives_with_media = 1
+    stats.max_depth = 1
     model = r.build_model_from_analyze_stats(stats)
-    html_out = r._render_sheet1(model, "analyze")
-    assert "Из них" not in html_out
+    html_out = r._render_analyze_sheet1(model)
+    assert "Медиафайлы расположены в 1 папке и 1 архиве." in html_out
+    assert "Максимальный уровень вложенности — 1." in html_out
+
+
+def test_render_analyze_available_card_shows_availability():
+    """Речь пользователя, 2026-08-11: "Доступно для архива" -- отдельное "окно" (карточка), не
+    подраздел карточки "Общая информация" -- см. _render_analyze_available_card()."""
+    stats = _FakeAnalyzeStats()
+    stats.n_images_available = 1  # n_images=3 в фейке -- 2 файла "не доступны"
+    model = r.build_model_from_analyze_stats(stats)
+    html_out = r._render_analyze_available_card(model)
+
+    assert "<h2>Доступно для архива</h2>" in html_out
+    assert "1 файл из 3 файла готовы к архивации" in html_out
+    assert "_Unsorted" in html_out
+
+
+def test_render_analyze_available_card_all_available_has_no_unsorted_mention():
+    stats = _FakeAnalyzeStats()  # n_images_available == n_images по умолчанию фейка
+    model = r.build_model_from_analyze_stats(stats)
+    html_out = r._render_analyze_available_card(model)
+    assert "Все 3 файла готовы к архивации" in html_out
+    assert "_Unsorted" not in html_out
+
+
+def test_render_analyze_available_card_keeps_oldest_file_and_busiest_month():
+    """Перенесены в 1.2 ТЗ пользователя -- те же тексты, что были в старой шапке
+    _render_sheet1(), теперь в своей отдельной карточке "Доступно для архива"."""
+    stats = _FakeAnalyzeStats()
+    stats.oldest_date = datetime(2015, 6, 1)
+    stats.oldest_display = "Отпуск/img.jpg"
+    model = r.build_model_from_analyze_stats(stats)
+    html_out = r._render_analyze_available_card(model)
+    assert "Самый старый файл" in html_out
+    assert "Самый насыщенный месяц" in html_out
+
+
+def test_render_analyze_sheet1_no_longer_has_bridge_phrase():
+    """Речь пользователя, 2026-08-11: "Дальше — ваш архив в цифрах." убрана целиком, не
+    перенесена в _render_analyze_available_card()."""
+    stats = _FakeAnalyzeStats()
+    model = r.build_model_from_analyze_stats(stats)
+    assert "Дальше — ваш архив в цифрах." not in r._render_analyze_sheet1(model)
+    assert "Дальше — ваш архив в цифрах." not in r._render_analyze_available_card(model)
+
+
+def test_render_analyze_sheet2_top_formats_ignores_dvd_vob_count_alone():
+    """Задача C, п.4 -- топ-5 форматов раздельно по категории. Речь пользователя, 2026-08-11:
+    DVD (структура VIDEO_TS) не подмешивается в топ-5/сортировку видеоформатов ("DVD и vob --
+    разные объекты и считаются по-разному, их нельзя смешивать") -- ранжированный список видео
+    остаётся чистым от DVD. dvd_vob_count (счётчик .vob-ФРАГМЕНТОВ, другая единица) сам по себе
+    ничего не рендерит -- только n_dvd_units (число РАЗЛИЧНЫХ дисков, см. тест ниже)."""
+    stats = _FakeAnalyzeStats()
+    stats.format_counts_image = Counter({".jpg": 5, ".png": 1})
+    stats.format_counts_video = Counter({".mp4": 2})
+    stats.dvd_vob_count = 7
+    model = r.build_model_from_analyze_stats(stats)
+    html_out = r._render_analyze_sheet2(model)
+    assert "Топ форматов — фото" in html_out
+    assert "JPG" in html_out
+    assert "Топ форматов — видео" in html_out
+    assert "MP4" in html_out
+    assert "DVD" not in html_out
+    assert "vob" not in html_out
+
+
+def test_render_analyze_sheet2_shows_dvd_as_bar_inside_video_chart():
+    """Речь пользователя, 2026-08-11 (несколько итераций того же вопроса): сначала DVD (.vob)
+    ранжированным баром по числу .vob-файлов -- убрано ("нельзя смешивать" файлы с фрагментами);
+    затем отдельная текстовая сноска под диаграммой -- тоже убрана ("это сообщение выводить не
+    нужно"); "своей строкой/баром внутри той же диаграммы" (ответ на уточняющий вопрос) --
+    но ЗНАЧЕНИЕ бара не число дисков (n_dvd_units), а РЕАЛЬНОЕ число файлов DVD-юнита
+    (video_available_total - video_format_total) -- иначе сумма баров разошлась бы с "Тип
+    медиа" (речь пользователя, "общее количество видео... должны совпадать, если нет группы
+    'прочие'"). Число дисков остаётся в ПОДПИСИ ("N файлов (M дисков)"), не в значении/длине
+    бара."""
+    stats = _FakeAnalyzeStats()
+    stats.format_counts_video = Counter({".mp4": 83})
+    stats.n_videos = 89  # 83 обычных + 6 файлов одного DVD-юнита (vob+ifo+bup)
+    stats.n_videos_available = 89
+    stats.dvd_vob_count = 2
+    stats.n_dvd_units = 1
+    model = r.build_model_from_analyze_stats(stats)
+    html_out = r._render_analyze_sheet2(model)
+    assert "MP4" in html_out
+    assert "83" in html_out
+    assert '<p class="muted">Отдельно' not in html_out  # сноска-текст больше не рендерится
+    # DVD -- реальный бар ВНУТРИ той же диаграммы, не отдельный текст: <text>DVD</text> есть,
+    # подпись -- "6 файлов (1 диск)" (реальное число файлов + число дисков в скобках).
+    assert re.search(r'<text[^>]*>DVD</text>', html_out)
+    assert re.search(r'<text[^>]*>6 файлов \(1 диск\)</text>', html_out)
+    # Речь пользователя, 2026-08-11: "общее количество видео в 'Тип медиа' и 'Топ форматов —
+    # видео' должны совпадать, если нет группы 'прочие'" -- прямая проверка инварианта: MP4
+    # (83) + DVD-бар (6, реальное число файлов, не 1 диск) == available-счётчик видео (89),
+    # который показывает "Тип медиа". Нет "остальные" -- всего 2 категории, меньше топ-5.
+    assert "остальные" not in html_out
+    assert 83 + 6 == model["counts_available"]["video"] == 89
+
+
+def test_render_passport_charts_dvd_bar_excludes_broken_non_dvd_video():
+    """REVIEW-HANDOFF.md, Раунд 94 [ЗАМЕЧАНИЕ]: _render_passport_charts() брал разницу от
+    counts["video"] (ДО broken/unreadable-фильтра) вместо counts_available["video"] (ПОСЛЕ),
+    как уже верно делает _render_analyze_sheet2() выше -- битые НЕ-DVD видео молча приписывались
+    к DVD-счётчику. Сценарий ревизора: 5 обычных видео + 2 битых НЕ-DVD видео (учтены в n_videos,
+    но не в n_videos_available и не в format_counts_video) + DVD-юнит из 3 файлов."""
+    stats = _FakeAnalyzeStats()
+    stats.format_counts_video = Counter({".mp4": 5})
+    stats.n_videos = 10  # 5 обычных + 2 битых НЕ-DVD + 3 файла DVD-юнита
+    stats.n_videos_available = 8  # битые 2 исключены, DVD-юнит остаётся (5 + 3)
+    stats.n_dvd_units = 1
+    model = r.build_model_from_analyze_stats(stats)
+    html_out = r._render_passport_charts(stats)
+    assert re.search(r'<text[^>]*>DVD</text>', html_out)
+    # Диск реально содержит 3 файла -- НЕ 5 (10-5), в которые ошибочно попадали 2 битых видео.
+    assert re.search(r'<text[^>]*>3 файла \(1 диск\)</text>', html_out)
+    assert "5 файлов (1 диск)" not in html_out
+    assert 5 + 3 == model["counts_available"]["video"] == 8
+
+
+def test_render_analyze_sheet2_top_formats_order_is_photo_video_raw():
+    """Речь пользователя, 2026-08-11: "по умолчанию порядок такой: фото, видео, RAW" --
+    раньше было фото/RAW/видео."""
+    stats = _FakeAnalyzeStats()
+    stats.format_counts_image = Counter({".jpg": 5})
+    stats.format_counts_video = Counter({".mp4": 2})
+    stats.format_counts_raw = Counter({".cr2": 1})
+    model = r.build_model_from_analyze_stats(stats)
+    html_out = r._render_analyze_sheet2(model)
+    photo_pos = html_out.index("Топ форматов — фото")
+    video_pos = html_out.index("Топ форматов — видео")
+    raw_pos = html_out.index("Топ форматов — RAW")
+    assert photo_pos < video_pos < raw_pos
+
+
+def test_render_analyze_sheet2_top_formats_uses_fixed_two_column_grid():
+    """Речь пользователя, 2026-08-11: "плашки Топ форматов 2 шт на всю ширину окна. Если
+    появляется третья — с новой строки" -- фиксированные 2 колонки (не auto-fit)."""
+    stats = _FakeAnalyzeStats()
+    stats.format_counts_image = Counter({".jpg": 5})
+    stats.format_counts_video = Counter({".mp4": 2})
+    stats.format_counts_raw = Counter({".cr2": 1})
+    model = r.build_model_from_analyze_stats(stats)
+    html_out = r._render_analyze_sheet2(model)
+    assert '<div class="grid-3-formats">' in html_out
+
+
+def test_top_formats_hbar_extra_entries_use_their_own_display_text():
+    """Речь пользователя, 2026-08-11: extra_entries -- готовые (метка, число, ПОДПИСЬ) тройки,
+    не (метка, число) пары -- в отличие от обычных расширений (подпись всегда "N файлов" через
+    _n_files()), у extra_entries подпись задаётся вызывающим кодом напрямую (DVD -- "N дисков",
+    не "N файлов", см. _render_analyze_sheet2())."""
+    chart = r._top_formats_hbar(Counter({".mp4": 5}), extra_entries=[("DVD", 2, "2 диска")])
+    assert re.search(r'<text[^>]*>DVD</text>', chart)
+    assert re.search(r'<text[^>]*>2 диска</text>', chart)
+    assert "2 файла" not in chart
+
+
+def test_render_analyze_sheet2_shows_years_split_by_photo_and_video():
+    stats = _FakeAnalyzeStats()
+    stats.dates_by_year_photo = Counter({2020: 3})
+    stats.dates_by_year_video = Counter({2020: 1})
+    model = r.build_model_from_analyze_stats(stats)
+    html_out = r._render_analyze_sheet2(model)
+    assert "Медиафайлы по годам — фото и видео" in html_out
+
+
+def test_year_hbar_chart_dual_always_uses_two_row_layout():
+    """Речь пользователя, 2026-08-11: две предыдущие итерации экспериментировали с переменной
+    высотой строки для года только с одним типом (сначала растянутый бар, потом более короткая
+    строка) -- по прямой просьбе пользователя ("верни двух-строчную организацию (всегда)")
+    откачено назад: КАЖДЫЙ год -- полная bar_h+gap строка с двумя фиксированными позициями
+    (фото сверху, видео снизу), пустая половина просто не рисуется, но место остаётся --
+    причина отката: "при малом количестве цвет не виден" на одиночном тонком баре без второй
+    половины для контраста."""
+    only_photo = r._svg_year_hbar_chart_dual(Counter({2019: 10}), Counter())
+    both = r._svg_year_hbar_chart_dual(Counter({2019: 10}), Counter({2019: 3}))
+    rects_only = re.findall(r'<rect[^>]*height="([\d.]+)"', only_photo)
+    rects_both = re.findall(r'<rect[^>]*height="([\d.]+)"', both)
+    assert len(rects_only) == 1  # только фото -- один рисуемый bar, но строка полной высоты
+    assert len(rects_both) == 2
+    assert rects_only[0] == rects_both[0] == rects_both[1]  # та же sub_bar_h высота бара
+    # Высота строки ОДИНАКОВАЯ независимо от того, один тип в году или оба -- не резервируется
+    # переменно, всегда полная bar_h+gap.
+    h_only = float(re.search(r'viewBox="0 0 [\d.]+ ([\d.]+)"', only_photo).group(1))
+    h_both = float(re.search(r'viewBox="0 0 [\d.]+ ([\d.]+)"', both).group(1))
+    assert h_only == h_both
+
+
+def test_year_hbar_chart_dual_omits_zero_label_for_single_type_year():
+    svg = r._svg_year_hbar_chart_dual(Counter({2020: 10}), Counter())
+    assert ">0 файлов<" not in svg
+    assert ">10 файлов<" in svg
+
+
+def test_render_analyze_sheet2_uses_available_counts_not_found_for_type_pie():
+    """2.1/2.2 -- на available-счётчиках, не found (Задача A/C) -- битый файл не должен
+    попадать в диаграмму "доступного" типа/объёма."""
+    stats = _FakeAnalyzeStats()
+    stats.n_images = 5
+    stats.n_images_available = 3
+    stats.bytes_by_kind_available = Counter({"image": 999})
+    model = r.build_model_from_analyze_stats(stats)
+    assert model["counts_available"]["image"] == 3
+    assert model["bytes_by_kind_available"]["image"] == 999
+
+
+def test_render_analyze_sheet2_date_reliability_excludes_raw():
+    stats = _FakeAnalyzeStats()
+    stats.tier_counts = Counter({"A": 5, "C": 2, "D": 1})  # включает RAW
+    stats.tier_counts_no_raw = Counter({"A": 4, "C": 1})  # без RAW
+    model = r.build_model_from_analyze_stats(stats)
+    html_out = r._render_analyze_sheet2(model)
+    # Диаграмма строится из tier_counts_no_raw, не tier_counts -- "Точная (EXIF)" должна
+    # показать 4, не 5 (число из RAW-инклюзивного счётчика).
+    assert "4" in html_out
+
+
+def test_disputed_records_render_archive_file_as_readable_text_not_dead_link(tmp_path):
+    """Живая находка (SESSION-HANDOFF.txt, 2026-08-11), сквозной прогон run_analyze() ->
+    generate_report_from_analyze_stats(): файл ИЗНУТРИ архива (size==0, disputed) раньше
+    рендерился как file://-ссылка на несуществующий путь (tmp_extract уже вычищен) -- теперь
+    disputed_records (Задача A) + _path_or_archive_list_checklist_item() (Задача D) рендерят
+    его текстом "внутри архива Album.zip", без ссылки."""
+    import zipfile
+    import photosort_win as m
+    source = tmp_path / "NewBatch"
+    source.mkdir()
+    target = tmp_path / "MyArchive"
+    target.mkdir()
+    workdir = tmp_path / "appdir"
+    workdir.mkdir()
+    with zipfile.ZipFile(source / "Album.zip", "w") as zf:
+        zf.writestr("broken.jpg", b"")
+    cfg = m.Config(source=str(source), target=str(target), sample_limit=0, workdir=str(workdir))
+
+    stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+    out_path = tmp_path / "report.html"
+    r.generate_report_from_analyze_stats(stats, str(out_path))
+    html_out = out_path.read_text(encoding="utf-8")
+
+    assert "не удалось распознать" in html_out
+    assert "внутри архива Album.zip" in html_out
+    # Нерабочая file://-ссылка на вычищенный tmp_extract-путь -- ровно то, что было багом.
+    assert "file://" not in html_out or "tmp_extract" not in html_out.lower()
+
+
+def test_path_or_archive_list_checklist_item_shows_full_folder_path():
+    """Речь пользователя, 2026-08-11: заголовок группы файлов -- полный путь папки, не короткое
+    базовое имя (_folder_label() -- раньше "Downloads" вместо "C:\\Users\\x\\Downloads")."""
+    records = [
+        {"in_archive": False, "abs_path": r"C:\Users\x\Downloads\k.bmp", "display": "k.bmp"},
+        {"in_archive": False, "abs_path": r"C:\Users\x\Desktop\Telegram Desktop\a.png",
+         "display": "a.png"},
+    ]
+    _, detail = r._path_or_archive_list_checklist_item("не удалось распознать", "hint ", records)
+    assert r"C:\Users\x\Downloads (1" in detail
+    assert r"C:\Users\x\Desktop\Telegram Desktop (1" in detail
+
+
+def test_path_list_checklist_item_shows_full_folder_path():
+    paths = [r"C:\Users\x\Downloads\k.bmp", r"C:\Users\x\Desktop\Telegram Desktop\a.png"]
+    _, detail = r._path_list_checklist_item("не прочитано", "hint ", paths)
+    assert r"C:\Users\x\Downloads" in detail
+    assert r"C:\Users\x\Desktop\Telegram Desktop" in detail
 
 
 def test_render_sheet3_single_analyze_has_no_stale_stub():
@@ -2317,52 +2603,6 @@ def test_render_sheet3_single_analyze_has_no_stale_stub():
 
 def _dated_appended_row(dest, timestamp):
     return {"timestamp": timestamp, "source": dest, "dest": dest, "reason": "appended_new", "flags": ""}
-
-
-def test_generate_report_workdir_default_stays_minimal(tmp_path):
-    """REVIEW-HANDOFF.md, Раунд 38: CLI --dry-run (full_workdir по умолчанию False) должен
-    остаться на старом урезанном рендере, даже если данные технически содержат и историю, и
-    run_start -- та самая защита от фантомных повторных --dry-run записей, ради которой
-    full_workdir существует как отдельный явный флаг."""
-    data = {
-        "appended": [
-            _dated_appended_row(r"C:\T\ByDate\2019\2019-05 [PhotoArchive]\old.jpg", "2019-05-01 00:00:00"),
-            _dated_appended_row(r"C:\T\ByDate\2026\2026-01 [PhotoArchive]\new.jpg", "2026-01-02 00:00:00"),
-        ],
-        "skipped": [], "disputes": [], "dates_review": [], "unreadable": [], "near_dup_edges": [],
-    }
-    out_path = tmp_path / "report.html"
-    r.generate_report(data, str(out_path), level="workdir", run_start="2026-01-01 00:00:00")
-    html_out = out_path.read_text(encoding="utf-8")
-    assert "Ваш архив" not in html_out
-    assert "Что стоит проверить" in html_out or html_out  # старый рендер не падает
-
-
-def test_generate_report_workdir_full_workdir_differs_from_default_minimal(tmp_path):
-    """full_workdir=True (интерактивный [2] на непустом Target, REVIEW-HANDOFF.md, Раунд 38) --
-    2026-07-31, по прямой просьбе пользователя: кумулятивная "Ваш архив" здесь БОЛЬШЕ НЕ
-    рендерится (убрана вместе с тем же разделом у обычного level=="target", см.
-    _generate_from_model()) -- но full_workdir всё ещё отличается от обычного --dry-run:
-    вместо одного нераздельного "Что стоит проверить" (_render_sheet3_single) идёт та же
-    "Новое в этом пополнении"-подача, что у настоящей сборки (_render_recommendations)."""
-    data = {
-        "appended": [
-            _dated_appended_row(r"C:\T\ByDate\2019\2019-05 [PhotoArchive]\old.jpg", "2019-05-01 00:00:00"),
-            _dated_appended_row(r"C:\T\ByDate\2026\2026-01 [PhotoArchive]\new.jpg", "2026-01-02 00:00:00"),
-        ],
-        "skipped": [], "disputes": [], "dates_review": [],
-        # Лист 3/"Новое в этом пополнении" -- чек-лист ПРОБЛЕМ (near-dup/disputed/unreadable),
-        # не просто фактов -- пустой список "unreadable" дал бы пустую карточку (_render_
-        # checklist_card() возвращает "" без items), нужна хотя бы одна находка после run_start.
-        "unreadable": [{"source": r"C:\S\bad.jpg", "timestamp": "2026-01-02 00:00:00"}],
-        "near_dup_edges": [],
-    }
-    out_path = tmp_path / "report.html"
-    r.generate_report(data, str(out_path), level="workdir", run_start="2026-01-01 00:00:00",
-                       full_workdir=True)
-    html_out = out_path.read_text(encoding="utf-8")
-    assert "Ваш архив" not in html_out
-    assert "Новое в этом пополнении" in html_out
 
 
 def test_generate_report_target_omits_cumulative_archive_history(tmp_path):
@@ -2387,7 +2627,7 @@ def test_generate_report_target_omits_cumulative_archive_history(tmp_path):
     assert "Ваш архив" not in html_out
     assert "Накопилось до этого пополнения" not in html_out
     assert "2019" not in html_out  # старая история архива больше не рендерится вообще
-    assert "Новое в этом пополнении" in html_out
+    assert "<h2>Что скопировано</h2>" in html_out
     assert "Паспорт архива" in html_out  # совет запустить его отдельно, в CTA-блоке
 
 
@@ -2589,12 +2829,17 @@ def test_deep_nested_albums_list_truncates_with_and_more_count():
 
 
 def test_generate_passport_report_includes_years_chart(tmp_path):
+    """2026-08-15: график теперь строится из RAW-свободного сплита dates_by_year_photo/
+    _video (та же логика, что и "Медиафайлы по годам" в остальном отчёте), не из
+    dates_by_year (тот включает RAW) -- см. решение пользователя про единый вид "без RAW"."""
     stats = _FakeAnalyzeStats()
-    stats.dates_by_year = Counter({2019: 2, 2024: 5})
+    stats.dates_by_year_photo = Counter({2019: 2, 2024: 3})
+    stats.dates_by_year_video = Counter({2024: 2})
     out_path = tmp_path / "passport.html"
     r.generate_passport_report(stats, str(out_path))
     html_out = out_path.read_text(encoding="utf-8")
     assert "Медиафайлы по годам" in html_out
+    assert "без учёта RAW" in html_out
     assert "<svg" in html_out
 
 
@@ -2762,55 +3007,243 @@ def test_generate_passport_report_omits_geography_when_no_cities():
     assert r._render_geo_card(stats.cities) == ""
 
 
-def test_build_archive_tree_nests_by_slash_and_keeps_own_stats_unsummed():
-    """SESSION-HANDOFF.txt, "большой разбор report.html", пункт A -- "объём каждой папки БЕЗ
-    вложенных" дословно из ТЗ: узел показывает только свои own-файлы, промежуточные узлы
-    (здесь "ByDate", "2024") получают own=(0, 0), даже когда у них есть содержимое глубже."""
-    counts = Counter({"Albums/Свадьба": 2, "ByDate/2024/2024-07 [PhotoArchive]": 5})
-    byte_counts = Counter({"Albums/Свадьба": 2000, "ByDate/2024/2024-07 [PhotoArchive]": 5000})
-    tree = r._build_archive_tree(counts, byte_counts)
-    albums = tree["children"]["Albums"]
-    assert albums["own"] == (0, 0)  # "Albums" сам по себе -- не бакет, только контейнер
-    assert albums["children"]["Свадьба"]["own"] == (2, 2000)
-    bydate_2024 = tree["children"]["ByDate"]["children"]["2024"]
-    assert bydate_2024["own"] == (0, 0)
-    assert bydate_2024["children"]["2024-07 [PhotoArchive]"]["own"] == (5, 5000)
-
-
-def test_render_archive_tree_card_empty_counter_renders_nothing():
-    assert r._render_archive_tree_card(Counter(), Counter()) == ""
-
-
-def test_render_archive_tree_card_orders_top_level_albums_bydate_raw_unsorted():
-    """_TREE_TOP_ORDER -- фиксированный порядок верхнего уровня (структура архива всегда одна
-    и та же), не алфавитный (иначе "RAW" оказался бы перед "ByDate")."""
-    counts = Counter({"_Unsorted": 1, "RAW": 1, "ByDate/2024/2024-07 [PhotoArchive]": 1, "Albums/A": 1})
-    byte_counts = Counter({k: 100 for k in counts})
-    html_out = r._render_archive_tree_card(counts, byte_counts)
-    assert "Структура архива" in html_out
-    positions = [html_out.index(f'>{name}<') for name in ("Albums", "ByDate", "RAW", "_Unsorted")]
-    assert positions == sorted(positions)
+# 2026-08-14, прямая просьба пользователя (тем же диалогом, что и "Структура источника"
+# analyze): паспорт больше не строит собственное предсказанное дерево (_build_archive_tree()/
+# _render_archive_tree_card()/_TREE_TOP_ORDER, старая пара функций, удалена целиком) -- живой
+# тест поймал, что оно реально ОШИБАЛОСЬ на DVD-юните (VIDEO_TS внутри настоящего альбома
+# показывался в ByDate-бакете, не там, где физически лежит), заменено на ту же
+# _render_source_tree_card(), что уже питает "Структуру источника" analyze, с заголовком
+# "Структура архива" и source_path=target_path (см. generate_passport_report()).
 
 
 def test_generate_passport_report_includes_tree_when_data_present(tmp_path):
     stats = _FakeAnalyzeStats()
-    stats.tree_folder_counts = Counter({"Albums/Свадьба": 3, "ByDate/2024/2024-07 [PhotoArchive]": 2})
-    stats.tree_folder_bytes = Counter({"Albums/Свадьба": 3000, "ByDate/2024/2024-07 [PhotoArchive]": 2000})
+    stats.source_tree_counts_image = Counter({"Albums/Свадьба": 3})
+    stats.source_tree_counts_video = Counter({"ByDate/2024/2024-07 [PhotoArchive]": 2})
     out_path = tmp_path / "passport.html"
-    r.generate_passport_report(stats, str(out_path))
+    r.generate_passport_report(stats, str(out_path), target_path=r"D:\MyArchive")
     html_out = out_path.read_text(encoding="utf-8")
     assert "Структура архива" in html_out
     assert "Свадьба" in html_out
     assert "2024-07 [PhotoArchive]" in html_out
+    assert "MyArchive" in html_out  # голова дерева -- путь TARGET
 
 
 def test_generate_passport_report_omits_tree_when_empty(tmp_path):
     stats = _FakeAnalyzeStats()
-    assert stats.tree_folder_counts == Counter()
+    assert stats.source_tree_counts_image == Counter()
+    assert stats.source_tree_counts_video == Counter()
+    assert stats.source_tree_counts_raw == Counter()
     out_path = tmp_path / "passport.html"
     r.generate_passport_report(stats, str(out_path))
     html_out = out_path.read_text(encoding="utf-8")
     assert "Структура архива" not in html_out
+
+
+def test_generate_passport_report_tree_shows_dvd_unit_inside_real_album_not_bydate(tmp_path):
+    """Живая находка, поймавшая необходимость замены (2026-08-14): старое дерево
+    (tree_folder_counts) клало DVD-юнит внутри настоящего альбома в ByDate-бакет вместо
+    Albums-папки, где он физически лежит -- новое дерево строится из реального пути, ошибка
+    физически невозможна (source_tree_counts_video уже несёт правильный путь узла)."""
+    stats = _FakeAnalyzeStats()
+    stats.source_tree_counts_video = Counter({"Albums/RealAlbum/VIDEO_TS": 2})
+    out_path = tmp_path / "passport.html"
+    r.generate_passport_report(stats, str(out_path))
+    html_out = out_path.read_text(encoding="utf-8")
+    assert "RealAlbum" in html_out
+    assert "VIDEO_TS" in html_out
+    # "ByDate" не должно появиться в самом ДЕРЕВЕ (<ul class="tree">) -- не во всей карточке
+    # (её собственная подпись законно упоминает "Albums/ByDate" как противопоставление -- "не
+    # предсказанные бакеты", см. generate_passport_report()) и не во всей странице (другие
+    # карточки паспорта могут упоминать "по годам" законно).
+    tree_start = html_out.index('<ul class="tree">')
+    tree_end = html_out.index("</ul>", tree_start) + len("</ul>")
+    assert "ByDate" not in html_out[tree_start:tree_end]
+
+
+# 2026-08-14, прямая просьба пользователя: дерево реальной структуры SOURCE для analyze-отчёта
+# (в отличие от _build_archive_tree() выше -- ПРЕДСКАЗАННАЯ раскладка Albums/ByDate/RAW/
+# _Unsorted, здесь -- как файлы реально лежат сейчас, архивы отдельными ветками "так же, как и
+# папки", ограничение глубины отображения с "*"-сворачиванием, только количество, без байт).
+# Дополнение тем же днём: ОДИН видимый корень (имя/путь источника), не разные соседние ветки
+# без общего родителя; счётчик на узел -- разбивка "x/y/z файлов" (фото/видео/RAW), не общая
+# сумма; расшифровка формата -- один раз, в начале карточки, не на каждый узел.
+_EMPTY = Counter()
+
+
+def test_build_source_tree_own_count_is_counter_by_kind_not_int_or_bytes_pair():
+    tree = r._build_source_tree(Counter({"Album": 2}), _EMPTY, _EMPTY)
+    assert tree["children"]["Album"]["own"] == Counter({"image": 2})  # не голый int/bytes-пара
+
+
+def test_build_source_tree_nests_by_path_segments():
+    tree = r._build_source_tree(Counter({"A": 1, "A/B": 2}), _EMPTY, _EMPTY)
+    a = tree["children"]["A"]
+    assert a["own"] == Counter({"image": 1})
+    assert a["children"]["B"]["own"] == Counter({"image": 2})
+
+
+def test_build_source_tree_combines_all_three_kinds_on_same_node():
+    tree = r._build_source_tree(Counter({"Album": 1}), Counter({"Album": 3}), Counter({"Album": 0}))
+    assert tree["children"]["Album"]["own"] == Counter({"image": 1, "video": 3})
+
+
+def test_build_source_tree_root_level_files_go_directly_into_root_own():
+    """Ключ "" (файл прямо в корне SOURCE, см. _source_tree_parent_key()) больше не заводит
+    отдельный синтетический узел-лист (2026-08-14, прямая просьба пользователя: у дерева
+    теперь есть видимая шапка с именем источника, см. _render_source_tree_card()) -- идёт
+    прямо в own самого root."""
+    tree = r._build_source_tree(Counter({"": 3}), _EMPTY, _EMPTY)
+    assert tree["own"] == Counter({"image": 3})
+    assert tree["children"] == {}
+
+
+def test_render_source_tree_card_empty_counters_render_nothing():
+    assert r._render_source_tree_card(_EMPTY, _EMPTY, _EMPTY) == ""
+
+
+def test_render_source_tree_card_single_root_with_source_name_wraps_everything():
+    """Прямая просьба пользователя, 2026-08-14: "дерево должно быть одним для одного
+    источника, а не разные ветки. В голове должно быть имя(путь) источника" -- ровно один
+    верхнеуровневый <li> (корень с именем источника), найденные папки -- ЕГО дети внутри
+    вложенного <ul>, не соседи корня без общего родителя."""
+    html_out = r._render_source_tree_card(Counter({"Album": 1, "Other": 1}), _EMPTY, _EMPTY,
+                                            source_path="D:\\Фото")
+    assert html_out.count('<ul class="tree">') == 1
+    tree_body = html_out.split('<ul class="tree">', 1)[1]
+    assert tree_body.count("<li>") >= 3  # корень + Album + Other
+    assert ">D:\\Фото<" in html_out
+    # Корень -- единственный ПРЯМОЙ ребёнок <ul class="tree">, Album/Other -- внутри его <ul>
+    root_start = tree_body.index("<li>")
+    first_nested_ul = tree_body.index("<ul>", root_start)
+    assert tree_body.index(">Album<") > first_nested_ul
+    assert tree_body.index(">Other<") > first_nested_ul
+
+
+def test_render_source_tree_card_falls_back_to_generic_label_without_source_path():
+    html_out = r._render_source_tree_card(Counter({"Album": 1}), _EMPTY, _EMPTY)
+    assert ">Источник<" in html_out
+
+
+def test_render_source_tree_card_root_stat_is_own_root_files_not_grand_total():
+    """Уточнение пользователя, 2026-08-14: "медиафайлы, которые в корне пути, должны
+    показываться напротив имени источника (головы дерева)" -- ТОЛЬКО файлы прямо в корне
+    SOURCE (own), не сумма по всему дереву (та же семантика own, что и у любого другого узла)."""
+    html_out = r._render_source_tree_card(Counter({"": 1, "Album": 2}), _EMPTY, _EMPTY,
+                                            source_path="D:\\Фото")
+    root_line = html_out.split(">D:\\Фото<", 1)[1].split("</span>", 1)[0]
+    assert "1/0/0" in root_line  # только файл прямо в корне -- 1, не 1+2=3
+
+
+def test_render_source_tree_card_root_shows_no_stat_when_nothing_directly_in_root():
+    """Частый случай -- у корня нет собственных файлов, всё лежит в подпапках (та же
+    семантика, что уже подтверждена для промежуточных узлов вроде "Домашнее видео")."""
+    html_out = r._render_source_tree_card(Counter({"Album": 2}), _EMPTY, _EMPTY,
+                                            source_path="D:\\Фото")
+    root_line = html_out.split(">D:\\Фото<", 1)[1].split("<ul>", 1)[0]
+    assert "tree-stat" not in root_line
+
+
+def test_render_source_tree_card_folders_without_media_are_never_created():
+    """Не отдельный фильтр -- прямое следствие того, что узлы строятся ТОЛЬКО из путей файлов,
+    реально найденных как медиа (см. AnalyzeStats.source_tree_counts_image/video/raw) -- папка
+    без единого медиафайла нигде в поддереве никогда не попадает в counts вообще."""
+    html_out = r._render_source_tree_card(Counter({"Album": 1}), _EMPTY, _EMPTY)
+    assert "Album" in html_out
+    assert "EmptyFolder" not in html_out
+
+
+def test_render_source_tree_card_shows_archive_branch_same_as_folder():
+    html_out = r._render_source_tree_card(Counter({"Incoming/Album": 2}), _EMPTY, _EMPTY)
+    assert ">Incoming<" in html_out
+    assert ">Album<" in html_out
+
+
+def test_render_source_tree_card_within_depth_limit_shows_full_nesting_no_star():
+    counts = Counter({"A/B/C/D": 5})  # ровно 4 уровня -- граница, ещё не свёрнуто
+    html_out = r._render_source_tree_card(counts, _EMPTY, _EMPTY)
+    assert ">D<" in html_out  # последний уровень показан листом, без "*"
+    assert "D*" not in html_out
+    assert "более глубокая вложенность" not in html_out  # легенда "*" не нужна -- нечего скрывать
+
+
+def test_render_source_tree_card_beyond_depth_limit_collapses_and_marks_with_star():
+    counts = Counter({"A/B/C/D/E": 5})  # 5 уровней -- глубже лимита (4), сворачивается на D
+    html_out = r._render_source_tree_card(counts, _EMPTY, _EMPTY)
+    assert ">D*<" in html_out  # "*" -- прямая просьба пользователя, не "E" отдельным узлом
+    assert ">E<" not in html_out
+    assert "5/0/0" in html_out  # весь счёт E ушёл в own D (роллап), не потерян
+    assert "более глубокая вложенность" in html_out  # легенда "*"
+
+
+def test_render_source_tree_card_collapsed_node_sums_entire_hidden_subtree():
+    """Роллап суммирует ВСЁ поддерево за границей глубины, не только один непосредственный
+    уровень -- две ветки за пределами лимита из одного и того же узла D."""
+    counts = Counter({"A/B/C/D/E": 2, "A/B/C/D/F/G": 3})
+    html_out = r._render_source_tree_card(counts, _EMPTY, _EMPTY)
+    assert ">D*<" in html_out
+    assert "5/0/0" in html_out  # 2 + 3, обе ветки свёрнуты в один узел D
+
+
+def test_render_source_tree_card_no_bytes_shown_only_file_count():
+    html_out = r._render_source_tree_card(Counter({"Album": 7}), _EMPTY, _EMPTY)
+    assert "tree-stat" in html_out
+    assert "Б" not in html_out.split("<h2>")[1].split("</div>")[0]  # ни КБ/МБ/ГБ рядом с узлами
+
+
+def test_source_tree_stat_text_order_is_photo_video_raw():
+    """Прямая просьба пользователя, 2026-08-14: "Количество файлов показывать фото/видео/raw
+    (1/3/0 файлов)" -- ровно этот порядок, не алфавитный и не порядок объявления полей
+    AnalyzeStats (image/raw/video)."""
+    text = r._source_tree_stat_text(Counter({"image": 1, "video": 3, "raw": 0}))
+    assert "1/3/0" in text
+
+
+def test_source_tree_stat_text_empty_when_all_three_zero():
+    assert r._source_tree_stat_text(Counter()) == ""
+
+
+def test_render_source_tree_card_intermediate_node_without_own_files_shows_no_stat():
+    """Живой пример пользователя (превью, 2026-08-14): "Домашнее видео"/"Свадьба.zip" не имеют
+    медиафайлов в СВОЁМ корне (только в подпапках/VIDEO_TS/sub) -- у таких узлов вообще нет
+    строки статистики, не "0/0/0"."""
+    html_out = r._render_source_tree_card(Counter({"Домашнее видео/VIDEO_TS": 3}), _EMPTY, _EMPTY)
+    parent_li = html_out.split(">Домашнее видео<", 1)[1].split("<ul>", 1)[0]
+    assert "tree-stat" not in parent_li  # у "Домашнее видео" own пуст -- дети есть, стата нет
+    assert "0/0/0" not in html_out
+
+
+def test_render_source_tree_card_format_legend_appears_before_the_tree():
+    """Прямая просьба пользователя, 2026-08-14: "Расшифровка x/y/z - должно быть в начале
+    дерева как справка" -- легенда формата ДО <ul class="tree">, не после. Дополнение тем же
+    днём: сам буквенный код "x/y/z" убран из текста легенды (пользователь счёл его лишним --
+    "и без неё всё понятно"), но пояснение "фото/видео/RAW" в этой же строке остаётся."""
+    html_out = r._render_source_tree_card(Counter({"Album": 1}), _EMPTY, _EMPTY)
+    legend_pos = html_out.index("фото/видео/RAW")
+    tree_pos = html_out.index('<ul class="tree">')
+    assert legend_pos < tree_pos
+    assert "x/y/z" not in html_out
+
+
+def test_generate_report_from_analyze_stats_includes_source_tree_card(tmp_path):
+    stats = _FakeAnalyzeStats()
+    stats.source_tree_counts_image = Counter({"Album": 3})
+    out_path = tmp_path / "report.html"
+    r.generate_report_from_analyze_stats(stats, str(out_path), level="analyze")
+    html_out = out_path.read_text(encoding="utf-8")
+    assert "Структура источника" in html_out
+    assert "Album" in html_out
+
+
+def test_generate_report_from_analyze_stats_omits_source_tree_card_when_empty(tmp_path):
+    stats = _FakeAnalyzeStats()
+    assert stats.source_tree_counts_image == Counter()
+    assert stats.source_tree_counts_video == Counter()
+    assert stats.source_tree_counts_raw == Counter()
+    out_path = tmp_path / "report.html"
+    r.generate_report_from_analyze_stats(stats, str(out_path), level="analyze")
+    html_out = out_path.read_text(encoding="utf-8")
+    assert "Структура источника" not in html_out
 
 
 def test_split_rows_by_time_returns_only_new_rows():

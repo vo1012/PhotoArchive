@@ -53,3 +53,36 @@ def test_listdir_failure_empty_when_no_errors(tmp_path):
     list(walker.walk())
 
     assert walker.listdir_failed == []
+
+
+def test_run_analyze_surfaces_listdir_failed_paths(tmp_path, monkeypatch):
+    # SESSION-HANDOFF.txt, 2026-08-11 (отложенная задача): в отличие от run_for_source() выше
+    # (только len(walker.listdir_failed)), run_analyze() до этого фикса не читал
+    # walker.listdir_failed вовсе -- непрочитанная папка была видна только в консоли/
+    # actions.log, report.html для analyze ничего не показывал.
+    monkeypatch.setattr(m, "exiftool_batch", lambda paths, **kw: {})
+    source = tmp_path / "NewBatch"
+    (source / "good_dir").mkdir(parents=True)
+    (source / "good_dir" / "a.jpg").write_bytes(b"x" * 10)
+    blocked = source / "blocked_dir"
+    blocked.mkdir()
+    (blocked / "b.jpg").write_bytes(b"x" * 10)
+    target = tmp_path / "MyArchive"
+    target.mkdir()
+    workdir = tmp_path / "appdir"
+    workdir.mkdir()
+
+    real_listdir = os.listdir
+
+    def flaky_listdir(path, *a, **kw):
+        if "blocked_dir" in str(path):
+            raise OSError("Отказано в доступе")
+        return real_listdir(path, *a, **kw)
+
+    monkeypatch.setattr(m.os, "listdir", flaky_listdir)
+
+    cfg = m.Config(source=str(source), target=str(target), sample_limit=0, workdir=str(workdir))
+    stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
+
+    assert len(stats.listdir_failed_paths) == 1
+    assert "blocked_dir" in stats.listdir_failed_paths[0]

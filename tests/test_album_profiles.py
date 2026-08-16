@@ -114,9 +114,16 @@ class TestAlbumProfilesEndToEndIntoReport:
                         workdir=str(workdir), suppress_logs=True)
         stats, *_ = m.run(cfg, log=lambda *a, **k: None)
 
-        out_path = tmp_path / "report.html"
-        r.generate_report({}, str(out_path), level="workdir", run_stats=stats)
-        html_out = out_path.read_text(encoding="utf-8")
+        # 2026-08-14, прямая просьба пользователя: _render_dryrun_structure_recommendations()
+        # (карточка "похож на папку облачной синхронизации") больше не подключена ни к одному
+        # рендеру report.html (унификация dry-run/реального прогона, см. SESSION-HANDOFF.txt) --
+        # куда её вернуть, решится отдельно. Эта часть теста по-прежнему ценна: проверяет, что
+        # РЕАЛЬНЫЙ пайплайн (не синтетический run_stats, собранный вручную) кладёт album_profiles
+        # в форме, которую сама _render_dryrun_structure_recommendations() распознаёт как
+        # облачную синхронизацию -- функция и её данные не удалены, готовы к повторному
+        # подключению.
+        assert r._render_dryrun_structure_recommendations(stats) != ""
+        html_out = r._render_dryrun_structure_recommendations(stats)
         assert "похож на папку облачной синхронизации" in html_out
         assert "~Google Photos" in html_out
 

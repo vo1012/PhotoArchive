@@ -351,3 +351,27 @@ class _FakeAnalyzeStatsForFoundArchivesReport:
         self.n_tier_b_bydate = 0
         self.n_tier_c_bydate = 0
         self.n_tier_d_bydate = 0
+        # SESSION-HANDOFF.txt, 2026-08-11 ("большой разбор report.html", Задача A) -- см. тот
+        # же блок в tests/test_report.py::_FakeAnalyzeStats за обоснованием умолчаний.
+        self.max_depth = 0
+        self.n_folders_with_media = 0
+        self.n_dvd_units = 0
+        self.n_images_available = self.n_images
+        self.n_raw_available = self.n_raw
+        self.n_videos_available = self.n_videos
+        self.bytes_by_kind_available = Counter()
+        self.tier_counts_no_raw = Counter(self.tier_counts)
+        self.dates_by_year_photo = Counter()
+        self.dates_by_year_video = Counter()
+        self.format_counts_image = Counter()
+        self.format_counts_raw = Counter()
+        self.format_counts_video = Counter()
+        self.dvd_vob_count = 0
+        self.n_archives_failed = 0
+        self.failed_archive_paths = []
+        self.listdir_failed_paths = []
+        self.disputed_records = []
+        self.unreadable_records = []
+        self.source_tree_counts_image = Counter()
+        self.source_tree_counts_video = Counter()
+        self.source_tree_counts_raw = Counter()

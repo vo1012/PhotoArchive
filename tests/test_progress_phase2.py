@@ -939,6 +939,57 @@ def test_object_progress_dvd_unit_ticks_once_as_a_whole(tmp_path):
     assert sum(ticks) == 1
 
 
+# REVIEW-HANDOFF.md, Раунд 86, замечание 2 + follow-up (2026-08-10, речь пользователя):
+# run_analyze()/Паспорт читают EXIF батчами через _walk_with_exif_prefetch() (до 200 файлов на
+# спавн exiftool.exe). Первая версия фикса тикала "объектов %" только ПОСЛЕ реального
+# завершения батча -- честно, но на источнике МЕНЬШЕ одного батча означала "0%" почти весь
+# прогон, потом мгновенный скачок на 100% (эмпирически подтверждено на синтетике самой
+# сессией). Финальная версия тикает НА ОТПРАВКУ батча (перед exiftool_batch()), ОДНИМ вызовом
+# на весь батч -- небольшая, ограниченная неточность (максимум один батч вперёд) взамен куда
+# большей. Тест ниже проверяет: батч из нескольких файлов тикает РОВНО ОДИН РАЗ (не по одному
+# на файл), и этот тик происходит РАНЬШЕ (или одновременно с точки зрения порядка вызовов), чем
+# сам exiftool_batch() -- non-media файл по-прежнему тикает отдельно и сразу.
+def test_object_progress_ticks_whole_batch_once_on_dispatch(tmp_path, monkeypatch):
+    from PIL import Image
+
+    source = tmp_path / "NewBatch"
+    album = source / "Album"
+    album.mkdir(parents=True)
+    for name in ("photo1.jpg", "photo2.jpg", "photo3.jpg"):
+        Image.new("RGB", (800, 600), (10, 20, 30)).save(album / name, "JPEG")
+    (album / "readme.txt").write_bytes(b"not media")  # non-media -- ticks immediately, unaffected
+
+    events = []
+    real_exiftool_batch = m.exiftool_batch
+    real_add_object_progress = m.ProgressReporter.add_object_progress
+
+    def _spy_exiftool_batch(paths, **kw):
+        events.append(("batch", len(paths)))
+        return real_exiftool_batch(paths, **kw)
+
+    def _spy_add_object_progress(self, n=1):
+        events.append(("tick", n))
+        return real_add_object_progress(self, n)
+
+    monkeypatch.setattr(m, "exiftool_batch", _spy_exiftool_batch)
+    monkeypatch.setattr(m.ProgressReporter, "add_object_progress", _spy_add_object_progress)
+
+    cfg = m.Config(source=str(source), target=m._NO_TARGET_PLACEHOLDER, sample_limit=0,
+                    workdir=str(tmp_path / "appdir"))
+    stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
+
+    assert stats.total_files == 3  # readme.txt is "other" -- never enters the pipeline at all
+    # Ровно два тика: readme.txt (1, немедленно) и весь батч фото (3, одним вызовом) -- не по
+    # одному тику на каждое фото.
+    tick_events = [n for kind, n in events if kind == "tick"]
+    assert tick_events == [1, 3], events
+    # Батч-тик (n=3) происходит РАНЬШЕ вызова exiftool_batch() для этого же батча -- дошли до
+    # обоих событий и порядок именно такой, не наоборот.
+    tick_idx = next(i for i, e in enumerate(events) if e == ("tick", 3))
+    batch_idx = next(i for i, e in enumerate(events) if e[0] == "batch")
+    assert tick_idx < batch_idx, events
+
+
 # ---------------------------------------------------------------------------
 # ProgressReporter(two_line=True)
 # ---------------------------------------------------------------------------
@@ -993,31 +1044,89 @@ def test_two_line_status_rate_is_seconds_per_file_not_files_per_second(monkeypat
 def test_two_line_status_shows_elapsed_time_before_rate(monkeypatch):
     # 2026-08-07, речь пользователя ("зачем это выводить в статусе, я этого не просил" про
     # старый текстовый transient_op "чтение метаданных, файлов: N…" во время батч-чтения EXIF
-    # -- см. photosort_win.py:_walk_with_exif_prefetch()): убран, заменён общим "занято"
-    # временем текущей фазы -- показывает "не зависло" без привязки к конкретной операции,
-    # позиция -- между "объектов X/Y" и скоростью "с/файл", как попросил пользователь.
+    # -- см. photosort_win.py:_walk_with_exif_prefetch()): убран, заменён общим временем текущей
+    # фазы -- показывает "не зависло" без привязки к конкретной операции, позиция -- между
+    # "объектов X/Y" и скоростью "с/файл", как попросил пользователь. 2026-08-11, речь
+    # пользователя: подпись "занято" перед временем убрана -- само поле ЧЧ:ММ:СС без подписи.
     bar = _two_line_bar()
     monkeypatch.setattr(bar, "_t0", bar._t0 - 20)  # 20s elapsed -> tqdm.format_interval "00:20"
     line = bar._build_two_line_status()
     assert "00:20" in line
-    assert line.index("занято") < line.index("с/файл")
+    assert "занято" not in line
+    assert line.index("00:20") < line.index("с/файл")
     bar.close()
 
 
 def test_two_line_status_drops_elapsed_field_when_terminal_too_narrow(monkeypatch):
-    # Речь пользователя, 2026-08-07 ("нужно не допустить переноса строки статуса"): "занято" --
+    # Речь пользователя, 2026-08-07 ("нужно не допустить переноса строки статуса"): время --
     # единственное поле, добавленное этой правкой, не часть уже проверенного пользователем на
     # практике формата -- если целиком не влезает в реальную ширину терминала, просто не
     # показывается (перенос сломал бы самообновление строки через \r), вместо того чтобы
     # переноситься на вторую строку. На широком терминале (не-tty/файл/пайп в остальных тестах
     # этого класса) это никогда не срабатывает -- см. sys.stderr.isatty() guard.
+    #
+    # REVIEW-HANDOFF.md, Раунд 86, замечание 1: на 80-колоночном терминале одного только поля
+    # времени мало даже для короткого desc этого бара -- прогрессивное снятие полей
+    # (см. _build_two_line_status()) идёт дальше, снимает и скорость. Раньше тест этого не
+    # замечал, потому что не проверял итоговую длину строки вовсе -- именно это и было находкой
+    # ревизора (реальная строка оставалась 120+ символов даже "после фикса").
     bar = _two_line_bar()
+    monkeypatch.setattr(bar, "_t0", bar._t0 - 20)  # 20s elapsed -> "00:20", однозначный маркер поля
     monkeypatch.setattr(m.sys.stderr, "isatty", lambda: True)
     monkeypatch.setattr(m.shutil, "get_terminal_size",
                          lambda fallback=(80, 24): m.os.terminal_size((80, 24)))
     line = bar._build_two_line_status()
-    assert "занято" not in line
-    assert "с/файл" in line  # остальная строка по-прежнему показывается целиком
+    assert "00:20" not in line
+    assert "с/файл" not in line
+    assert "обработано объектов" in line  # ключевой сигнал "не зависло" не снимается никогда
+    assert len(line) <= 80, (len(line), line)
+
+
+def test_two_line_status_fits_80_columns_even_for_longest_op_description(monkeypatch):
+    # REVIEW-HANDOFF.md, Раунд 86, замечание 1, конкретный кейс из живого репорта пользователя:
+    # analyze/Паспорт архива использует самое длинное известное desc
+    # (_ANALYZE_PASSPORT_PROGRESS_DESC, self._op_field_width=51 для этого бара) -- на этом
+    # тексте прежний фикс (снятие только "занято") не помогал вообще: base+tail без "занято"
+    # был 123 символа против 80-колоночного cmd.exe. Текст операции теперь обрезается, если
+    # даже "op | всего медиа | обработано объектов %" без него не влезает -- итог должен
+    # реально уместиться, не только "стать короче".
+    bar = m.ProgressReporter(total=None, desc=m._ANALYZE_PASSPORT_PROGRESS_DESC, unit="файл",
+                              two_line=True, total_estimate=100)
+    bar.add_object_progress(42)
+    monkeypatch.setattr(m.sys.stderr, "isatty", lambda: True)
+    monkeypatch.setattr(m.shutil, "get_terminal_size",
+                         lambda fallback=(80, 24): m.os.terminal_size((80, 24)))
+    line = bar._build_two_line_status()
+    assert len(line) <= 80, (len(line), line)
+    assert "обработано объектов" in line  # ключевой сигнал сохранён даже при обрезке текста
+    assert "42.0%" in line
+    bar.close()
+    bar.close()
+
+
+def test_two_line_status_fits_below_55_columns_by_dropping_media_count_field(monkeypatch):
+    # REVIEW-HANDOFF.md, Раунд 87, замечание 1: предыдущий фикс (тест выше) обрезал только
+    # текст операции -- "всего медиа NNNN"-суффикс фиксированной длины никогда не снимался,
+    # так что минимальная длина строки (op="…", 1 символ) была константой ~55 символов,
+    # НЕ зависящей от реальной ширины терминала: ниже 55 колонок строка снова гарантированно
+    # переполнялась, неограниченно по мере сужения (тот же класс проблемы, что чинил весь
+    # Раунд 86, просто сдвинутый на другой порог). Теперь "всего медиа" -- ещё одно поле,
+    # снимаемое прогрессивно (после текста операции), "обработано объектов %" -- по-прежнему
+    # единственное НИКОГДА не снимаемое.
+    bar = m.ProgressReporter(total=None, desc=m._ANALYZE_PASSPORT_PROGRESS_DESC, unit="файл",
+                              two_line=True, total_estimate=100)
+    bar.add_object_progress(42)
+    monkeypatch.setattr(m.sys.stderr, "isatty", lambda: True)
+    for columns in (40, 30):
+        monkeypatch.setattr(m.shutil, "get_terminal_size",
+                             lambda fallback=(80, 24), columns=columns:
+                             m.os.terminal_size((columns, 24)))
+        line = bar._build_two_line_status()
+        assert len(line) <= columns, (columns, len(line), line)
+        assert "обработано объектов" in line
+        assert "42.0%" in line
+        assert "всего медиа" not in line
+    bar.close()
     bar.close()
 
 
@@ -1032,22 +1141,28 @@ def test_two_line_status_shows_object_progress_with_total_estimate():
     bar = _two_line_bar(total_estimate=100)
     bar.add_object_progress(7)
     line = bar._build_two_line_status()
-    assert "обработано объектов     7%" in line
+    assert "обработано объектов   7.0%" in line
     bar.close()
 
 
-def test_two_line_status_op_field_width_covers_analyze_passport_desc():
-    """REVIEW-HANDOFF.md, Раунд 67, замечание 2: _TWO_LINE_OP_FIELD_WIDTH раньше считался
-    только по паре run_for_source() (34/24 символа) -- desc run_analyze() ("Паспорт архива",
-    51 символ) был длиннее, колонка "| всего медиа" на этом пути уезжала вправо относительно
-    [2]/[3]. Проверяем, что позиция одинакова для короткого (run_for_source) и длинного
-    (run_analyze/Паспорт) desc -- колонки больше не расходятся."""
-    short_bar = _two_line_bar()  # "Разбираю и копирую файлы"
+def test_two_line_status_op_field_width_sized_per_bar_not_global_max():
+    """Речь пользователя, 2026-08-11: раньше ширина поля операции (_TWO_LINE_OP_FIELD_WIDTH,
+    удалена) считалась ОДНИМ общим максимумом по ВСЕМ resting-desc программы разом (Раунд 67
+    сознательно к этому и привёл -- см. архивную версию этого теста в git-истории) -- на
+    практике это разбухало пустым местом для короткого resting-текста (например,
+    "analyze — метаданные источника", 30 символов) до ширины самого длинного из ВСЕХ
+    ("analyze (Паспорт архива) — метаданные + хеширование", 51 символ), даже когда эти два
+    режима физически не могут появиться в одном прогоне. Теперь self._op_field_width считается
+    ПО КАЖДОМУ бару отдельно (max его собственного desc и _MAX_TRANSIENT_OP_LEN) -- короткий
+    resting-desc больше не тащит за собой чужую ширину, колонка "| всего медиа" у него теперь
+    ближе к началу строки, а не на одной вертикали с самым длинным desc программы."""
+    short_bar = _two_line_bar()  # "Разбираю и копирую файлы" (24 символа)
     long_bar = m.ProgressReporter(total=None, desc=m._ANALYZE_PASSPORT_PROGRESS_DESC,
-                                   unit="файл", two_line=True)
+                                   unit="файл", two_line=True)  # 51 символ
     short_pos = short_bar._build_two_line_status().index("| всего медиа")
     long_pos = long_bar._build_two_line_status().index("| всего медиа")
-    assert short_pos == long_pos
+    assert short_pos < long_pos
+    assert long_pos - short_pos == len(m._ANALYZE_PASSPORT_PROGRESS_DESC) - short_bar._op_field_width
     short_bar.close()
     long_bar.close()
 
@@ -1063,16 +1178,20 @@ def test_two_line_status_object_progress_without_total_estimate():
     bar.close()
 
 
-def test_two_line_status_percent_is_integer_below_99_and_one_decimal_above():
-    """Речь пользователя, 2026-08-09: целые проценты до 99% (не создавать иллюзию точности,
-    которой у total_estimate-оценки нет), 1 знак после запятой от 99% и выше (иначе "99%" мог
-    бы провисеть неизменным долго на большом архиве и читаться как зависание)."""
+def test_two_line_status_percent_always_has_one_decimal():
+    """Речь пользователя, 2026-08-10 (follow-up к Раунду 86): раньше целые проценты до 99%
+    (не создавать иллюзию точности, которой у total_estimate-оценки нет), 1 знак после запятой
+    только от 99% и выше (иначе "99%" мог бы провисеть неизменным долго на большом архиве и
+    читаться как зависание) -- тот же довод оказался применим и к НИЖНЕЙ границе: на большом
+    total_estimate один батч-тик двигает процент заметно меньше 1%, и "0%"/"50%" рискуют
+    провисеть так же, как раньше "99%". Знак после запятой у отношения не обещает точности
+    самого total_estimate -- теперь всегда 1 знак, без порога."""
     bar = _two_line_bar(total_estimate=1000)
-    bar.add_object_progress(500)  # 50.0% -- ниже порога, целое число
-    assert "обработано объектов    50%" in bar._build_two_line_status()
+    bar.add_object_progress(500)  # 50.0%
+    assert "обработано объектов  50.0%" in bar._build_two_line_status()
 
     bar._obj_count = 0
-    bar.add_object_progress(991)  # 99.1% -- на пороге и выше, один знак после запятой
+    bar.add_object_progress(991)  # 99.1%
     assert "обработано объектов  99.1%" in bar._build_two_line_status()
     bar.close()
 
@@ -1101,8 +1220,8 @@ def test_two_line_status_forces_100_percent_on_successful_completion(capsys):
     capsys.readouterr()  # discard update()'s own output
     bar.close()
     captured = capsys.readouterr()
-    assert "обработано объектов   100%" in captured.err
-    assert "7%" not in captured.err
+    assert "обработано объектов 100.0%" in captured.err
+    assert "7.0%" not in captured.err
 
 
 def test_two_line_status_does_not_force_100_percent_when_interrupted(capsys):
@@ -1115,13 +1234,14 @@ def test_two_line_status_does_not_force_100_percent_when_interrupted(capsys):
     bar.mark_interrupted()
     bar.close()
     captured = capsys.readouterr()
-    assert "обработано объектов     7%" in captured.err
+    assert "обработано объектов   7.0%" in captured.err
     assert "100%" not in captured.err
 
 
-def test_two_line_status_media_count_defaults_to_processed_count():
-    # media_count_from_objects=False (дефолт, Фаза 2/реальная сборка) -- "всего медиа" по-прежнему
-    # растёт по факту update(), write_object_line() ни на что не влияет.
+def test_two_line_status_media_count_is_processed_count():
+    # "всего медиа" -- всегда self.count (реально обработанные файлы, тот же счётчик, что и
+    # затем совпадает с итоговым отчётом), write_object_line() (n_found -- предварительная,
+    # не подтверждённая оценка) на отображаемое число не влияет.
     bar = _two_line_bar()
     bar.write_object_line("folder", "some/folder", 50)
     bar.update(3)
@@ -1130,23 +1250,21 @@ def test_two_line_status_media_count_defaults_to_processed_count():
     bar.close()
 
 
-def test_two_line_status_media_count_from_objects_ignores_batching_lag():
-    # SESSION-HANDOFF.txt п.1: run_analyze()'s бар (media_count_from_objects=True) -- "найдено
-    # медиа" растёт по write_object_line()'s n_found ПРИ ВХОДЕ в объект, не дожидаясь update()
-    # -- живой баг был именно в задержке между "объект найден" и "экзифтул батч протегирован".
-    # Подпись "найдено медиа" (не "всего медиа") -- отдельная находка того же боевого прогона
-    # 2026-08-09 (SESSION-HANDOFF.txt, "всего медиа" читалось как "обработано", а по факту это
-    # "найдено", с опережением факта обработки) -- TARGET-режим (media_count_from_objects=False)
-    # сохраняет старую подпись, см. test_two_line_status_media_count_defaults_to_processed_count.
-    bar = _two_line_bar(media_count_from_objects=True)
+def test_two_line_status_media_count_ignores_declared_object_totals():
+    """2026-08-11, речь пользователя (живой боевой прогон -- "найдено медиа" 1038 против 644 в
+    report.html): раньше analyze-бар показывал декларируемую (по n_found из write_object_line(),
+    ДО реальной обработки) оценку вместо self.count -- расходилась с итоговым отчётом, потому
+    что часть "найденного" по имени/расширению никогда не подтверждалась реальной классификацией
+    (архив без media внутри, битый файл и т.п.). Теперь ЛЮБОЙ two_line-бар (включая analyze)
+    показывает только self.count -- write_object_line() с любым n_found не должен сдвигать
+    отображаемое число ни на йоту, даже если update() ещё не было ни разу."""
+    bar = _two_line_bar()
     bar.write_object_line("folder", "some/folder", 50)
+    bar.write_object_line("archive", "some/archive.zip", 200)
     line = bar._build_two_line_status()
-    assert "найдено медиа       50" in line
-    # update() (реальная обработка файлов) не задваивает счётчик отображения -- он по-прежнему
-    # читает self._media_declared, не self.count.
-    bar.update(3)
-    line2 = bar._build_two_line_status()
-    assert "найдено медиа       50" in line2
+    assert "всего медиа        0" in line
+    assert "50" not in line
+    assert "200" not in line
     bar.close()
 
 

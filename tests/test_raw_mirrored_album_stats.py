@@ -4,11 +4,19 @@ image-video-веткой. Альбомный редизайн той же дат
 "source_album_appended" и связанную секцию report.py "Уже было в архиве" целиком (см. RULES.md)
 -- этот тест теперь проверяет сам физический результат (файл реально лежит в альбоме), не
 устаревшую статистику по имени."""
+import csv
+import glob
 import os
+
+from PIL import Image
 
 import photosort_win as m
 
 RAW_BYTES = b"raw" * 100
+
+
+def _make_jpeg(path, size=(800, 600), color=(10, 20, 30)):
+    Image.new("RGB", size, color).save(path, "JPEG")
 
 
 def _stub_exiftool(monkeypatch, tags_by_path=None):
@@ -83,3 +91,39 @@ def test_raw_mirrored_identical_at_destination_is_logged_not_silent(tmp_path, mo
     assert stats["raw_mirrored"] == 0  # not a fresh append -- caught as a duplicate
     assert stats["skipped_present"] == 1  # must be visible in stats, not silently dropped
     assert stats["bytes_saved_by_dedup"] == len(b"raw" * 100)
+
+
+def test_raw_skipped_has_jpeg_logs_jpeg_archive_dest_not_source_path(tmp_path, monkeypatch):
+    """2026-08-15, по прямой просьбе пользователя (детализация-xlsx,
+    PROMPT_report_detail_xlsx.md): matched_with в skipped.csv для raw_skipped_has_jpeg должен
+    указывать, КУДА реально лёг JPEG-партнёр В АРХИВЕ, не куда он положен на диске источника
+    -- та же связка (dest_path_by_read_path), что уже использует raw_dest_dir() для
+    RAW_LAYOUT=sibling. JPEG новый в этом же прогоне, поэтому lookup обязан сработать
+    (не откатываться на путь источника)."""
+    _stub_exiftool(monkeypatch)
+    source = tmp_path / "source"
+    album = source / "AlbumX"
+    album.mkdir(parents=True)
+    _make_jpeg(str(album / "photo.jpg"))
+    (album / "photo.cr2").write_bytes(RAW_BYTES)
+    target = tmp_path / "target"
+    target.mkdir()
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    cfg = m.Config(source=str(source), target=str(target), dry_run=False, sample_limit=0,
+                    workdir=str(workdir), mirror_raw=False)
+
+    stats, *_ = m.run(cfg, log=lambda *a, **k: None)
+
+    assert stats["raw_skipped"] == 1
+    jpeg_dest = target / "Albums" / "AlbumX" / "photo.jpg"
+    assert jpeg_dest.exists()
+
+    skipped_csv = glob.glob(str(target / "**" / "skipped.csv"), recursive=True)
+    assert len(skipped_csv) == 1
+    with open(skipped_csv[0], encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    raw_rows = [r for r in rows if r["source"].endswith("photo.cr2")]
+    assert len(raw_rows) == 1
+    assert raw_rows[0]["matched_with"] == str(jpeg_dest)
+    assert raw_rows[0]["reason"] == "raw_skipped_has_jpeg"

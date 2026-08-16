@@ -9,6 +9,9 @@ imagehash==4.3.2
 reverse_geocoder==1.5.1
 pyyaml==6.0.1
 tqdm==4.68.4
+openpyxl==3.1.5  # детализация прогонного отчёта (.xlsx), см. report_detail_xlsx.py --
+                 # ИМПОРТИРУЕТСЯ report.py/photosort_win.py, попадает в собранный .exe
+                 # (PyInstaller собирает автоматически, чистый Python-пакет, без C-расширений)
 markdown==3.10.2  # только для build\md_to_pdf.py (конвертация пользовательской
                   # документации в PDF для dist\) -- НЕ импортируется photosort_win.py,
                   # в собранный .exe не попадает
