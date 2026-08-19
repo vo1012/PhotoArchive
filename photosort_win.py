@@ -840,7 +840,11 @@ class ProgressReporter:
         честный счётчик без прогноза: X (self._obj_count) и Y (self.total_estimate) -- ОДНА и
         та же гранулярность (архив = 1 объект целиком, не по файлам внутри, см.
         SourceWalker.__init__()'s object_progress_cb/_quick_media_count_estimate()), поэтому Y
-        не ставится под сомнение сменой скорости, в отличие от старого "план".
+        не ставится под сомнение сменой скорости, в отличие от старого "план". 2026-08-17: эта
+        гранулярность считает только media-кандидатов (image/raw/video/архив/DVD-юнит) --
+        немедийные файлы (мгновенное, дешёвое решение при обходе) больше не входят ни в X, ни в
+        Y вовсе (боевой прогон: источник с большой долей таких файлов доводил X до Y почти
+        сразу, задолго до реальной обработки медиафайлов в остальном дереве).
 
         "обработано объектов XX.X%" (2026-08-09, речь пользователя): X/Y выше читалось как
         расхождение/баг, когда Y (оценка, не точный подсчёт -- см. _quick_media_count_estimate())
@@ -857,7 +861,20 @@ class ProgressReporter:
         так же долго, как раньше "99%", ровно тот же класс проблемы, что чинили в этом же
         раунде для самой метрики. Знак после запятой у ОТНОШЕНИЯ не обещает точности САМОГО
         Y -- это просто более точный вывод честно посчитанного X/Y, тот прежний довод не
-        держится. force_complete (см. close()) форсирует ровно "100.0%" на успешном
+        держится.
+
+        2026-08-17, речь пользователя ("завуалировать" остаточный эффект после фикса
+        media-кандидатов, см. докстрин X/Y выше): даже с 1 знаком после запятой X/Y*100 может
+        реально быть меньше 0.05% (округляется в "0.0%") достаточно долго -- источник с большой
+        долей media-кандидатов, ожидающих одного batch-тика (defer_media_object_tick), либо
+        просто очень большой Y. "0.0%" читается как зависание ровно тем же способом, что и целые
+        "0%"/"99%" выше -- тот же довод, применённый ещё раз, к предельно малым, а не только
+        целым, значениям. Пол в 0.1% (max(pct, 0.1), НИЖЕ force_complete/100%-ветки, значит не
+        путается с ними) -- значение, а не точность: как только total_estimate известен, строка
+        никогда не показывает буквальный "0.0%", даже до первого тика. Не обещание "хоть что-то
+        уже обработано" -- тот же класс намеренной неточности, что и у "1 знак после запятой"
+        выше (сигнал "не зависло", не точная метрика).
+        force_complete (см. close()) форсирует ровно "100.0%" на успешном
         (не прерванном Ctrl+C) завершении прогона -- по прямой просьбе пользователя "в конце
         работы всегда должно быть 100%", та же логика, что и у стандартных прогресс-баров
         (apt/npm и т.п.), даже если реальный X/Y к этому моменту не сошлись бы день в день.
@@ -889,7 +906,9 @@ class ProgressReporter:
         elif force_complete:
             obj_part = "100.0%"
         else:
-            pct = min(self._obj_count / self.total_estimate * 100, 100.0)
+            # max(..., 0.1) -- см. докстрин выше ("завуалировать" зависание при пренебрежимо
+            # малом X/Y*100): никогда не показывает буквальный "0.0%".
+            pct = max(min(self._obj_count / self.total_estimate * 100, 100.0), 0.1)
             obj_part = f"{pct:.1f}%"
         # Речь пользователя, 2026-08-02 ("в строке статуса необходим разделитель между блоками
         # информации"): раньше блоки (операция/всего медиа/объектов/скорость/своб.) отделялись
@@ -1632,8 +1651,6 @@ class Config:
     source: str
     target: str
     workdir: str = None  # None -> WORKDIR (папка рядом с exe/скриптом), см. __post_init__
-    layout: str = "hybrid"
-    date_mode: str = "best_guess"
     place_lookup: str = "offline"
     home_country: str = "RU"
     archive_hash_cache: bool = True
@@ -1680,10 +1697,14 @@ class Config:
                           # релизами, НЕ ротируется отдельно от остального actions.log
     suppress_logs: bool = False  # ТЗ-меню 2026-07-10, раздел 5: интерактивный "пробный
         # прогон" из голого меню репетирует archive dry_run=True, НО не создаёт __служебные_файлы\
-        # и не пишет CSV/summary.txt в TARGET -- результат только на экране. НЕ выставляется
-        # ни из CLI-флагов, ни из photoarchive_config.yaml (сознательно нет argparse/yaml ручки) -- только
-        # интерактивный слой (run_bare_launch()) конструирует Config с этим флагом напрямую.
-        # CLI --dry-run продолжает писать логи как раньше (suppress_logs там всегда False).
+        # и не пишет CSV/summary.txt в TARGET -- результат только на экране. НЕТ отдельной
+        # argparse/yaml-ручки под этим именем -- поле не читается напрямую из
+        # photoarchive_config.yaml/CLI-флага "--suppress-logs" (такого флага нет). Два места
+        # конструируют Config с этим флагом: интерактивный слой (run_bare_launch()) напрямую;
+        # CLI `_main()` -- run_for_source(..., suppress_logs=args.dry_run) (речь пользователя,
+        # 2026-08-18 -- раньше CLI --dry-run сюда всегда передавал False и писал настоящие
+        # CSV/archive_cache.db/архивный скелет в TARGET, не убирая за собой; теперь тот же
+        # механизм, что уже использует интерактивный [2]).
 
     def __post_init__(self):
         if self.bydate_granularity not in ("day", "month", "year", "flat"):
@@ -2337,6 +2358,12 @@ def file_type(path: str) -> str:
     return "other"
 
 
+# "обработано объектов X/Y" (_quick_media_count_estimate()/SourceWalker._tick_object()) считает
+# только эти типы -- см. докстрины обеих функций (2026-08-17, источник с большой долей
+# немедийных файлов).
+_MEDIA_CANDIDATE_TYPES = frozenset({"image", "raw", "video", "archive"})
+
+
 def classify_image(path: str, width, height, camera, size_bytes: int, small_image_px: int = 640):
     """Returns (is_media: bool, note: str|None).
     Two-tier minimum size rule:
@@ -2886,18 +2913,29 @@ def _strip_trailing_arrow(s: str) -> str:
 
 def _quick_media_count_estimate(source: str, cfg: Config, on_progress=None) -> int:
     """SESSION-HANDOFF.txt, редизайн живого вывода Фазы 2 -- быстрый предпересчёт SOURCE для
-    планового времени ("план" в [прошло/план]): считает ВСЕ файлы (без os.stat/хеширования/
-    классификации типа -- сознательная переоценка, дешевле точного счёта, дублировать
-    стоимость самого обхода нет смысла), под ТЕМИ ЖЕ правилами исключения папок, что и
-    SourceWalker._walk_dir() (HARD_EXCLUDE_DIRS/default_exclude_dirs/extra_exclude_dirs/
-    системные папки) -- ссылается на те же общие списки/cfg-поля, не копирует их отдельным
-    списком. Не полноценный дубль _walk_dir() (нет бухгалтерии found_archive_roots/
-    archive_logs и т.п. -- не нужна для одной лишь оценки количества).
+    планового времени ("план" в [прошло/план]): считает media-кандидатов (image/raw/video/
+    архив, см. file_type()) -- по имени/расширению, без os.stat/хеширования/открытия файла --
+    под ТЕМИ ЖЕ правилами исключения папок, что и SourceWalker._walk_dir()
+    (HARD_EXCLUDE_DIRS/default_exclude_dirs/extra_exclude_dirs/системные папки) -- ссылается на
+    те же общие списки/cfg-поля, не копирует их отдельным списком. Не полноценный дубль
+    _walk_dir() (нет бухгалтерии found_archive_roots/archive_logs и т.п. -- не нужна для одной
+    лишь оценки количества).
+
+    2026-08-17 (боевой прогон, источник с очень большой долей немедийных файлов): раньше
+    считались ВСЕ файлы без разбора типа ("сознательная переоценка, дешевле точного счёта") --
+    источник, где немедийные файлы (мгновенное, дешёвое решение при обходе) численно доминируют
+    над реальными медиа (дорогая exif/hash-обработка), доводил "обработано объектов %"
+    (SourceWalker._tick_object(), та же гранулярность) до 100% почти сразу после того, как такая
+    папка дощупана обходом, хотя реальная обработка медиафайлов в остальном дереве только
+    начиналась. Классификация по расширению (file_type()) не требует stat()/чтения файла --
+    та же дешёвая цена, что и раньше, просто с фильтром; исключённые (EXCLUDE_FILES_PATTERNS)/
+    sidecar (SIDECAR_PATTERNS) файлы не нужно фильтровать отдельно -- ни один из этих паттернов
+    не пересекается с image/raw/video/архивными расширениями, file_type() уже даёт им "other".
 
     on_progress(delta), если передан -- вызывается после каждой отсканированной директории с
-    числом файлов, найденных ИМЕННО в ней (не кумулятивным итогом) -- для собственного живого
-    индикатора предпересчёта ("Оцениваю объём работы: найдено N файлов…", см. run_for_source()),
-    чтобы сам предпересчёт на медленном/сетевом диске не выглядел зависшим."""
+    числом media-кандидатов, найденных ИМЕННО в ней (не кумулятивным итогом) -- для собственного
+    живого индикатора предпересчёта ("Оцениваю объём работы: найдено N файлов…", см.
+    run_for_source()), чтобы сам предпересчёт на медленном/сетевом диске не выглядел зависшим."""
     if os.path.isfile(winlong(source)):
         return 1  # одиночный файл/архив как SOURCE -- оценка не важна, не усложняем частным случаем
     count = 0
@@ -2942,7 +2980,7 @@ def _quick_media_count_estimate(source: str, cfg: Config, on_progress=None) -> i
             if on_progress is not None:
                 on_progress(1)
             return
-        delta = len(file_names)
+        delta = sum(1 for name in file_names if file_type(name) in _MEDIA_CANDIDATE_TYPES)
         count += delta
         if delta and on_progress is not None:
             on_progress(delta)
@@ -3170,38 +3208,38 @@ class SourceWalker:
         self._transient_op_cb = transient_op_cb
         # Живой репорт пользователя (2026-08-01): "объектов X/Y" в статус-строке -- ТРЕТИЙ,
         # отдельный от object_line_cb/self.count (медиафайлы) счётчик, той же ГРАНУЛЯРНОСТИ,
-        # что и _quick_media_count_estimate() (архив -- 1 штука, не заглядывая внутрь, любой
-        # файл -- 1 штука, включая те, что потом будут пропущены по паттерну/сайдкар/тип "other").
-        # object_progress_cb(1) -- вызывается РОВНО там же, где _quick_media_count_estimate()
-        # засчитывает файл: один раз на каждое имя в _walk_dir()'s files-цикле, ДО любых
-        # проверок пропуска (иначе числитель никогда не догонит знаменатель, который считает
-        # "вслепую", не зная про EXCLUDE_FILES_PATTERNS/SIDECAR_PATTERNS/тип "other") -- и
-        # ТОЛЬКО на depth==0 (настоящее дерево SOURCE, не содержимое распакованного архива,
-        # которое _quick_media_count_estimate() никогда не открывает -- см. её докстринг).
-        # Вложенный архив (найден УЖЕ внутри другого архива, depth>=1) поэтому естественно не
-        # получает своего тика -- он и так уже "внутри" тика внешнего архива.
+        # что и _quick_media_count_estimate() (архив -- 1 штука, не заглядывая внутрь, media-
+        # кандидат (image/raw/video/archive/DVD-юнит) -- 1 штука). 2026-08-17: EXCLUDE/SIDECAR/
+        # тип "other" файлы НЕ считаются вовсе (ни в X, ни в Y, см. докстрин
+        # _quick_media_count_estimate()) -- источник, где такие файлы численно доминируют,
+        # раньше доводил X до Y почти сразу, задолго до реальной обработки медиафайлов в
+        # остальном дереве. object_progress_cb(1) -- вызывается РОВНО там же, где
+        # _quick_media_count_estimate() засчитывает файл, и ТОЛЬКО на depth==0 (настоящее
+        # дерево SOURCE, не содержимое распакованного архива, которое
+        # _quick_media_count_estimate() никогда не открывает -- см. её докстринг). Вложенный
+        # архив (найден УЖЕ внутри другого архива, depth>=1) поэтому естественно не получает
+        # своего тика -- он и так уже "внутри" тика внешнего архива.
         self._object_progress_cb = object_progress_cb
         # REVIEW-HANDOFF.md, Раунд 86, замечание 2: для run_analyze()/Паспорта (батч-чтение
         # EXIF через _walk_with_exif_prefetch(), до 200 файлов на спавн exiftool.exe) обычный
         # тик "сразу после yield" тикает В МОМЕНТ, когда обёртка забрала имя файла в свой
         # внутренний pending -- задолго до того, как exiftool реально прочитал его метаданные
-        # батчем. На источнике с большой долей файлов, не проходящих через pending вовсе
-        # (SIDECAR/EXCLUDE/тип "other" -- тикают здесь же, немедленно, это ЧЕСТНО: для них
-        # больше не осталось работы) вперемешку с исходным "чистым" обходом (дешёвые
-        # scandir/stat, без задержки на сам батч) числитель обгоняет знаменатель почти сразу,
-        # хотя батч-спавны exiftool на самом деле только начинаются -- тот же класс проблемы,
-        # что уже чинили для self.count (см. ProgressReporter.__init__(), "self.count
-        # простаивал на 0 почти весь прогон"), но с противоположным симптомом. defer_media_object_tick=True
-        # (передаёт только run_analyze()) отключает ТОЛЬКО этот один тик (см. yield item ниже
-        # в files-цикле) -- вместо него тикает сама обёртка _walk_with_exif_prefetch()/
-        # _flush_exif_prefetch_batch() -- ОДНИМ вызовом на весь батч, на его ОТПРАВКУ в
-        # exiftool_batch(), не на завершение (follow-up 2026-08-10, речь пользователя: тик
-        # на завершение честен, но на источнике МЕНЬШЕ одного батча означает "0%" весь прогон
-        # и скачок на 100% в конце -- тот же класс проблемы, тикать чуть раньше реального
-        # завершения счёл меньшим злом, ограниченным максимум одним батчем). Остальные тики
-        # (excluded/sidecar/"other"/stat_failed -- уже честные, работа для них закончена
-        # немедленно; архив/DVD-юнит целиком -- отдельная гранулярность, не затронута)
-        # остаются как есть.
+        # батчем -- числитель обгоняет знаменатель, хотя батч-спавны exiftool на самом деле
+        # только начинаются -- тот же класс проблемы, что уже чинили для self.count (см.
+        # ProgressReporter.__init__(), "self.count простаивал на 0 почти весь прогон"), но с
+        # противоположным симптомом. defer_media_object_tick=True (передаёт только
+        # run_analyze()) отключает ТОЛЬКО этот один тик (см. yield item ниже в files-цикле) --
+        # вместо него тикает сам run_analyze(), поштучно, после analyze_batch() для каждого
+        # media-кандидата (:7057/:7070 и далее) -- НЕ одним вызовом на весь батч на его отправку
+        # в exiftool_batch(), как было раньше (2026-08-10 -- 2026-08-17): такая батч-гранулярность
+        # засчитывала видео из батча "готовыми" ДО того, как video_duration_and_resolution()/
+        # ffprobe -- самая медленная часть analyze_batch() для видео -- реально их обрабатывала,
+        # держала "объектов %" на 100% до десятков минут на боевом прогоне с крупными видео
+        # (живая находка 2026-08-18, REVIEW-HANDOFF.md Раунд 100, фикс 62f3c91). Остальные тики
+        # (stat_failed -- уже честный, работа для media-кандидата закончена немедленно; архив/
+        # DVD-юнит целиком -- отдельная гранулярность, не затронута) остаются как есть.
+        # EXCLUDE/SIDECAR/тип "other" сюда не относятся вовсе -- с 2026-08-17 они не тикают ни
+        # здесь, ни где-либо ещё (см. комментарий у object_progress_cb выше).
         self._defer_media_object_tick = defer_media_object_tick
         # 2026-07-11, user feedback: an archive being extracted already shows a "текущее
         # действие" note (see _handle_archive()) so a slow archive never reads as a hang --
@@ -3495,8 +3533,8 @@ class SourceWalker:
             # архива (тот же смысл, что и depth==0 в _walk_dir()/_tick_object()) -- файлы
             # внутри архива, оставшиеся без альбома, не тикают отдельно, архив уже тикнул
             # как единое целое (см. выше). См. defer_media_object_tick в __init__() -- тот же
-            # принцип, что и в основном files-цикле _walk_dir(): вместо этого тикает сама
-            # _walk_with_exif_prefetch()/_flush_exif_prefetch_batch(), на отправку батча.
+            # принцип, что и в основном files-цикле _walk_dir(): вместо этого тикает сам
+            # run_analyze(), поштучно, после analyze_batch() для этого же файла (2026-08-18).
             if (item.archive_boundary_idx is None and self._object_progress_cb is not None
                     and not self._defer_media_object_tick):
                 self._object_progress_cb(1)
@@ -3793,8 +3831,8 @@ class SourceWalker:
 
             # "объектов X/Y" (см. __init__()): тикает В МОМЕНТ ЗАВЕРШЕНИЯ разбора имени --
             # сразу после yield/yield-from (когда вызывающий код уже полностью обработал item
-            # и вернулся за следующим), либо сразу на месте для файлов, чьё решение окончательно
-            # и мгновенно (exclude/sidecar/other/ошибка stat()). Речь пользователя, 2026-08-07
+            # и вернулся за следующим), либо сразу на месте для media-кандидата, чьё решение
+            # окончательно и мгновенно (ошибка stat()). Речь пользователя, 2026-08-07
             # (живой боевой прогон F:→D:, "объектов 5577/27918 | всего медиа 2476 -- а что в
             # остальных?"): раньше тик стоял ДО любых проверок, безусловно на каждое имя при
             # самом обходе -- убегал далеко вперёд "всего медиа" на файлах/архивах, отложенных
@@ -3807,6 +3845,20 @@ class SourceWalker:
             # архива (depth>=1), которое знаменатель (_quick_media_count_estimate()) никогда не
             # видит (не открывает архивы) -- архив/DVD-юнит считается РОВНО ОДИН раз как единое
             # целое (тикает здесь же, после yield from на его обработку), не по файлам внутри.
+            #
+            # 2026-08-17 (боевой прогон, источник с очень большой долей немедийных файлов):
+            # exclude/sidecar/тип "other" здесь БОЛЬШЕ НЕ ТИКАЮТ (см. вызывающий код files-цикла
+            # ниже -- решение "не медиа" принимается на месте, `continue` без `_tick_object()`).
+            # Раньше все файлы весили "1" поровну в X и Y -- источник, где немедийные файлы
+            # (мгновенное, дешёвое решение) численно доминируют над реальными медиа (дорогая
+            # exif/hash-обработка), доводил X до Y почти сразу после того, как такая папка
+            # дощупана обходом, хотя реальная (медленная) обработка медиафайлов в остальном
+            # дереве только начиналась -- "обработано объектов 100%" держалось клэмпом
+            # (min(X/Y*100, 100.0) в _build_two_line_status()) буквально весь остаток прогона.
+            # Теперь X и Y считают ТОЛЬКО media-кандидатов (image/raw/video/archive/DVD-юнит) --
+            # та же гранулярность, что и у _quick_media_count_estimate() ниже (обновлена тем же
+            # заходом) -- немедийные файлы по-прежнему обходятся и логируются как раньше, просто
+            # не входят в счёт этой конкретной метрики.
             def _tick_object():
                 if depth == 0 and self._object_progress_cb is not None:
                     self._object_progress_cb(1)
@@ -3931,13 +3983,12 @@ class SourceWalker:
             for name in files:
                 full = os.path.join(cur_dirpath, name)
                 if _matches_any(name, EXCLUDE_FILES_PATTERNS) or name == SKIP_MARKER:
-                    # Решение (исключить) окончательно и мгновенно -- откладывать нечего,
-                    # тикаем сразу же (см. _tick_object() выше).
-                    _tick_object()
+                    # "объектов X/Y" больше не считает non-media файлы вовсе (см. докстрин
+                    # _tick_object() выше) -- НЕ тикаем: _quick_media_count_estimate() эти файлы
+                    # тоже не учитывает.
                     continue
                 if _matches_any(name, SIDECAR_PATTERNS):
                     self.sidecar_logs.append(origin_prefix + cur_rel_prefix + "/" + name if cur_rel_prefix else origin_prefix + name)
-                    _tick_object()
                     continue
 
                 rel = f"{cur_rel_prefix}/{name}" if cur_rel_prefix else name
@@ -3996,7 +4047,9 @@ class SourceWalker:
                     # image/raw/video/archive extensions enter the pipeline at all; borderline
                     # cases within those (icons, tiny images, broken files) are still routed to
                     # _disputed later via the is_media classification.
-                    _tick_object()
+                    # "объектов X/Y" не тикает за них (см. докстрин _tick_object()) -- источник с
+                    # горой немедийных файлов (боевой прогон пользователя, 2026-08-17) больше не
+                    # доминирует в знаменателе и не разгоняет числитель раньше реальной работы.
                     continue
 
                 try:
@@ -4037,7 +4090,7 @@ class SourceWalker:
                 self._close_deferred_gap()
                 yield item
                 # См. defer_media_object_tick в __init__(): run_analyze() тикает эту же
-                # единицу сама, позже, из _walk_with_exif_prefetch() -- см. её вызов ниже.
+                # единицу сама, позже, поштучно, после analyze_batch() (2026-08-18).
                 if not self._defer_media_object_tick:
                     _tick_object()
 
@@ -6016,8 +6069,10 @@ def index_archive(cfg: Config, conn, log=print):
     # гарантию suppress_logs "никогда не пишет в TARGET" (см. run()'s docstring,
     # _bare_launch_run_dryrun()). Тот же принцип, что уже защищает ensure_target_layout() чуть
     # ниже по файлу (:6070) -- suppress_logs=True не создаёт и не трогает ничего в TARGET,
-    # включая archive_cache.db. CLI `--dry-run` (dry_run=True, suppress_logs=False) не затронут --
-    # тот режим и так уже пишет настоящие CSV-логи в TARGET, кэш хешей ничем не хуже.
+    # включая archive_cache.db. CLI `--dry-run` (речь пользователя, 2026-08-18) теперь ТОЖЕ
+    # ходит сюда с `suppress_logs=True` (`_main()` передаёт `suppress_logs=args.dry_run`) --
+    # тот же принцип защищает и его: кэш хешей просто не читается/не пишется, TARGET не
+    # трогается вовсе, ничем не хуже пустого кэша на первом прогоне.
     cache = {}
     cache_conn = None
     if cfg.archive_hash_cache and not cfg.suppress_logs:
@@ -6486,7 +6541,7 @@ def _tag_prefetch_pairs(items: list, cache: dict, log=print) -> list:
 
 
 def _walk_with_exif_prefetch(items_iter, tmp_extract_dir: str, batch_size: int, cache: dict = None,
-                              log=print, rate_hint_cb=None, object_progress_cb=None):
+                              log=print, rate_hint_cb=None):
     """Оборачивает обход SourceWalker.walk(): yield (item, tags_by_path) в ТОМ ЖЕ порядке,
     что и исходный обход, но exiftool зовётся одним батч-спавном на до batch_size файлов
     вместо спавна на каждый -- при этом каждый item по-прежнему обрабатывается вызывающим
@@ -6519,51 +6574,44 @@ def _walk_with_exif_prefetch(items_iter, tmp_extract_dir: str, batch_size: int, 
     скорость на N ближайших update() (см. ProgressReporter.set_batch_rate_hint()), только для
     батчей БОЛЬШЕ 1 файла (одиночный archive-item и так измеряется честно обычным путём).
 
-    object_progress_cb -- см. _flush_exif_prefetch_batch(): тикает "объектов %" на ОТПРАВКУ
-    батча (до exiftool_batch()), не на завершение -- follow-up к REVIEW-HANDOFF.md, Раунду 86,
-    речь пользователя 2026-08-10 (проверил на синтетике: тик-на-завершение honestly точен, но
-    для источника МЕНЬШЕ одного батча (`_ANALYZE_EXIF_PREFETCH_BATCH_SIZE=200`) означает "0%"
-    почти весь прогон, потом мгновенно 100% одним скачком -- то же ощущение зависания, от
-    которого уходили)."""
+    "объектов %" здесь БОЛЬШЕ НЕ тикает (2026-08-18, боевой прогон -- источник с горой мелких
+    media-файлов + немного крупных/видео рядом): раньше object_progress_cb тикал ВЕСЬ батч
+    ОДНИМ вызовом на ОТПРАВКУ (до exiftool_batch(), см. REVIEW-HANDOFF.md, Раунд 86 follow-up)
+    -- заявленная неточность "максимум один батч вперёд реального прогресса" на практике
+    оказалась НЕ маленькой: если батч содержит видео, video_duration_and_resolution() (ffprobe)
+    для НИХ вызывается ПОЗЖЕ, поштучно, в run_analyze()'s основном цикле (analyze_batch()) --
+    сам батч уже тикнул как "готово" за секунды до того, как эти видео реально дощупаны, и если
+    это ПОСЛЕДНИЙ батч (или единственные видео источника попали именно в него), "обработано
+    объектов 100%" держится клэмпом (min(X/Y*100, 100.0)) весь остаток прогона, пока ffprobe
+    молча дообрабатывает эти видео -- тот же класс бага, что чинили Раунды 96-99, просто на
+    уровень ниже (там весило поровну "медиа vs немедиа", здесь -- "лёгкое медиа vs дорогое
+    медиа"). Тик теперь -- в run_analyze() ПОСЛЕ analyze_batch() для каждого item (её докстринг,
+    поиск "обработано объектов" там же) -- честно отражает реальное завершение, включая ffprobe."""
     tmp_prefix = tmp_extract_dir + os.sep
     pending = []
     for item in items_iter:
         if item.read_path.startswith(tmp_prefix):
             if pending:
-                yield from _flush_exif_prefetch_batch(pending, cache, log, rate_hint_cb,
-                                                        object_progress_cb)
+                yield from _flush_exif_prefetch_batch(pending, cache, log, rate_hint_cb)
                 pending = []
             yield from _tag_prefetch_pairs([item], cache, log=log)
             continue
         pending.append(item)
         if len(pending) >= batch_size:
-            yield from _flush_exif_prefetch_batch(pending, cache, log, rate_hint_cb,
-                                                    object_progress_cb)
+            yield from _flush_exif_prefetch_batch(pending, cache, log, rate_hint_cb)
             pending = []
     if pending:
-        yield from _flush_exif_prefetch_batch(pending, cache, log, rate_hint_cb, object_progress_cb)
+        yield from _flush_exif_prefetch_batch(pending, cache, log, rate_hint_cb)
 
 
-def _flush_exif_prefetch_batch(pending: list, cache, log, rate_hint_cb=None, object_progress_cb=None):
+def _flush_exif_prefetch_batch(pending: list, cache, log, rate_hint_cb=None):
     """См. rate_hint_cb в _walk_with_exif_prefetch(). Засекает реальное время вызова
     exiftool_batch() (внутри _tag_prefetch_pairs()) и передаёт средний секунд/файл в
     rate_hint_cb, для батчей больше 1 файла.
 
-    object_progress_cb (см. _walk_with_exif_prefetch()) -- тикает ВЕСЬ батч ОДНИМ вызовом,
-    ДО _tag_prefetch_pairs()/exiftool_batch() ниже (на первый next() этого генератора, то есть
-    в момент, когда вызывающий код впервые запросил результат этого батча -- раньше, чем
-    exiftool реально его протегировал). Небольшая, ограниченная неточность (максимум один
-    батч, ≤200 объектов, вперёд реального прогресса) -- принятый компромисс взамен куда
-    большей: без этого тика на источнике МЕНЬШЕ одного батча процент стоял бы на 0% весь
-    прогон и прыгал на 100% одним скачком в самом конце (реальный случай, см. запись выше).
-    DVD-юнит-файлы (item.dvd_dest_path не None) исключены из счёта -- та же гранулярность
-    "юнит целиком", уже тикает отдельно в SourceWalker, не по файлам внутри (см.
-    defer_media_object_tick в SourceWalker.__init__())."""
+    "объектов %" здесь больше не тикает (2026-08-18, см. докстринг _walk_with_exif_prefetch())
+    -- тикает run_analyze() сама, поштучно, после реальной обработки каждого item."""
     n = len(pending)
-    if object_progress_cb is not None:
-        n_countable = sum(1 for it in pending if it.dvd_dest_path is None)
-        if n_countable:
-            object_progress_cb(n_countable)
     t0 = time.time()
     try:
         yield from _tag_prefetch_pairs(pending, cache, log=log)
@@ -6741,7 +6789,7 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                             if cfg.sample_limit else _ANALYZE_EXIF_PREFETCH_BATCH_SIZE)
     walker_iter = _walk_with_exif_prefetch(
         walker.walk(), cfg.tmp_extract, prefetch_batch_size, cache=archive_cache, log=log,
-        rate_hint_cb=bar.set_batch_rate_hint, object_progress_cb=bar.add_object_progress)
+        rate_hint_cb=bar.set_batch_rate_hint)
     # itertools.islice(), не ручной `break` по счётчику: обычный `for` вызвал бы next() НА ОДИН
     # item больше лимита (Python сначала получает значение, потом исполняет тело цикла с
     # проверкой) -- этот лишний next() заставлял бы генератор набирать ЕЩЁ один полный
@@ -6995,8 +7043,17 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                     # от того, что вычислил tree_key выше (реальный альбом/RAW тут не место
                     # назначения).
                     stats.tree_folder_counts["_Unsorted"] += 1
+                    # "объектов %" -- см. докстринг _walk_with_exif_prefetch()/2026-08-18:
+                    # тикаем здесь, ПОСЛЕ решения "битый", не в момент отправки батча в
+                    # exiftool. archive_boundary_idx is None -- та же гранулярность, что и
+                    # _quick_media_count_estimate() (архив -- единица, не по файлам внутри,
+                    # уже тикнул отдельно в SourceWalker, см. defer_media_object_tick).
+                    if item.archive_boundary_idx is None:
+                        bar.add_object_progress(1)
                     continue
                 if item.ftype not in ("image", "raw", "video"):
+                    if item.archive_boundary_idx is None:
+                        bar.add_object_progress(1)
                     continue
 
                 cached = archive_cache.get(item.read_path) if archive_cache is not None else None
@@ -7007,6 +7064,15 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                                       skip_hash=(mode == "analyze-quick"), pool=pool, cache=archive_cache,
                                       tags_by_path=tags_by_path)
                 rec = recs[0]
+                # "объектов %" -- тикаем ЗДЕСЬ, ПОСЛЕ analyze_batch() (значит и после
+                # video_duration_and_resolution()/ffprobe для видео -- самой медленной части
+                # analyze-quick на источнике с крупными видео), не в момент, когда батч этого
+                # item был всего лишь ОТПРАВЛЕН в exiftool (см. докстринг
+                # _walk_with_exif_prefetch()/2026-08-18). Покрывает и broken/read_error-исход
+                # ниже (rec уже реально посчитан -- пусть и с ошибкой -- к этому моменту), и
+                # успешный. archive_boundary_idx is None -- тот же смысл, что и выше.
+                if item.archive_boundary_idx is None:
+                    bar.add_object_progress(1)
                 if rec.read_error or rec.broken:
                     stats.n_broken_or_zero += 1
                     # rec.read_error -- файл физически не удалось прочитать (I/O-сбой, TARGET-
@@ -7768,6 +7834,7 @@ def _process_record(rec, st: _RunState, log=print):
             run_logs.action(f"appended(raw): {item.origin_display} -> {dest_path}")
             stats["raw_mirrored"] += 1
             stats["bytes_appended"] += item.size
+            stats["bytes_appended_raw"] += item.size
         else:
             # Пакет A п.6 (SESSION-HANDOFF.txt, узкий, но реальный сценарий -- тот же класс,
             # что Раунд 70 ЗАМЕЧАНИЕ у image/video-ветки, см. её "identical_at_destination"
@@ -7964,6 +8031,7 @@ def _process_record(rec, st: _RunState, log=print):
         near_dup_key = f"near_dup_{pool_ftype}"
         stats[near_dup_key] = stats.get(near_dup_key, 0) + 1
     stats["bytes_appended"] += item.size
+    stats[f"bytes_appended_{pool_ftype}"] += item.size
     # А.4: разбивка "уникальных" по типу для итоговой сводки (фото vs видео)
     stats["appended_images" if pool_ftype == "image" else "appended_videos"] += 1
     # Security audit finding #5: p.5.7 made near-dup always append (never skip) -- track its
@@ -8051,6 +8119,14 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
         # А.4 (итоговая человекочитаемая сводка) -- чистые агрегаты поверх решений выше,
         # никакой новой бизнес-логики не добавляют:
         "appended_images": 0, "appended_videos": 0, "bytes_saved_by_dedup": 0,
+        # report.py, "Объём по категориям" (_render_run_copied()): та же сумма, что даёт
+        # bytes_appended, но разбита по фото/видео/RAW -- item.size известен независимо от
+        # cfg.dry_run (SOURCE физически существует всегда), в отличие от os.path.getsize(dest),
+        # которым report.py считал байты раньше (dest не существует в dry-run, см. _row_size()).
+        # DVD (VIDEO_TS) сюда сознательно не входит -- тот же принцип, что уже применяет
+        # report.py к bytes_by_kind (DVD -- отдельный именованный пункт, не смешивается с
+        # "видео").
+        "bytes_appended_image": 0, "bytes_appended_video": 0, "bytes_appended_raw": 0,
         # Security audit finding #5: bytes copied specifically as near-dup (see build_final_summary)
         "bytes_near_dup": 0,
         # p.5.3а: счётчики предупреждений по типам, для обогащённого summary.txt
@@ -8703,7 +8779,7 @@ DEFAULT_CONFIG_YAML_TEMPLATE = """\
 # поля Config, которые можно переопределить через photoarchive_config.yaml -- сознательно НЕ включает
 # source/target/dry_run/sample_limit: они всегда приходят из CLI/интерактивного ввода
 CONFIG_YAML_FIELDS = {
-    "layout", "date_mode", "place_lookup", "home_country", "archive_hash_cache",
+    "place_lookup", "home_country", "archive_hash_cache",
     "check_signature",
     "max_archive_depth", "max_dest_path", "small_image_px", "free_space_margin_gb",
     "read_retry_count", "read_retry_delay", "bydate_granularity",
@@ -9160,15 +9236,17 @@ def _reclaim_console_focus() -> None:
 def _finalize_target_report(target: str, level: str, any_succeeded: bool, total_processed: int,
                              open_browser: bool, log=print, run_stats: dict = None,
                              run_start: str = None, interrupted: bool = False,
-                             source_paths: list = None) -> str:
+                             source_paths: list = None, data: dict = None) -> str:
     """PROMPT_archive_report.md, разделы 1.1/1.1а/1.2: report.html после archive-прогона
     (level="target", файл персистентно в TARGET\\__служебные_файлы\\) или CLI --dry-run
-    (level="workdir", файл эфемерно в WORKDIR) -- ОБА читают одни и те же CSV-логи TARGET
-    (CLI --dry-run тоже пишет их по-настоящему, suppress_logs там всегда False, см.
-    build_arg_parser()), различаются только пунктом назначения файла и текстом-обёрткой
-    (level). Вызывается ОДИН раз на весь вызов (после цикла по expanded source), не на
-    каждый --source -- один прогон = один файл (раздел 1.1), а данные и так читаются из
-    файлов TARGET (кумулятивное состояние), не из in-memory дельты одного source.
+    (level="workdir", файл эфемерно в WORKDIR) -- различаются только пунктом назначения файла
+    и текстом-обёрткой (level). Данные (`data`, см. ниже): level=="target" (реальная сборка,
+    suppress_logs всегда False) читает настоящие CSV-логи TARGET с диска, level=="workdir"
+    (CLI --dry-run, речь пользователя 2026-08-18, suppress_logs=args.dry_run в _main() --
+    больше НЕ пишет в TARGET вообще) получает уже собранный вызывающим кодом `data` (in-memory
+    строки этого прогона + существующая история TARGET, тот же приём слияния, что уже
+    использует `_bare_launch_run_dryrun()`). Вызывается ОДИН раз на весь вызов (после цикла по
+    expanded source), не на каждый --source -- один прогон = один файл (раздел 1.1).
 
     any_succeeded=False -- TargetLocked/ошибка конфига для ВСЕГО вызова (одинаковы для всех
     source в одном вызове, общий TARGET/конфиг) -- ничего не пишем, не удаляем (раздел 1.1а,
@@ -9214,7 +9292,14 @@ def _finalize_target_report(target: str, level: str, any_succeeded: bool, total_
                                             suggest_other_location=not interrupted,
                                             app_version=__version__)
     else:
-        data = report.parse_target_logs(os.path.join(photosort_dir, "logs"))
+        # data (речь пользователя, 2026-08-18): CLI --dry-run больше не пишет настоящие CSV в
+        # TARGET (см. _main(), suppress_logs=args.dry_run) -- вызывающий код собирает те же
+        # данные в памяти (CollectingRunLogs + слияние с существующей историей TARGET, тот же
+        # приём, что уже использует _bare_launch_run_dryrun()) и передаёт их сюда готовыми.
+        # data=None (level=="target", реальная сборка -- suppress_logs там всегда False) --
+        # старое поведение, читаем настоящие CSV с диска.
+        if data is None:
+            data = report.parse_target_logs(os.path.join(photosort_dir, "logs"))
         report.generate_report(data, out_path, level=level, run_stats=run_stats,
                                 run_start=run_start, target_path=target, interrupted=interrupted,
                                 app_version=__version__, source_paths=source_paths)
@@ -10533,6 +10618,18 @@ def _main():
     results = []  # RunResult.stats по успешным SOURCE (archive-режим) -- "Этот прогон" в
                   # отчёте, тот же принцип, что и в _bare_launch_run_build()/
                   # _bare_launch_run_dryrun() (_sum_stats() ниже).
+    # Речь пользователя, 2026-08-18: CLI --dry-run раньше писал настоящие CSV/archive_cache.db/
+    # ensure_target_layout() (Albums/ByDate/RAW/_Unsorted, __служебные_файлы) прямо в TARGET,
+    # оставляя пустой скелет архива на диске после завершения -- suppress_logs там всегда было
+    # False (см. build_arg_parser()/старый докстринг _finalize_target_report()). Теперь
+    # suppress_logs=args.dry_run -- тот же механизм, что уже безопасно использует интерактивный
+    # [2] (_bare_launch_run_dryrun()): _run_impl() собирает строки в памяти
+    # (CollectingRunLogs), ensure_target_layout()/check_rules_version()/archive_cache-соединение/
+    # TargetLock пропускаются целиком (все уже гейтятся `not cfg.suppress_logs`, см. run()) --
+    # TARGET вообще не трогается физически. merged_rows ниже -- тот же приём слияния с уже
+    # существующей историей TARGET, что и там (см. combined_rows перед вызовом
+    # _finalize_target_report()).
+    merged_rows = {name: [] for name in report.CSV_NAMES}
     shared_pool = None  # раунд 5 ревью, вариант A: не пересканировать TARGET на каждый SOURCE
                         # этого batch'а (archive-режим) -- см. _run_impl/run_for_source
     with _prevent_sleep():
@@ -10541,13 +10638,16 @@ def _main():
                 print(f"\n########## SOURCE = {s} ##########")
             if args.mode == "archive":
                 result = run_for_source(s, target, args.dry_run, args.sample_limit, log=console_log,
-                                         shared_pool=shared_pool)
+                                         suppress_logs=args.dry_run, shared_pool=shared_pool)
                 source_exit_code = result.exit_code
                 if not result.failed:
                     any_succeeded = True
                     total_processed += result.processed_count
                     shared_pool = result.pool
                     results.append(result.stats)
+                    if args.dry_run:
+                        for name, rows in (result.collected_rows or {}).items():
+                            merged_rows.setdefault(name, []).extend(rows)
                     any_stopped_for_space = any_stopped_for_space or result.stopped_for_space
                 if result.interrupted:
                     any_interrupted = True
@@ -10580,6 +10680,21 @@ def _main():
             elif source_exit_code and not exit_code:
                 exit_code = source_exit_code
 
+    # combined_rows -- тот же приём слияния in-memory строк ЭТОГО прогона с уже существующей
+    # историей TARGET, что и в _bare_launch_run_dryrun() (см. её же комментарий у target_logs_dir)
+    # -- ничего не читает с диска, если args.dry_run=False (тогда _finalize_target_report()
+    # получает data=None и читает настоящие CSV, как раньше для реальной сборки).
+    combined_rows = None
+    if args.mode == "archive" and args.dry_run:
+        target_logs_dir = os.path.join(target, "__служебные_файлы", "logs")
+        combined_rows = merged_rows
+        if os.path.isdir(target_logs_dir):
+            target_data = report.parse_target_logs(target_logs_dir)
+            if any(target_data.get(name) for name in report.CSV_NAMES):
+                combined_rows = {name: list(target_data.get(name, [])) for name in report.CSV_NAMES}
+                for name, rows in merged_rows.items():
+                    combined_rows.setdefault(name, []).extend(rows)
+
     if any_interrupted:
         # Ctrl+C-пакет: тот же приём, что и _bare_launch_run_build() -- отчёт формируется
         # здесь, затем KeyboardInterrupt возбуждается заново для main() (сообщение "Прервано
@@ -10590,7 +10705,8 @@ def _main():
         report_path = _finalize_target_report(target, level, any_succeeded, total_processed,
                                                open_browser=interactive_mode, log=console_log,
                                                run_stats=merged, run_start=run_start,
-                                               interrupted=True, source_paths=expanded)
+                                               interrupted=True, source_paths=expanded,
+                                               data=combined_rows)
         if report_path:
             console_log(f"\n  Отчёт (данные на момент остановки): {_display_path(report_path)}")
         raise KeyboardInterrupt
@@ -10603,7 +10719,7 @@ def _main():
         report_path = _finalize_target_report(target, level, any_succeeded, total_processed,
                                                open_browser=interactive_mode, log=console_log,
                                                run_stats=merged, run_start=run_start,
-                                               source_paths=expanded)
+                                               source_paths=expanded, data=combined_rows)
 
     _pause_before_exit(interactive_mode, report_path=report_path)
     return exit_code

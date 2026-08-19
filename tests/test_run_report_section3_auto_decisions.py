@@ -134,6 +134,43 @@ class TestRenderRunAutoDecisions:
         idx_renamed = html_out.index("изменённым именем")
         assert idx_date < idx_series < idx_disputes < idx_renamed
 
+    def test_quality_flags_both_shown(self):
+        """Речь пользователя, 2026-08-18: "Качество кадров" -- диаграмма analyze-уровня, не
+        перенесённая в этот отчёт даже текстом (в отличие от "Надёжности дат") -- закрывает
+        пробел, quality_flags уже считался в checklist_new, просто не читался здесь."""
+        checklist_new = {"quality_flags": {"small_image": 2, "low_confidence_photo": 3}}
+        html_out = r._render_run_auto_decisions(checklist_new, "target")
+        assert "<b>5</b> файлов" in html_out
+        assert "с пометкой на проверку качества" in html_out
+        assert "2 файла маленького размера" in html_out
+        assert "3 файла с низкой уверенностью распознавания" in html_out
+
+    def test_quality_flags_only_small_image(self):
+        checklist_new = {"quality_flags": {"small_image": 1}}
+        html_out = r._render_run_auto_decisions(checklist_new, "target")
+        assert "<b>1</b> файл" in html_out
+        assert "маленького размера" in html_out
+        assert "низкой уверенностью" not in html_out
+
+    def test_quality_flags_preview_wording(self):
+        checklist_new = {"quality_flags": {"small_image": 1}}
+        html_out = r._render_run_auto_decisions(checklist_new, "workdir")
+        assert "будет сохранён с пометкой на проверку качества" in html_out
+
+    def test_quality_flags_alone_renders_section(self):
+        """Без quality_flags раздел не рендерился бы вовсе (test_empty_state_renders_nothing)
+        -- один только этот сигнал обязан включить карточку."""
+        checklist_new = {"quality_flags": {"small_image": 1}}
+        html_out = r._render_run_auto_decisions(checklist_new, "target")
+        assert "<h2>Что программа решила сама</h2>" in html_out
+
+    def test_order_quality_flags_after_renames(self):
+        checklist_new = {"renamed_count": 1, "quality_flags": {"small_image": 1}}
+        html_out = r._render_run_auto_decisions(checklist_new, "target")
+        idx_renamed = html_out.index("изменённым именем")
+        idx_quality = html_out.index("проверку качества")
+        assert idx_renamed < idx_quality
+
 
 class TestGenerateReportWiresSectionThree:
     def test_target_report_contains_section_three(self, tmp_path):

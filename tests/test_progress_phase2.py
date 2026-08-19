@@ -643,16 +643,18 @@ def test_extraction_log_uses_fmt_size_gb_for_tiny_archive(tmp_path):
 # _quick_media_count_estimate()
 # ---------------------------------------------------------------------------
 
-def test_quick_media_count_estimate_counts_all_files_under_default_rules(tmp_path):
+def test_quick_media_count_estimate_counts_only_media_candidates(tmp_path):
+    # 2026-08-17: readme.txt ("other" file_type) no longer counted -- see docstring, source
+    # dominated by non-media files used to drag "обработано объектов %" to 100% almost instantly.
     source = tmp_path / "source"
     (source / "Album").mkdir(parents=True)
     (source / "Album" / "a.jpg").write_bytes(b"x")
     (source / "Album" / "b.jpg").write_bytes(b"x")
-    (source / "readme.txt").write_bytes(b"x")  # counted too -- estimate doesn't classify type
+    (source / "readme.txt").write_bytes(b"x")  # not counted -- "other" file_type
     (tmp_path / "target").mkdir()
 
     cfg = _make_cfg(tmp_path)
-    assert m._quick_media_count_estimate(str(source), cfg) == 3
+    assert m._quick_media_count_estimate(str(source), cfg) == 2
 
 
 def test_quick_media_count_estimate_excludes_default_exclude_dirs(tmp_path):
@@ -771,10 +773,10 @@ def test_quick_media_count_estimate_skip_marker_at_root_does_not_skip_root(tmp_p
     (tmp_path / "target").mkdir()
 
     cfg = _make_cfg(tmp_path)
-    # Корень не пропускается -- считаются ОБА файла, включая сам SKIP_PHOTOSORT.txt (оценка не
-    # классифицирует тип файла, см. докстринг функции), не только a.jpg.
+    # Корень не пропускается -- но сам SKIP_PHOTOSORT.txt не media-кандидат (2026-08-17,
+    # оценка теперь классифицирует по расширению) -- считается только a.jpg.
     y = m._quick_media_count_estimate(str(source), cfg)
-    assert y == 2
+    assert y == 1
 
     ticks = []
     walker = m.SourceWalker(cfg, log=lambda *a, **k: None, object_progress_cb=ticks.append)
@@ -785,15 +787,20 @@ def test_quick_media_count_estimate_skip_marker_at_root_does_not_skip_root(tmp_p
 # ---------------------------------------------------------------------------
 # SourceWalker: object_progress_cb -- "объектов X/Y" в статус-строке (живой репорт
 # пользователя, 2026-08-01, заменяет [прошло/план]). ДОЛЖЕН тикать той же гранулярностью,
-# что и _quick_media_count_estimate() (архив = 1, не заглядывая внутрь, любой файл = 1,
-# включая не-медиа) -- иначе числитель никогда не догонит знаменатель.
+# что и _quick_media_count_estimate() (архив = 1, не заглядывая внутрь, media-кандидат = 1,
+# non-media НЕ считается вовсе, см. 2026-08-17) -- иначе числитель никогда не догонит
+# знаменатель.
 # ---------------------------------------------------------------------------
 
-def test_object_progress_ticks_once_per_file_including_non_media(tmp_path):
+def test_object_progress_ignores_non_media_files(tmp_path):
+    # 2026-08-17: readme.txt больше не тикает -- источник, где немедийные файлы численно
+    # доминируют (боевой прогон), раньше доводил X до Y почти сразу, задолго до реальной
+    # обработки медиафайлов в остальном дереве (клэмп min(X/Y*100, 100.0) держал 100% весь
+    # остаток прогона).
     source = tmp_path / "source"
     (source / "Album").mkdir(parents=True)
     (source / "Album" / "a.jpg").write_bytes(b"x")
-    (source / "readme.txt").write_bytes(b"x")  # non-media -- must still tick
+    (source / "readme.txt").write_bytes(b"x")  # non-media -- must NOT tick
     (tmp_path / "target").mkdir()
 
     cfg = _make_cfg(tmp_path)
@@ -801,8 +808,49 @@ def test_object_progress_ticks_once_per_file_including_non_media(tmp_path):
     walker = m.SourceWalker(cfg, log=lambda *a, **k: None, object_progress_cb=ticks.append)
     list(walker.walk())
 
-    assert sum(ticks) == 2  # a.jpg + readme.txt
+    assert sum(ticks) == 1  # a.jpg only, not readme.txt
     assert sum(ticks) == m._quick_media_count_estimate(str(source), cfg)
+
+
+def test_object_progress_junk_heavy_folder_does_not_move_percent_before_real_media_is_reached(tmp_path):
+    """Живой боевой прогон, 2026-08-17: источник с папкой из тысяч мелких немедийных файлов
+    (обходится/дисквалифицируется мгновенно, но реально требует времени на сам обход папки)
+    показывал "обработано объектов 100%" задолго до конца прогона -- эта папка численно
+    доминировала и в X, и в Y (см. докстрины _tick_object()/_quick_media_count_estimate()),
+    хотя реальные (медленные, exif/hash) медиафайлы в других папках дерева ещё не были
+    обработаны ни разу. red-before-green: до фикса Y == 2005 (2000 junk + 5 фото), а X
+    (после полного обхода Junk, до первого реального фото) уже был бы 2000 -- 99.75%,
+    процент вплотную к 100% раньше, чем обработан хоть один реальный файл. После фикса Junk не
+    входит ни в X, ни в Y вовсе -- Y == 5, X == 0 в той же точке."""
+    source = tmp_path / "source"
+    junk = source / "AAA_Junk"  # walked first (alphabetically before the photo folders below)
+    junk.mkdir(parents=True)
+    for i in range(2000):
+        (junk / f"tile{i:04d}.dat").write_bytes(b"x")
+    photos1 = source / "BBB_Photos1"
+    photos1.mkdir()
+    for i in range(3):
+        (photos1 / f"img{i:02d}.jpg").write_bytes(b"x")
+    photos2 = source / "CCC_Photos2"
+    photos2.mkdir()
+    for i in range(2):
+        (photos2 / f"img{i:02d}.jpg").write_bytes(b"x")
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)
+    total_estimate = m._quick_media_count_estimate(str(source), cfg)
+    assert total_estimate == 5  # 3 + 2 photos -- 2000 junk files no longer inflate Y
+
+    ticks = []
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None, object_progress_cb=ticks.append)
+    items = walker.walk()
+    first_item = next(items)
+    # AAA_Junk (2000 files) is fully walked before BBB_Photos1's first item is ever yielded
+    # (alphabetical traversal) -- if junk still ticked, sum(ticks) would already be ~2000 here.
+    assert first_item.rel_path == "BBB_Photos1/img00.jpg", first_item.rel_path
+    assert sum(ticks) == 0, sum(ticks)
+    list(items)  # drain the rest
+    assert sum(ticks) == total_estimate == 5
 
 
 def test_object_progress_ticks_once_per_archive_regardless_of_media_inside(tmp_path):
@@ -939,17 +987,21 @@ def test_object_progress_dvd_unit_ticks_once_as_a_whole(tmp_path):
     assert sum(ticks) == 1
 
 
-# REVIEW-HANDOFF.md, Раунд 86, замечание 2 + follow-up (2026-08-10, речь пользователя):
-# run_analyze()/Паспорт читают EXIF батчами через _walk_with_exif_prefetch() (до 200 файлов на
-# спавн exiftool.exe). Первая версия фикса тикала "объектов %" только ПОСЛЕ реального
-# завершения батча -- честно, но на источнике МЕНЬШЕ одного батча означала "0%" почти весь
-# прогон, потом мгновенный скачок на 100% (эмпирически подтверждено на синтетике самой
-# сессией). Финальная версия тикает НА ОТПРАВКУ батча (перед exiftool_batch()), ОДНИМ вызовом
-# на весь батч -- небольшая, ограниченная неточность (максимум один батч вперёд) взамен куда
-# большей. Тест ниже проверяет: батч из нескольких файлов тикает РОВНО ОДИН РАЗ (не по одному
-# на файл), и этот тик происходит РАНЬШЕ (или одновременно с точки зрения порядка вызовов), чем
-# сам exiftool_batch() -- non-media файл по-прежнему тикает отдельно и сразу.
-def test_object_progress_ticks_whole_batch_once_on_dispatch(tmp_path, monkeypatch):
+# REVIEW-HANDOFF.md, Раунд 86, замечание 2 + follow-up (2026-08-10, речь пользователя) --
+# ПЕРЕСМОТРЕНО 2026-08-18 (боевой прогон: источник с горой мелких media-файлов + немного
+# крупных/видео рядом, "обработано объектов 100%" на 4-й минуте при полутора часах прогона).
+# Промежуточная версия (тик НА ОТПРАВКУ батча, ОДНИМ вызовом на весь батч, ДО exiftool_batch())
+# была задумана как "ограниченная неточность, максимум один батч вперёд" -- но video_duration_
+# and_resolution() (ffprobe) для видео из этого же батча вызывается ПОЗЖЕ, поштучно, внутри
+# analyze_batch() в основном цикле run_analyze() -- если батч содержал видео (особенно
+# последний батч источника), тик уже засчитывал их как "готово" за секунды/минуты до того, как
+# ffprobe реально их дощупал, и "обработано объектов 100%" держалось клэмпом весь этот разрыв.
+# Финальная версия тикает ПОШТУЧНО, в run_analyze(), ПОСЛЕ analyze_batch() для каждого item --
+# честно отражает реальное завершение (ffprobe включительно), без батч-уровня компромисса.
+# Тест ниже проверяет: тик идёт по одному на файл (не пачкой на весь батч), и после
+# exiftool_batch() (тегирование батча -- дешёвая часть, отдельная от per-item ffprobe) -- non-
+# media файл (2026-08-17: больше НЕ тикает вовсе) не создаёт лишних событий.
+def test_object_progress_ticks_once_per_item_after_analyze_batch(tmp_path, monkeypatch):
     from PIL import Image
 
     source = tmp_path / "NewBatch"
@@ -957,7 +1009,7 @@ def test_object_progress_ticks_whole_batch_once_on_dispatch(tmp_path, monkeypatc
     album.mkdir(parents=True)
     for name in ("photo1.jpg", "photo2.jpg", "photo3.jpg"):
         Image.new("RGB", (800, 600), (10, 20, 30)).save(album / name, "JPEG")
-    (album / "readme.txt").write_bytes(b"not media")  # non-media -- ticks immediately, unaffected
+    (album / "readme.txt").write_bytes(b"not media")  # non-media -- never ticks (2026-08-17)
 
     events = []
     real_exiftool_batch = m.exiftool_batch
@@ -979,20 +1031,91 @@ def test_object_progress_ticks_whole_batch_once_on_dispatch(tmp_path, monkeypatc
     stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
 
     assert stats.total_files == 3  # readme.txt is "other" -- never enters the pipeline at all
-    # Ровно два тика: readme.txt (1, немедленно) и весь батч фото (3, одним вызовом) -- не по
-    # одному тику на каждое фото.
+    # По одному тику на файл (3 отдельных вызова с n=1), не один пачкой на n=3 -- readme.txt не
+    # тикает вовсе (2026-08-17, "other" не считается в X/Y).
     tick_events = [n for kind, n in events if kind == "tick"]
-    assert tick_events == [1, 3], events
-    # Батч-тик (n=3) происходит РАНЬШЕ вызова exiftool_batch() для этого же батча -- дошли до
-    # обоих событий и порядок именно такой, не наоборот.
-    tick_idx = next(i for i, e in enumerate(events) if e == ("tick", 3))
+    assert tick_events == [1, 1, 1], events
+    # Батч (exiftool_batch(), тегирование) происходит РАНЬШЕ любого тика для этого батча --
+    # тики теперь следуют ЗА реальной обработкой, не опережают её.
     batch_idx = next(i for i, e in enumerate(events) if e[0] == "batch")
-    assert tick_idx < batch_idx, events
+    first_tick_idx = next(i for i, e in enumerate(events) if e[0] == "tick")
+    assert batch_idx < first_tick_idx, events
+
+
+def test_object_progress_video_ticks_after_ffprobe_not_before(tmp_path, monkeypatch):
+    """Живой боевой прогон, 2026-08-18 (analyze --source, много мелких файлов + немного
+    крупных/видео рядом): "обработано объектов 100%" встало на 4-й минуте прогона, который
+    реально шёл полтора часа -- батч-тик (см. класс выше) засчитывал видео из своего батча КАК
+    ГОТОВОЕ до того, как video_duration_and_resolution() (ffprobe, самая медленная часть
+    analyze-quick для видео) вообще начинал(а) их разбирать. red-before-green: до фикса тик для
+    видео шёл РАНЬШЕ вызова ffprobe для этого же файла; после -- строго позже."""
+    from PIL import Image
+
+    source = tmp_path / "NewBatch"
+    album = source / "Album"
+    album.mkdir(parents=True)
+    Image.new("RGB", (800, 600), (10, 20, 30)).save(album / "photo.jpg", "JPEG")
+    (album / "clip.mp4").write_bytes(b"fake video bytes")
+
+    events = []
+    real_add_object_progress = m.ProgressReporter.add_object_progress
+
+    def _fake_ffprobe(path):
+        events.append(("ffprobe", m.os.path.basename(path)))
+        return (1.0, 640, 480, 1000)
+
+    def _spy_add_object_progress(self, n=1):
+        events.append(("tick", n))
+        return real_add_object_progress(self, n)
+
+    monkeypatch.setattr(m, "video_duration_and_resolution", _fake_ffprobe)
+    monkeypatch.setattr(m.ProgressReporter, "add_object_progress", _spy_add_object_progress)
+
+    cfg = m.Config(source=str(source), target=m._NO_TARGET_PLACEHOLDER, sample_limit=0,
+                    workdir=str(tmp_path / "appdir"))
+    m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+    ffprobe_idx = next(i for i, e in enumerate(events) if e[0] == "ffprobe")
+    # Никакой тик не должен произойти раньше ffprobe -- иначе "объектов %" уже посчитал бы
+    # видео обработанным до того, как самая медленная его часть реально началась.
+    ticks_before_ffprobe = [e for e in events[:ffprobe_idx] if e[0] == "tick"]
+    assert ticks_before_ffprobe == [], events
+    assert any(e[0] == "tick" for e in events[ffprobe_idx:]), events
 
 
 # ---------------------------------------------------------------------------
 # ProgressReporter(two_line=True)
 # ---------------------------------------------------------------------------
+
+def test_object_progress_analyze_archive_ticks_once_not_per_file_inside(tmp_path, monkeypatch):
+    """Тик теперь идёт поштучно в run_analyze() (см. класс выше) -- файлы ИЗ РАСПАКОВАННОГО
+    архива тоже проходят через тот же основной цикл/analyze_batch(), но не должны получить
+    СВОЙ тик каждый: архив уже засчитан как ОДНА единица внутри SourceWalker (тот же принцип,
+    что и у обычной сборки, см. defer_media_object_tick), иначе на источнике с архивами счёт
+    задвоился бы (N файлов внутри архива + сам архив, вместо просто архива)."""
+    source = tmp_path / "NewBatch"
+    source.mkdir()
+    with zipfile.ZipFile(source / "album.zip", "w") as zf:
+        for name in ("p1.jpg", "p2.jpg", "p3.jpg"):
+            zf.writestr(name, b"x" * 20)
+
+    events = []
+    real_add_object_progress = m.ProgressReporter.add_object_progress
+
+    def _spy_add_object_progress(self, n=1):
+        events.append(n)
+        return real_add_object_progress(self, n)
+
+    monkeypatch.setattr(m.ProgressReporter, "add_object_progress", _spy_add_object_progress)
+
+    cfg = m.Config(source=str(source), target=m._NO_TARGET_PLACEHOLDER, sample_limit=0,
+                    workdir=str(tmp_path / "appdir"))
+    m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+    # Ровно один тик (архив как целое, из SourceWalker) -- ни одного лишнего тика за 3 файла
+    # внутри него из основного цикла run_analyze().
+    assert events == [1], events
+
 
 def _two_line_bar(**overrides):
     return m.ProgressReporter(total=None, desc="Разбираю и копирую файлы", unit="файл",
@@ -1193,6 +1316,24 @@ def test_two_line_status_percent_always_has_one_decimal():
     bar._obj_count = 0
     bar.add_object_progress(991)  # 99.1%
     assert "обработано объектов  99.1%" in bar._build_two_line_status()
+    bar.close()
+
+
+def test_two_line_status_percent_floored_at_0_1_never_shows_literal_zero(tmp_path):
+    """Речь пользователя, 2026-08-17: даже с 1 знаком после запятой X/Y*100 округляется в "0.0%"
+    для любого X/Y < 0.05% -- на большом total_estimate (или пока обходится куча немедийных
+    файлов, не входящих в X/Y, см. 2026-08-17 выше в докстрине объектов X/Y) это может держаться
+    заметно дольше, чем один update(), и читается как зависание тем же способом, что и "0%"/
+    "99%" до фикса Раунда 86. Пол 0.1% -- та же намеренная неточность, что и у самого
+    "1 знак после запятой": сигнал "не зависло", не точная метрика."""
+    bar = _two_line_bar(total_estimate=1_000_000)
+    line = bar._build_two_line_status()  # bar._obj_count == 0 -- ни одного тика ещё не было
+    assert "обработано объектов   0.1%" in line
+    assert "объектов   0.0%" not in line
+
+    bar._obj_count = 1  # 1/1_000_000 * 100 == 0.0001% -- всё ещё округлилось бы в "0.0%"
+    line = bar._build_two_line_status()
+    assert "обработано объектов   0.1%" in line
     bar.close()
 
 

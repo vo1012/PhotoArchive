@@ -258,6 +258,12 @@ class TestGenerateDetailXlsx:
         assert ws.row_dimensions[2].outline_level == 0
         assert ws.row_dimensions[3].outline_level == 1
         assert ws.row_dimensions[4].outline_level == 0
+        # Якорь папки (outline_level=0) виден сразу, строки детализации (outline_level=1)
+        # скрыты -- иначе группа открывается в Excel развёрнутой (значок "-"), не свёрнутой
+        # (значок "+"), как того требует спека (найдено на боевом прогоне пользователя).
+        assert ws.row_dimensions[2].hidden is False
+        assert ws.row_dimensions[3].hidden is True
+        assert ws.row_dimensions[4].hidden is False
 
     def test_duplicate_and_problem_rows_get_distinct_visible_font_colors(self, tmp_path):
         out_path = tmp_path / "report.html"

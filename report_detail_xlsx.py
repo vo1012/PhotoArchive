@@ -285,7 +285,15 @@ def _write_flat_xlsx(headers: list, widths: list, values: list, folders: list, c
     for i, (row_values, folder, color) in enumerate(zip(values, folders, colors, strict=True)):
         r = 2 + i
         ws.append(row_values)
-        ws.row_dimensions[r].outline_level = 0 if folder != prev_folder else 1
+        is_detail_row = folder == prev_folder
+        ws.row_dimensions[r].outline_level = 1 if is_detail_row else 0
+        # outline_level сам по себе только создаёт группу -- Excel показывает её развёрнутой
+        # (значок "-") пока строки явно не скрыты. hidden=True на строках детализации -- то,
+        # что реально даёт свёрнутый по умолчанию вид (значок "+"), проверено исполнением
+        # (round-trip через openpyxl.load_workbook() не показывает разницы в файле, разница
+        # видна только при открытии в реальном Excel -- находка боевого прогона пользователя).
+        if is_detail_row:
+            ws.row_dimensions[r].hidden = True
         prev_folder = folder
         if color:
             font_color = _argb(color)

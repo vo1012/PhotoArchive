@@ -302,8 +302,12 @@ def _row_size(row: dict, cache: dict) -> int:
     см. photosort_win.py:995), не абсолютный путь -- os.path.getsize() на неё либо резолвится
     относительно левого cwd, либо просто не существует, тихо давая 0 в обоих случаях.
     Следствие: для WORKDIR-уровня ([2]/--dry-run), где dest никогда физически не создаётся
-    (dry_run пропускает place_file), байтовая статистика недоступна -- пустая категория,
-    график/плашка скрывается целиком (см. раздел 0 ТЗ), не считается ошибкой в этой версии."""
+    (dry_run пропускает place_file), эта функция даёт 0 на каждой строке -- bytes_by_kind в
+    build_model_from_rows() выходит пустым Counter'ом целиком. _render_run_copied() знает про
+    это и в этом случае берёт готовый агрегат из run_stats (bytes_appended_image/_video/_raw,
+    photosort_win.py, растёт независимо от dry_run -- item.size известен всегда, SOURCE
+    физический) -- не молчаливая потеря диаграммы "Объём по категориям" в dry-run, речь
+    пользователя, 2026-08-18."""
     return _size_of(row.get("dest"), cache)
 
 
@@ -2843,9 +2847,12 @@ def _render_run_copied(model_new: dict, run_stats: dict, level: str,
     Визуально похож на _render_analyze_sheet1()/_render_analyze_sheet2() (headline-плитки +
     проза "из них..." + пирог/hbar-графики), но данные -- ТОЛЬКО model_new
     (build_model_from_rows() на строках этого прогона, см. generate_report()), НЕ кумулятивная
-    model. Раздел 3 (не реализован в этом коммите) заберёт «Надёжность дат»/«Качество
-    кадров»/«Итог решений программы» -- по прямому решению пользователя эти три диаграммы
-    сюда НЕ переехали, хотя _render_analyze_sheet2() их рисует.
+    model. «Надёжность дат»/«Качество кадров»/«Итог решений программы» -- три диаграммы, которые
+    рисует _render_analyze_sheet2(), сюда НЕ переехали как диаграммы (по прямому решению
+    пользователя, Фаза 0 промпта) -- но не пропали молча: «Надёжность дат»/«Качество кадров»
+    показаны текстом в Разделе 3 (_render_run_auto_decisions()), «Итог решений программы»
+    разнесён отдельными числами по всем трём разделам сводного экрана (см. её докстринг,
+    уточнено 2026-08-18 по речи пользователя).
 
     Кнопка «Детализированный отчёт» (PROMPT_report_detail_xlsx.md, Фаза 1, 2026-08-16) --
     активная ссылка на report_detail.xlsx, если detail_xlsx_href передан (см. generate_report()/
@@ -2931,7 +2938,23 @@ def _render_run_copied(model_new: dict, run_stats: dict, level: str,
     # 1.2 разбивка по типам, тем же паттерном ","/"и", что files_by_location в
     # _render_analyze_sheet1() -- рендерится только когда непустых категорий больше одной
     # (одна категория и так уже названа плиткой "N файлов добавлено" выше).
+    #
+    # bytes_by_kind (model_new) -- через os.path.getsize(dest), см. _row_size() -- 0 для КАЖДОЙ
+    # категории в предпросмотре (dest физически не создаётся, place_file() пропущен). Живая
+    # находка пользователя: "Объём по категориям" (диаграмма ниже) из-за этого молча пропадала
+    # в dry-run, хотя тот же общий объём (bytes_added выше) уже показывался через отдельный
+    # run_stats-агрегат. run_stats["bytes_appended_image/_video/_raw"] -- тот же приём (сумма
+    # item.size, известного независимо от dry_run, см. photosort_win.py:_process_record()/
+    # _process_raw_item()) -- используем ТОЛЬКО когда getsize()-версия пуста целиком (0 -- либо
+    # реальный dry-run, либо на level=="target" правда нечего добавлять, в обоих случаях брать
+    # тот же run_stats-агрегат безвредно, значения совпадают с точностью до DVD-исключения).
     bytes_by_kind = model_new.get("bytes_by_kind", Counter())
+    if not sum(bytes_by_kind.values()):
+        bytes_by_kind = Counter({
+            "image": run_stats.get("bytes_appended_image", 0),
+            "video": run_stats.get("bytes_appended_video", 0),
+            "raw": run_stats.get("bytes_appended_raw", 0),
+        })
     type_bits = []
     for key, label in (("image", "фото"), ("video", "видео"), ("raw", "RAW")):
         n = counts.get(key, 0)
@@ -3166,12 +3189,19 @@ def _render_run_auto_decisions(checklist_new: dict, level: str) -> str:
     (2026-08-14). Данные ЛЕГЛИ (или легли бы -- см. наклонение ниже), это не провал и не
     "не скопировано" -- тон "сделано, можно перепроверить", не тревожный. Только счётчики,
     никаких поштучных списков (детализация -- отдельная будущая задача). Порядок -- от "влияет
-    на раскладку" к "косметике": даты -> серии -> спорные -> переименования.
+    на раскладку" к "косметике": даты -> серии -> спорные -> переименования -> качество кадров.
 
     Наклонение по level -- НЕ для самих цифр (тир/кластеризация/маршрутизация в _Unsorted/
     финальное имя вычисляются в ОДНОМ и том же decide()-конвейере независимо от dry_run,
     те же факты что в target), а для ГЛАГОЛА "сохранены" -- физическая запись файла реально
-    происходит только при level=="target" (place_file() пропущен в dry-run)."""
+    происходит только при level=="target" (place_file() пропущен в dry-run).
+
+    Речь пользователя, 2026-08-18: "Качество кадров" (маленькие фото/низкая уверенность
+    распознавания) -- единственная из трёх analyze-диаграмм (см. докстринг _render_run_copied()),
+    которая раньше не была представлена в этом отчёте НИКАК, даже текстом -- quality_flags уже
+    считался в checklist_new (_build_checklist_fields()), просто не читался здесь. "Надёжность
+    дат"/"Итог решений программы" такого пробела не имели: даты уже были текстом (3.1/3.2 ниже),
+    "Итог решений" разнесён отдельными числами по всем трём разделам сводного экрана."""
     checklist_new = checklist_new or {}
     preview = level != "target"
     n_tier_b = checklist_new.get("date_issues_b_total", 0)
@@ -3181,8 +3211,12 @@ def _render_run_auto_decisions(checklist_new: dict, level: str) -> str:
     n_series = len(near_dup_clusters)
     n_disputes = checklist_new.get("disputes_total", 0)
     n_renamed = checklist_new.get("renamed_count", 0)
+    quality_flags = checklist_new.get("quality_flags", Counter())
+    n_small = quality_flags.get("small_image", 0)
+    n_low_conf = quality_flags.get("low_confidence_photo", 0)
+    n_quality = n_small + n_low_conf
 
-    if not (n_tier_b or n_tier_c or n_tier_d or n_series or n_disputes or n_renamed):
+    if not (n_tier_b or n_tier_c or n_tier_d or n_series or n_disputes or n_renamed or n_quality):
         return ""  # ни одного факта -- раздел не рендерится вовсе, даже без заголовка
 
     parts = ['<div class="card">', "<h2>Что программа решила сама</h2>"]
@@ -3237,6 +3271,21 @@ def _render_run_auto_decisions(checklist_new: dict, level: str) -> str:
             f'<p><b>{n_renamed}</b> {_plural(n_renamed, "файл", "файла", "файлов")} '
             f'{_saved_verb(n_renamed, preview)} под изменённым именем (совпадение имени с уже '
             'существующим файлом или слишком длинный путь).</p>'
+        )
+
+    # 3.6 -- "Качество кадров" (appended.csv flags: small_image/low_confidence_photo) -- та же
+    # разбивка, что _build_checklist_items() уже даёт analyze-уровню (см. её текст выше по
+    # файлу), здесь тем же принципом, что 3.1/3.2 выше: числа без диаграммы, не тревожно.
+    if n_quality:
+        quality_bits = []
+        if n_small:
+            quality_bits.append(f"{_n_files(n_small)} маленького размера (возможно, скриншоты/миниатюры)")
+        if n_low_conf:
+            quality_bits.append(f"{_n_files(n_low_conf)} с низкой уверенностью распознавания")
+        parts.append(
+            f'<p><b>{n_quality}</b> {_plural(n_quality, "файл", "файла", "файлов")} '
+            f'{_saved_verb(n_quality, preview)} с пометкой на проверку качества — '
+            + "; ".join(quality_bits) + '.</p>'
         )
 
     parts.append("</div>")

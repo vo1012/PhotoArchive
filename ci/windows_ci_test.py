@@ -3482,8 +3482,11 @@ def test_bare_launch_menu_argv_gate_and_flow():
     # [2] dry-run -> shared "Работа окончена..." pause (any scripted answer dismisses it) ->
     # answers run out right as the mode menu is shown again, ends cleanly via run_bare()'s
     # EOFError handling -- ТЗ раздел 5: suppress_logs=True means the dry-run rehearsal must NOT
-    # create __служебные_файлы\ or any TARGET content at all, unlike the CLI --dry-run contract
-    # (which still writes __служебные_файлы\logs\*.csv).
+    # create __служебные_файлы\ or any TARGET content at all. Живая находка пользователя,
+    # 2026-08-18: CLI `--dry-run` used to be exempt from this guarantee (suppress_logs was
+    # always False there, so it wrote real CSV logs + an empty archive skeleton into TARGET and
+    # never cleaned up) -- `_main()` now passes suppress_logs=args.dry_run too, same contract
+    # as this bare-menu path (see tests/test_cli_dry_run_target_untouched.py, dev repo).
     src6 = os.path.join(WORK, "bare_menu_dryrun_only_src")
     tgt6 = os.path.join(WORK, "bare_menu_dryrun_only_tgt")
     image(os.path.join(src6, "f.jpg"), 800, 600, exif=True, dt="2020:10:10 10:00:00")
@@ -3494,11 +3497,12 @@ def test_bare_launch_menu_argv_gate_and_flow():
     check("Скопирую в архив" not in r6.stdout,
           "bare-menu dry-run only: no longer prints the human dry-run summary (duplicated report.html)")
     # suppress_logs skips __служебные_файлы\ (ensure_target_layout/RunLogs/TargetLock) and any real
-    # file copy -- but resolve_dest_path() itself (engine-internal collision detection, out of
-    # this ТЗ's "don't touch the engine" scope) unconditionally os.makedirs()'s the computed
-    # destination DIRECTORY regardless of dry_run, so an empty ByDate\YYYY\YYYY-MM-DD\ skeleton
-    # can legitimately remain -- see ROADMAP.md. The guarantee that matters is checked instead:
-    # no service folder, no logs, no actual photo file landed on disk.
+    # file copy. resolve_dest_path() (collision detection) used to unconditionally os.makedirs()
+    # the computed destination directory regardless of dry_run, so an empty ByDate\YYYY\YYYY-MM-DD\
+    # skeleton could legitimately remain even with suppress_logs=True -- fixed 2026-08-09
+    # (resolve_dest_path() no longer creates directories at all, see its docstring). Left as
+    # separate checks (no service folder / no files) rather than one blanket "target dir absent"
+    # assertion mostly out of inertia now, not because a known gap still requires it.
     check(not os.path.isdir(os.path.join(tgt6, "__служебные_файлы")),
           "bare-menu dry-run only: suppress_logs creates no __служебные_файлы\\ (no logs/lock/summary)")
     check(not any(files for _, _, files in os.walk(tgt6)),

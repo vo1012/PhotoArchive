@@ -53,6 +53,32 @@ class TestRenderRunCopiedHeadline:
         html_out = r._render_run_copied(model_new, {"bytes_appended": 12345}, "workdir")
         assert r._fmt_bytes(12345) in html_out
 
+    def test_volume_by_category_pie_falls_back_to_run_stats_in_dry_run(self):
+        """Речь пользователя, 2026-08-18: dry-run обязан выглядеть так же, как реальный
+        прогон -- "Объём по категориям" не должна молча пропадать из-за того, что dest ещё не
+        существует физически (см. _row_size()). run_stats["bytes_appended_image/_video/_raw"]
+        (photosort_win.py) -- тот же агрегат, что и headline-плитка объёма чуть выше, просто
+        разбитый по категории."""
+        model_new = r.build_model_from_rows({"appended": [
+            _appended_row(r"C:\T\dst\ByDate\2020\a.jpg"),
+            _appended_row(r"C:\T\dst\ByDate\2020\b.mp4"),
+        ]})
+        assert sum(model_new["bytes_by_kind"].values()) == 0  # файлов реально нет на диске
+        html_out = r._render_run_copied(
+            model_new, {"bytes_appended_image": 1000, "bytes_appended_video": 2000}, "workdir")
+        assert "Объём по категориям" in html_out
+        assert r._fmt_bytes(1000) in html_out
+        assert r._fmt_bytes(2000) in html_out
+
+    def test_volume_by_category_pie_absent_without_any_byte_source(self):
+        """Ни getsize(dest), ни run_stats-агрегата -- диаграмма честно не рендерится (не
+        пустой пирог из нулей), тот же принцип, что и у остальных диаграмм этого раздела."""
+        model_new = r.build_model_from_rows({"appended": [
+            _appended_row(r"C:\T\dst\ByDate\2020\a.jpg"),
+        ]})
+        html_out = r._render_run_copied(model_new, {}, "workdir")
+        assert "Объём по категориям" not in html_out
+
     def test_year_span_tile_singular_grammar(self):
         model_new = r.build_model_from_rows({"appended": [
             _appended_row(r"C:\T\dst\ByDate\2020\2020-05-Крым\a.jpg"),

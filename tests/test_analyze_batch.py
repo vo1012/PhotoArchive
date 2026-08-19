@@ -698,44 +698,17 @@ class TestExifPrefetchRateHint:
             iter(items), str(tmp_path / "_extract"), batch_size=2, rate_hint_cb=None))
         assert len(result) == 3
 
-    def test_object_progress_cb_ticks_whole_batch_once_before_its_exiftool_call(self, tmp_path, monkeypatch):
-        """REVIEW-HANDOFF.md, Раунд 86, замечание 2, follow-up (2026-08-10, речь пользователя):
-        object_progress_cb тикает ОДНИМ вызовом на весь батч (не по одному на файл), на
-        ОТПРАВКУ батча в exiftool_batch() -- перед самим вызовом, не после. Ограниченная
-        неточность (максимум один батч вперёд реального прогресса), не безграничная гонка,
-        как в исходном баге Раунда 86 -- следующий батч не тикает, пока не отправлен ОН САМ,
-        не все батчи разом в начале."""
-        items = self._items(tmp_path, 5)
-        events = []
-        real_exiftool_batch = m.exiftool_batch
-
-        def _spy(paths, **kw):
-            events.append(("batch", len(paths)))
-            return real_exiftool_batch(paths, **kw)
-
-        monkeypatch.setattr(m, "exiftool_batch", _spy)
-
-        list(m._walk_with_exif_prefetch(
-            iter(items), str(tmp_path / "_extract"), batch_size=2,
-            object_progress_cb=lambda n: events.append(("tick", n))))
-
-        # batch_size=2 на 5 файлов -> батчи [2, 2, 1], каждый тикает РОВНО один раз, СРАЗУ
-        # ПЕРЕД своим же exiftool_batch() -- строго чередование tick->batch, не все тики
-        # разом в начале и не по одному тику на файл.
-        assert events == [("tick", 2), ("batch", 2), ("tick", 2), ("batch", 2),
-                           ("tick", 1), ("batch", 1)], events
-
-    def test_object_progress_cb_excludes_dvd_unit_files(self, tmp_path):
-        """DVD-юнит-файлы (item.dvd_dest_path не None) уже тикают отдельно, целиком как одна
-        единица, внутри SourceWalker (не затронуто defer_media_object_tick) -- батч-тик здесь
-        не должен считать их ещё раз, иначе на источнике с DVD-рипами счёт задвоился бы."""
+    def test_walk_with_exif_prefetch_no_longer_accepts_object_progress_cb(self, tmp_path):
+        """2026-08-18 (боевой прогон -- источник с горой мелких media-файлов + немного крупных/
+        видео рядом): "объектов %" больше не тикает здесь вовсе (см. докстринг
+        _walk_with_exif_prefetch()) -- батч-тик на ОТПРАВКУ (до реальной обработки item'а)
+        держал "обработано объектов 100%" весь остаток прогона, если видео из батча ffprobe
+        ещё дощупывал ПОСЛЕ тика. Тикает теперь run_analyze() сама, поштучно, ПОСЛЕ
+        analyze_batch() -- см. test_progress_phase2.py, TestAnalyzePerItemObjectTick."""
         items = self._items(tmp_path, 3)
-        items[1].dvd_dest_path = "Z:\\Albums\\Disc\\VIDEO_TS\\x.vob"
-        ticks = []
-        list(m._walk_with_exif_prefetch(
-            iter(items), str(tmp_path / "_extract"), batch_size=10,
-            object_progress_cb=ticks.append))
-        assert ticks == [2]  # 3 файла в батче, но только 2 не-DVD
+        result = list(m._walk_with_exif_prefetch(
+            iter(items), str(tmp_path / "_extract"), batch_size=2))
+        assert len(result) == 3
 
 
 class TestAnalyzeShowsObjectEta:
