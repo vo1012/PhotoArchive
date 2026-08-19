@@ -1402,10 +1402,13 @@ def test_top_cameras_chart_in_report():
         # first time). Assert against what exiftool/camera_from_tags() actually produce.
         check("Canon EOS 80D" in html_out, "top-cameras: Canon model shown clean (Make is a substring of Model)")
         check("Apple iPhone 14" in html_out, "top-cameras: Apple model shown as Make+Model (not deduped)")
-        # _svg_hbar_chart() truncates labels over 26 chars (same as "Топ альбомов") -- the full
-        # 28-char "NIKON CORPORATION NIKON D850" gets cut to "NIKON CORPORATION NIKON…", check
-        # a substring that survives truncation, not the full string.
-        check("NIKON CORPORATION NIKON" in html_out, "top-cameras: Nikon model shown as Make+Model (not deduped)")
+        # _svg_hbar_chart() truncates long labels (2026-08-19 fix: budget now computed from
+        # margin_left/font_size, not a fixed char count -- was found clipping past the SVG's
+        # left edge on labels this long, see report.py's docstring) -- the full 28-char
+        # "NIKON CORPORATION NIKON D850" gets cut well before the end. Check a short prefix
+        # that survives any reasonable truncation and is enough to prove "not deduped" (a
+        # deduped label would start with "NIKON D850", not "NIKON CORPORATION").
+        check("NIKON CORPORATION" in html_out, "top-cameras: Nikon model shown as Make+Model (not deduped)")
         os.remove(workdir_report)
 
 
