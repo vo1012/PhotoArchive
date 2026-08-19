@@ -704,7 +704,7 @@ def test_render_this_run_legend_shows_status_and_landed_summary_line():
     }
     html_out = r._render_this_run(run_stats, level="target")
     assert "Новые файлы — в архиве — 4 файла" in html_out
-    assert "Дубли — не копировались, уже есть в архиве — 2 файла" in html_out
+    assert "Дубли — не копировались — 2 файла" in html_out
     assert "Похожие кадры — в архиве (сохранены рядом) — 1 файл" in html_out
     assert "Не прочитано — не скопировано (ошибка чтения) — 1 файл" in html_out
     assert "Спорные — сохранены отдельно, не в архиве (_Unsorted) — 1 файл" in html_out
@@ -723,7 +723,7 @@ def test_render_this_run_legend_and_summary_hypothetical_in_preview():
     }
     html_out = r._render_this_run(run_stats, level="workdir")
     assert "Новые файлы — были бы в архиве" in html_out
-    assert "Дубли — не копировались бы, уже есть в архиве" in html_out
+    assert "Дубли — не копировались бы" in html_out
     assert "Спорные — были бы сохранены отдельно, не в архиве (_Unsorted)" in html_out
     assert ("Итого: 6 файлов легло бы физически (новые + похожие + спорные), "
             "3 файла не было бы скопировано (дубли + не прочитано).") in html_out

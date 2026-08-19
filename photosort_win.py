@@ -66,7 +66,7 @@ import report  # PROMPT_archive_report.md, границы: отдельный м
 # blanket ignore of all warnings, so any other future PIL/library warning still surfaces.
 warnings.filterwarnings("ignore", message="Palette images with Transparency.*", category=UserWarning)
 
-__version__ = "0.5.0"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
+__version__ = "0.5.1"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
                                  # с RULES_VERSION ниже (та про совместимость архива, а не exe)
 RULES_VERSION = "2026-08-11"   # дата последнего изменения бизнес-правил -- см. RULES.md;
                                 # менять руками при изменении логики раскладки/дедупа/дат
@@ -507,7 +507,14 @@ _ANALYZE_PASSPORT_PROGRESS_DESC = "analyze (Паспорт архива) — м�
 # порвётся, просто вернётся старое поведение "переполнение чинит рантайм-обрезка ниже").
 _DEFERRED_CONTENT_TRANSIENT_OP = "проверяю отложенное содержимое…"
 _ARCHIVE_EXTRACT_TRANSIENT_OP_MAX_LEN = len("распаковка (999.9ГБ)")
-_MAX_TRANSIENT_OP_LEN = max(len(_DEFERRED_CONTENT_TRANSIENT_OP), _ARCHIVE_EXTRACT_TRANSIENT_OP_MAX_LEN)
+# 2026-08-19, живая находка пользователя: "разбор архива" -- transient-op, держащийся ВЕСЬ
+# обход распакованного содержимого архива (см. SourceWalker._archive_walk_depth), в т.ч. как
+# фолбэк _close_deferred_gap() вместо None, пока обход идёт внутри архива -- иначе тот
+# безусловно гасил бы эту пометку в общий resting-desc на каждом первом реальном файле любой
+# папки внутри архива (см. её докстринг).
+_ARCHIVE_CONTENT_TRANSIENT_OP = "разбор архива"
+_MAX_TRANSIENT_OP_LEN = max(len(_DEFERRED_CONTENT_TRANSIENT_OP), _ARCHIVE_EXTRACT_TRANSIENT_OP_MAX_LEN,
+                             len(_ARCHIVE_CONTENT_TRANSIENT_OP))
 
 
 _CONSOLE_TAG_LINE_SAFETY_MARGIN = 8  # см. докстринг _console_tag_line_budget()
@@ -908,7 +915,24 @@ class ProgressReporter:
         else:
             # max(..., 0.1) -- см. докстрин выше ("завуалировать" зависание при пренебрежимо
             # малом X/Y*100): никогда не показывает буквальный "0.0%".
-            pct = max(min(self._obj_count / self.total_estimate * 100, 100.0), 0.1)
+            #
+            # min(..., 99.9) + усечение (не округление) до 1 знака -- живой боевой прогон,
+            # 2026-08-19: источник с одним архивом, вмещающим гигантское количество вложенных
+            # файлов/вложенных архивов -- этот архив тикает ОДНИМ объектом (см. _tick_object()),
+            # только по завершении ВСЕГО своего содержимого, и может составлять ничтожную долю
+            # Y, оставаясь при этом последним, самым долгим объектом прогона (у пользователя --
+            # 2 часа). Обычные файлы вокруг него досчитались за 4 минуты, X/Y стало ~99.96% --
+            # f"{99.96:.1f}%" ОКРУГЛЯЕТ до буквального "100.0%" (та же ошибка формата, что и у
+            # round()), хотя реально не готово: "100.0%" держалось бы весь остаток прогона,
+            # неотличимо от настоящего завершения. Буквальный "100.0%" теперь печатает ТОЛЬКО
+            # force_complete-ветка выше -- здесь верхняя граница строго 99.9 (даже когда
+            # X>=Y из-за недооценённого Y, см. докстрин про "X мог обогнать Y" выше), а
+            # `int(...*1000)/10` усекает вместо округления, чтобы 99.96 не округлилось вверх и
+            # само по себе, без верхней границы. Совместно с set_transient_op("разбор архива")
+            # в _handle_archive() (та же находка) -- если % всё равно подолгу стоит на месте
+            # из-за одного такого архива, поле операции слева честно объясняет, чем занят
+            # прогон, вместо застывшего числа без единой живой подсказки.
+            pct = max(min(int(self._obj_count / self.total_estimate * 1000) / 10, 99.9), 0.1)
             obj_part = f"{pct:.1f}%"
         # Речь пользователя, 2026-08-02 ("в строке статуса необходим разделитель между блоками
         # информации"): раньше блоки (операция/всего медиа/объектов/скорость/своб.) отделялись
@@ -1429,6 +1453,14 @@ SKIP_MARKER = "SKIP_PHOTOSORT.txt"
 # tmp_extract_dir turns out to be.
 _OWN_TMP_EXTRACT_ENTRY_RE = re.compile(r"^[0-9a-f]{64}$")
 
+# 2026-08-19, живая находка ревизора (Раунд 107): единый _DRY_RUN_TMP_EXTRACT_DIR (см. её
+# докстринг ниже по файлу) без per-процесс изоляции позволял конкурентному прогону удалить
+# АКТИВНУЮ распаковку архива другого, ещё не завершившегося прогона (sha256-имя папки не несёт
+# никакой информации о том, кто её создал и жив ли он ещё). Верхний уровень
+# _DRY_RUN_TMP_EXTRACT_DIR теперь -- PID-подпапки (по одной на suppress_logs=True-процесс), а
+# не сами sha256-папки распаковки напрямую -- см. Config.__post_init__/_sweep_stale_dry_run_pid_dirs().
+_OWN_TMP_EXTRACT_PID_DIR_RE = re.compile(r"^\d+$")
+
 # 2026-07-11: a sensible, user-editable DEFAULT (see Config.dump_segment_names/
 # photoarchive_config.yaml.example) -- real heuristic "probably not an album" names, safe to let a user
 # add/remove entries in photoarchive_config.yaml. Deliberately does NOT include the self-protection names
@@ -1847,8 +1879,40 @@ class Config:
         # Явный tmp_extract_dir в конфиге -- всегда в приоритете (пользователь может указать
         # другой том, например быстрый SSD -- тогда финализация деградирует до copy, см.
         # report_environment()).
+        #
+        # 2026-08-19, живая находка пользователя (Ctrl+C посреди разбора архива в dry-run):
+        # suppress_logs=True ([2] Пробный прогон/CLI --dry-run) обязан не трогать TARGET
+        # вовсе (см. ensure_target_layout()'s `not cfg.suppress_logs` гейт и докстринг
+        # run_for_source()) -- но archive-распаковка ВСЕГДА реальна (нужно заглянуть внутрь
+        # архива, чтобы честно показать, что было бы скопировано), и без этой ветки
+        # tmp_extract по умолчанию всё равно указывал бы под TARGET. _handle_archive()
+        # аккуратно убирает hash-именованную папку с распакованным содержимым по завершении
+        # (и _cleanup_own_tmp_extract_entries() -- после Ctrl+C), но родительскую цепочку
+        # __служебные_файлы\tmp_extract\ (и тем самым сам TARGET, если его не было) этим не
+        # убрать -- она успевала физически возникнуть на диске как побочный эффект. Причина
+        # same-volume-rename выше (быстрая финализация вместо copy) здесь неприменима: dry_run
+        # никогда не доходит до place_file()/финализации (см. _process_record()) -- обмен
+        # тома ничего не замедляет.
+        #
+        # НЕ self.workdir (первая версия фикса, отклонена пользователем на месте): портативный
+        # .exe многие запускают прямо с флешки -- WORKDIR тогда физически СОВПАДАЕТ с этой
+        # флешкой (или тем же ограниченным томом), ровно то ограниченное место, которого
+        # распаковка архива в dry-run обязана НЕ требовать. Системный %TEMP% (tempfile.
+        # gettempdir(), тот же источник, что уже использует _NO_TARGET_PLACEHOLDER ниже по
+        # файлу) почти всегда на системном диске, не на носителе запуска программы -- и dry-run
+        # физически не пишет ничего, кроме этой временной распаковки, так что много места не
+        # нужно (реальная сборка по-прежнему намеренно НЕ использует %TEMP% по умолчанию -- см.
+        # обоснование выше, там same-volume-rename и большие объёмы реальны).
+        # 2026-08-19, живая находка ревизора (Раунд 107): _DRY_RUN_TMP_EXTRACT_DIR -- ОБЩИЙ
+        # путь на всех suppress_logs=True-процессов сразу; без PID-подпапки конкурентный прогон
+        # мог удалить активную распаковку другого, ещё не завершившегося прогона (воспроизведено
+        # ревизором исполнением) -- см. _OWN_TMP_EXTRACT_PID_DIR_RE/_sweep_stale_dry_run_pid_dirs().
+        # os.getpid() читается один раз здесь (не при каждом обращении к cfg.tmp_extract) --
+        # значение неизменно на весь прогон текущего процесса.
         if self.tmp_extract_dir:
             self.tmp_extract = os.path.abspath(self.tmp_extract_dir)
+        elif self.suppress_logs:
+            self.tmp_extract = os.path.join(_DRY_RUN_TMP_EXTRACT_DIR, str(os.getpid()))
         else:
             self.tmp_extract = os.path.join(self.photosort_dir, "tmp_extract")
         self.default_exclude_dirs_lower = _clean_str_set(self.default_exclude_dirs)
@@ -2811,14 +2875,114 @@ def cleanup_dir(path: str):
         shutil.rmtree(winlong(path), ignore_errors=True)
 
 
-def _cleanup_own_tmp_extract_entries(cfg: "Config", log=print) -> None:
+def _sweep_tmp_extract_dir(tmp_extract_dir: str, log=print) -> None:
     """Подчищает СОБСТВЕННЫЕ (sha256-именованные, см. _OWN_TMP_EXTRACT_ENTRY_RE/
-    _handle_archive()) папки распаковки архивов внутри cfg.tmp_extract -- защита от
+    _handle_archive()) папки распаковки архивов внутри tmp_extract_dir -- защита от
     накопления мусора после прерванного прогона (Ctrl+C, крах). Не трогает ничего, что не
     похоже на собственную временную папку программы (см. докстринг _OWN_TMP_EXTRACT_ENTRY_RE
-    выше -- почему это важно).
+    выше -- почему это важно). Один прогон может подмести НЕСКОЛЬКО таких директорий за раз --
+    см. _cleanup_own_tmp_extract_entries(), где эта функция реально вызывается."""
+    if not (os.path.isdir(winlong(tmp_extract_dir)) and os.listdir(winlong(tmp_extract_dir))):
+        return
+    entries = [n for n in os.listdir(winlong(tmp_extract_dir)) if n != SKIP_MARKER]
+    # Only remove entries that look like our own archive_hash extraction dirs (see
+    # _handle_archive()) -- see _OWN_TMP_EXTRACT_ENTRY_RE comment above for why.
+    recognized = [n for n in entries if _OWN_TMP_EXTRACT_ENTRY_RE.match(n)]
+    unrecognized = [n for n in entries if n not in recognized]
+    if recognized:
+        log(f"TMP_EXTRACT не пуст ({tmp_extract_dir}) — очищаю {len(recognized)} временных папок распаковки")
+        for name in recognized:
+            cleanup_dir(os.path.join(tmp_extract_dir, name))
+    if unrecognized:
+        log(f"ВНИМАНИЕ: в TMP_EXTRACT_DIR ({tmp_extract_dir}) есть {len(unrecognized)} "
+            f"файлов/папок, не похожих на собственные временные файлы программы -- "
+            f"НЕ трогаю их. Если это чужая папка (например, tmp_extract_dir в photoarchive_config.yaml "
+            f"указан по ошибке) -- поправьте настройку. Первые: "
+            f"{unrecognized[:5]}")
 
-    Живая находка пользователя, 2026-08-09: временные распакованные папки архива
+
+def _pid_is_alive(pid: int) -> bool:
+    """True, если процесс с данным PID ещё РЕАЛЬНО выполняется -- ТОЛЬКО проверка, ничего не
+    завершает. На Windows -- OpenProcess() с PROCESS_QUERY_LIMITED_INFORMATION (0x1000), не
+    PROCESS_ALL_ACCESS/TerminateProcess: os.kill(pid, 0) на Windows -- НЕ безобидная проверка
+    существования (в отличие от POSIX) -- CPython реализует его через TerminateProcess(handle,
+    sig), т.е. os.kill(pid, 0) реально пытается завершить процесс с кодом выхода 0, а не просто
+    проверить его -- использование его здесь убило бы ровно тот чужой живой прогон, которого эта
+    функция обязана не трогать.
+
+    OpenProcess() САМ ПО СЕБЕ недостаточен -- проверено эмпирически (red на первой версии этой
+    функции, живой тест test_real_build_sweeps_stale_global_dry_run_tmp_extract_leftover не
+    проходил): PID остаётся зарезервирован (и OpenProcess по нему успешно открывает хендл), пока
+    существует ХОТЯ БЫ ОДИН открытый хендл к процессу -- в т.ч. у subprocess.Popen текущего
+    (родительского) процесса, даже после того, как сам дочерний процесс уже завершился и
+    Popen.wait() вернул код возврата. Нужна дополнительная проверка реального статуса --
+    GetExitCodeProcess(): STILL_ACTIVE (259) значит "жив", любое другое значение -- завершился
+    (даже если хендл на него ещё существует у кого-то).
+
+    Ещё один эмпирический нюанс (проверено вручную, PID 4 = System, всегда живой, но обычному
+    пользователю недоступен даже с PROCESS_QUERY_LIMITED_INFORMATION): OpenProcess() тоже
+    возвращает NULL, когда процесс СУЩЕСТВУЕТ, но недоступен (ERROR_ACCESS_DENIED=5), не только
+    когда его действительно нет (ERROR_INVALID_PARAMETER=87) -- не разбирая эти два случая,
+    "недоступен" был бы неотличим от "уже умер" и стал бы восприниматься как приглашение удалить
+    чужую директорию, чей процесс на самом деле жив, просто с правами, которые эта проверка не
+    может обойти -- GetLastError() после NULL-хендла отличает их."""
+    if os.name == "nt":
+        STILL_ACTIVE = 259
+        ERROR_ACCESS_DENIED = 5
+        try:
+            handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+            if not handle:
+                return ctypes.windll.kernel32.GetLastError() == ERROR_ACCESS_DENIED
+            try:
+                exit_code = ctypes.c_ulong()
+                if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return True  # не смогли прочитать статус -- безопасный дефолт: считаем живым
+                return exit_code.value == STILL_ACTIVE
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)
+        except Exception:
+            return True  # не можем проверить -- безопасный дефолт: считаем живым, не трогаем
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # PermissionError и т.п. -- процесс существует, просто не наш
+    return True
+
+
+def _sweep_stale_dry_run_pid_dirs(log=print) -> None:
+    """Верхний уровень _DRY_RUN_TMP_EXTRACT_DIR -- PID-подпапки (см. Config.__post_init__), не
+    сами sha256-папки распаковки напрямую (та плоская схема и была причиной находки Раунда 107
+    ревью: общий путь без per-процесс изоляции, конкурентный прогон мог удалить чужую активную
+    распаковку). Подметает остатки процессов, убитых "жёстко" (Task Manager/крах/пропажа
+    питания -- Ctrl+C перехватывается штатно и подчищает свою PID-папку сам, см.
+    _cleanup_own_tmp_extract_entries()) -- НЕ трогает PID-папки ЖИВЫХ чужих процессов.
+
+    Staleness -- через реальную проверку "жив ли PID" (_pid_is_alive()), не через mtime-порог:
+    mtime не обновляется на самой директории, пока внутри неё идёт долгая обработка уже
+    распакованного архива (архив с гигантским содержимым, часы работы ПОСЛЕ того, как сама
+    распаковка закончилась) -- mtime-порог ложно счёл бы такую директорию устаревшей и удалил
+    её у ещё живого процесса, ровно тот сценарий, ради которого делался фикс "разбор архива"
+    2026-08-19 (не регрессировать его этим же заходом)."""
+    root = _DRY_RUN_TMP_EXTRACT_DIR
+    if not os.path.isdir(winlong(root)):
+        return
+    own_pid = str(os.getpid())
+    for name in os.listdir(winlong(root)):
+        if name in (SKIP_MARKER, own_pid):
+            continue
+        entry_path = os.path.join(root, name)
+        if not _OWN_TMP_EXTRACT_PID_DIR_RE.match(name):
+            continue  # не похоже на наш PID-каталог -- не трогаем, тот же принцип, что и _sweep_tmp_extract_dir
+        if _pid_is_alive(int(name)):
+            continue  # чужой прогон ещё жив -- возможно, активно распаковывает архив
+        log(f"Найден остаток прерванного прогона (PID {name} больше не существует) в {entry_path} — очищаю")
+        cleanup_dir(entry_path)
+
+
+def _cleanup_own_tmp_extract_entries(cfg: "Config", log=print) -> None:
+    """Живая находка пользователя, 2026-08-09: временные распакованные папки архива
     (__служебные_файлы\\tmp_extract\\<hash>\\...) оставались на диске после Ctrl+C ВО ВРЕМЯ
     самого прогона (--dry-run) -- раньше только эта же по сути проверка запускалась в начале
     СЛЕДУЮЩЕГО прогона (см. Фазу 0 _run_impl()), ничего не подчищало сразу после текущего
@@ -2826,24 +2990,24 @@ def _cleanup_own_tmp_extract_entries(cfg: "Config", log=print) -> None:
     проверку вообще, ни в начале, ни после прерывания. Теперь одна и та же функция вызывается
     в обоих местах (до основного цикла -- остатки чужого прошлого прерывания; сразу после
     `except KeyboardInterrupt` текущего цикла -- остатки этого же прогона, не дожидаясь
-    следующего запуска программы) -- см. _run_impl()/run_analyze()."""
-    if not (os.path.isdir(winlong(cfg.tmp_extract)) and os.listdir(winlong(cfg.tmp_extract))):
-        return
-    entries = [n for n in os.listdir(winlong(cfg.tmp_extract)) if n != SKIP_MARKER]
-    # Only remove entries that look like our own archive_hash extraction dirs (see
-    # _handle_archive()) -- see _OWN_TMP_EXTRACT_ENTRY_RE comment above for why.
-    recognized = [n for n in entries if _OWN_TMP_EXTRACT_ENTRY_RE.match(n)]
-    unrecognized = [n for n in entries if n not in recognized]
-    if recognized:
-        log(f"TMP_EXTRACT не пуст — очищаю {len(recognized)} временных папок распаковки")
-        for name in recognized:
-            cleanup_dir(os.path.join(cfg.tmp_extract, name))
-    if unrecognized:
-        log(f"ВНИМАНИЕ: в TMP_EXTRACT_DIR ({cfg.tmp_extract}) есть {len(unrecognized)} "
-            f"файлов/папок, не похожих на собственные временные файлы программы -- "
-            f"НЕ трогаю их. Если это чужая папка (например, tmp_extract_dir в photoarchive_config.yaml "
-            f"указан по ошибке) -- поправьте настройку. Первые: "
-            f"{unrecognized[:5]}")
+    следующего запуска программы) -- см. _run_impl()/run_analyze().
+
+    2026-08-19, живая находка ревизора (Раунд 106, придирка 2, по итогам фикса
+    _DRY_RUN_TMP_EXTRACT_DIR -- см. её докстрин): dry-run/analyze/паспорт (suppress_logs=True)
+    теперь распаковывают в ЕДИНЫЙ глобальный путь под %TEMP%, не привязанный к конкретному
+    TARGET -- если такой прогон убьют "жёстко" (не через Ctrl+C, где перехват уже отрабатывает
+    надёжно -- Task Manager/крах/пропажа питания), раньше следующий ЛЮБОЙ прогон НА ТОМ ЖЕ
+    TARGET подчищал остатки (tmp_extract был его собственной подпапкой), теперь же путь общий и
+    от TARGET не зависит -- реальная сборка (свой, другой, TARGET-путь tmp_extract) эти остатки
+    больше не увидит вовсе, нужен именно следующий suppress_logs=True прогон где угодно. Чтобы
+    не сужать гарантию подчистки, а расширить её (любой следующий прогон программы, а не только
+    на том же TARGET, как было раньше) -- подметаем ОБА места: собственный cfg.tmp_extract
+    ТЕКУЩЕГО прогона (своя PID-подпапка, если это suppress_logs=True) и общий
+    _DRY_RUN_TMP_EXTRACT_DIR (чужие PID-подпапки, но только те, чей процесс уже мёртв -- см.
+    _sweep_stale_dry_run_pid_dirs(), 2026-08-19 Раунд 107: раньше эта вторая подметка была
+    безусловной, без разбора чья именно папка -- ровно та гонка, что нашёл ревизор)."""
+    _sweep_tmp_extract_dir(cfg.tmp_extract, log=log)
+    _sweep_stale_dry_run_pid_dirs(log=log)
 
 # ============================================================================
 # WALKER  (from pipeline/walker.py)
@@ -3206,6 +3370,19 @@ class SourceWalker:
         # (Фаза 1/analyze*) -- работает как раньше, никаких новых строк не печатается.
         self._object_line_cb = object_line_cb
         self._transient_op_cb = transient_op_cb
+        # Живая находка пользователя, 2026-08-19 (боевой прогон, архив с гигантским
+        # количеством вложенных файлов/вложенных архивов внутри): "распаковка (X ГБ)"
+        # (transient_op_cb, см. _handle_archive() ниже) гасилась в None СРАЗУ после самой
+        # физической распаковки -- дальнейший обход распакованного содержимого (у такого
+        # архива -- самая долгая часть всего прогона, час-два) не показывал НИЧЕГО в поле
+        # операции статус-строки, откатывался на статичный resting-текст ("Пробный прогон"/
+        # "Сборка архива"), хотя "обработано объектов %" тем временем честно застревает
+        # (архив тикает ОДНИМ объектом, только по завершении ВСЕГО своего содержимого, см.
+        # _tick_object()) -- застрявший % без единой живой подсказки читался как зависание.
+        # Счётчик (не bool) -- вложенные архивы сами рекурсивно вызывают _handle_archive() из
+        # этого же обхода: без счётчика собственное "разбор архива"/None вложенного вызова
+        # затирало бы пометку внешнего архива, хотя обработка внешнего ещё не закончена.
+        self._archive_walk_depth = 0
         # Живой репорт пользователя (2026-08-01): "объектов X/Y" в статус-строке -- ТРЕТИЙ,
         # отдельный от object_line_cb/self.count (медиафайлы) счётчик, той же ГРАНУЛЯРНОСТИ,
         # что и _quick_media_count_estimate() (архив -- 1 штука, не заглядывая внутрь, media-
@@ -3383,9 +3560,19 @@ class SourceWalker:
     def _close_deferred_gap(self) -> None:
         """См. self._deferred_gap_open в __init__(). Вызывать перед ЛЮБЫМ реальным yield'ом --
         no-op, если сегмент не был открыт (обычный, самый частый случай -- Фаза 1 без единого
-        откладывания)."""
+        откладывания).
+
+        2026-08-19, живая находка пользователя: "возврат к обычному" -- не всегда None. Если
+        обход сейчас идёт ВНУТРИ архива (self._archive_walk_depth > 0, см. _handle_archive()),
+        безусловный None стирал бы пометку "разбор архива" на каждом первом реальном файле
+        любой папки внутри архива (эта функция и открытие/закрытие "отложенного" сегмента --
+        общая для обычного дерева И для содержимого архива машинерия _walk_dir(), не разная).
+        Без этого фолбэка пользователь на источнике с большим архивом видел бы поле операции
+        мигающим между "проверяю отложенное содержимое…" и статичным resting-текстом
+        ("Пробный прогон"/"Сборка архива"), ни разу не увидев, что физически идёт разбор
+        архива -- ровно та же путаница, которую сама пометка должна была устранить."""
         if self._deferred_gap_open:
-            self._transient_op_cb(None)
+            self._transient_op_cb(_ARCHIVE_CONTENT_TRANSIENT_OP if self._archive_walk_depth > 0 else None)
             self._deferred_gap_open = False
 
     def _record_excluded_dir(self, name: str, reason: str):
@@ -4312,76 +4499,96 @@ class SourceWalker:
         if self._transient_op_cb is not None:
             self._transient_op_cb(f"распаковка ({_fmt_size_gb(compressed_size)})")
         ok = extract_archive(archive_path, fmt, extract_dir, log=self.log)
-        if self._transient_op_cb is not None:
-            self._transient_op_cb(None)
         if not ok:
+            if self._transient_op_cb is not None:
+                self._transient_op_cb(None)
             self._log_archive(_strip_trailing_arrow(full_display), "archive_extract_failed")
             cleanup_dir(extract_dir)
             return
 
-        if fmt not in TAR_MODES:
-            # tar/tar.gz/tar.bz2 already refuses (at extraction time, via filter="data") any
-            # symlink member whose target would resolve outside dest_dir -- an in-bounds tar
-            # symlink is legitimate content, not a reason to reject the whole archive. zip/7z/
-            # rar extraction has no such built-in check (see find_reparse_point_in_tree()
-            # docstring), so any reparse point found there is treated as suspicious outright.
-            reparse = find_reparse_point_in_tree(extract_dir)
-            if reparse:
-                self._log_archive(_strip_trailing_arrow(full_display), "archive_symlink_suspected",
-                                   f"извлечённое дерево содержит symlink/junction ({reparse}) -- "
-                                   f"содержимое архива не читаю")
-                cleanup_dir(extract_dir)
-                return
-
-            # Finding 7: если часть членов архива ушла за пределы extract_dir (traversal,
-            # который не поймал текстовый парсер листинга -- см. count_extracted_files()),
-            # здесь физически найдётся МЕНЬШЕ файлов, чем заявлено в листинге архива.
-            extracted_count = count_extracted_files(extract_dir)
-            if extracted_count < info.entries:
-                self._log_archive(_strip_trailing_arrow(full_display), "archive_path_traversal_suspected",
-                                   f"после распаковки найдено {extracted_count} файлов, "
-                                   f"в листинге архива было {info.entries} -- похоже, часть "
-                                   f"содержимого вышла за пределы extract_dir")
-                cleanup_dir(extract_dir)
-                return
-
-        media_count = 0
-        extract_dir_real = os.path.normcase(os.path.realpath(extract_dir))
-        # REVIEW-HANDOFF.md, Раунд 58 [БЛОКЕР] (см. __init__()'s self._pending_cleanup_dirs):
-        # если _walk_dir() ниже отложит что-то (в self._phase == 1 -- только тогда это вообще
-        # возможно, см. _walk_dir()) -- считаем это по росту счётчика отложенного ДО/ПОСЛЕ, не
-        # по факту, что генератор исчерпан ("исчерпан" больше не значит "всё физически
-        # посещено"). Если отложилось -- extract_dir остаётся на диске, реальная очистка
-        # переносится в самый конец walk() (_drain_deferred_phases()), уже после того как
-        # Фазы 2/3 прочитают из него всё, что им нужно.
-        _deferred_before = len(self._deferred_bydate_roots) + len(self._deferred_tilde_archives)
+        # Живая находка пользователя, 2026-08-19: с этой точки и до конца функции (обход
+        # распакованного содержимого -- на источнике с гигантским количеством вложенных
+        # файлов/вложенных архивов это САМАЯ долгая часть всего прогона, час-два) поле
+        # операции статус-строки должно показывать "разбор архива", а не молча откатываться
+        # на статичный resting-текст, пока "обработано объектов %" честно стоит на месте
+        # (архив тикает ОДНИМ объектом, только по завершении ВСЕГО содержимого, см.
+        # _tick_object()). Счётчик, не bool/прямой set -- вложенный архив рекурсивно вызывает
+        # этот же метод из _walk_dir() ниже; без счётчика его собственные
+        # set("разбор архива")/set(None) затирали бы пометку внешнего архива, хотя обработка
+        # внешнего ещё не закончена. try/finally покрывает ВСЕ выходы отсюда (ранние return
+        # ниже по symlink/path-traversal находкам, и обычное завершение) -- не только
+        # успешный путь.
+        if self._archive_walk_depth == 0 and self._transient_op_cb is not None:
+            self._transient_op_cb(_ARCHIVE_CONTENT_TRANSIENT_OP)
+        self._archive_walk_depth += 1
         try:
-            for item in self._walk_dir(extract_dir, rel_prefix, origin_prefix, depth, is_root=True,
-                                        ancestors=(extract_dir_real,), archive_no_crc=(fmt in TAR_MODES),
-                                        archive_boundary_idx=archive_boundary_idx,
-                                        tree_rel_prefix=tree_rel_prefix):
-                if item.ftype in ("image", "raw", "video"):
-                    media_count += 1
-                yield item
-        finally:
-            _deferred_after = len(self._deferred_bydate_roots) + len(self._deferred_tilde_archives)
-            if _deferred_after > _deferred_before:
-                self._pending_cleanup_dirs.append(extract_dir)
-            else:
-                cleanup_dir(extract_dir)
+            if fmt not in TAR_MODES:
+                # tar/tar.gz/tar.bz2 already refuses (at extraction time, via filter="data") any
+                # symlink member whose target would resolve outside dest_dir -- an in-bounds tar
+                # symlink is legitimate content, not a reason to reject the whole archive. zip/7z/
+                # rar extraction has no such built-in check (see find_reparse_point_in_tree()
+                # docstring), so any reparse point found there is treated as suspicious outright.
+                reparse = find_reparse_point_in_tree(extract_dir)
+                if reparse:
+                    self._log_archive(_strip_trailing_arrow(full_display), "archive_symlink_suspected",
+                                       f"извлечённое дерево содержит symlink/junction ({reparse}) -- "
+                                       f"содержимое архива не читаю")
+                    cleanup_dir(extract_dir)
+                    return
 
-        if media_count == 0:
-            self._log_archive(_strip_trailing_arrow(full_display), "archive_no_media")
-        else:
-            # SESSION-HANDOFF.txt п.6 (2026-08-05, боевой прогон): та же симметрия, что и у
-            # archive_no_media выше (0==0 подавлен, живой репорт 2026-08-02) -- write_object_line()
-            # (:3133) уже напечатал предварительное info.media_count ДО распаковки; печатать эту,
-            # ПОДТВЕРЖДЁННУЮ распаковкой цифру снова -- повтор ровно тогда, когда она совпала с
-            # предварительной. Печатаем только если распаковка выявила расхождение (media_count
-            # отличается от того, что уже показано) -- иначе это новая информация, не повтор.
-            self._log_archive(_strip_trailing_arrow(full_display), "archive_extracted",
-                               f"{media_count} медиафайлов", count=media_count,
-                               silent=media_count == info.media_count)
+                # Finding 7: если часть членов архива ушла за пределы extract_dir (traversal,
+                # который не поймал текстовый парсер листинга -- см. count_extracted_files()),
+                # здесь физически найдётся МЕНЬШЕ файлов, чем заявлено в листинге архива.
+                extracted_count = count_extracted_files(extract_dir)
+                if extracted_count < info.entries:
+                    self._log_archive(_strip_trailing_arrow(full_display), "archive_path_traversal_suspected",
+                                       f"после распаковки найдено {extracted_count} файлов, "
+                                       f"в листинге архива было {info.entries} -- похоже, часть "
+                                       f"содержимого вышла за пределы extract_dir")
+                    cleanup_dir(extract_dir)
+                    return
+
+            media_count = 0
+            extract_dir_real = os.path.normcase(os.path.realpath(extract_dir))
+            # REVIEW-HANDOFF.md, Раунд 58 [БЛОКЕР] (см. __init__()'s self._pending_cleanup_dirs):
+            # если _walk_dir() ниже отложит что-то (в self._phase == 1 -- только тогда это вообще
+            # возможно, см. _walk_dir()) -- считаем это по росту счётчика отложенного ДО/ПОСЛЕ, не
+            # по факту, что генератор исчерпан ("исчерпан" больше не значит "всё физически
+            # посещено"). Если отложилось -- extract_dir остаётся на диске, реальная очистка
+            # переносится в самый конец walk() (_drain_deferred_phases()), уже после того как
+            # Фазы 2/3 прочитают из него всё, что им нужно.
+            _deferred_before = len(self._deferred_bydate_roots) + len(self._deferred_tilde_archives)
+            try:
+                for item in self._walk_dir(extract_dir, rel_prefix, origin_prefix, depth, is_root=True,
+                                            ancestors=(extract_dir_real,), archive_no_crc=(fmt in TAR_MODES),
+                                            archive_boundary_idx=archive_boundary_idx,
+                                            tree_rel_prefix=tree_rel_prefix):
+                    if item.ftype in ("image", "raw", "video"):
+                        media_count += 1
+                    yield item
+            finally:
+                _deferred_after = len(self._deferred_bydate_roots) + len(self._deferred_tilde_archives)
+                if _deferred_after > _deferred_before:
+                    self._pending_cleanup_dirs.append(extract_dir)
+                else:
+                    cleanup_dir(extract_dir)
+
+            if media_count == 0:
+                self._log_archive(_strip_trailing_arrow(full_display), "archive_no_media")
+            else:
+                # SESSION-HANDOFF.txt п.6 (2026-08-05, боевой прогон): та же симметрия, что и у
+                # archive_no_media выше (0==0 подавлен, живой репорт 2026-08-02) -- write_object_line()
+                # (:3133) уже напечатал предварительное info.media_count ДО распаковки; печатать эту,
+                # ПОДТВЕРЖДЁННУЮ распаковкой цифру снова -- повтор ровно тогда, когда она совпала с
+                # предварительной. Печатаем только если распаковка выявила расхождение (media_count
+                # отличается от того, что уже показано) -- иначе это новая информация, не повтор.
+                self._log_archive(_strip_trailing_arrow(full_display), "archive_extracted",
+                                   f"{media_count} медиафайлов", count=media_count,
+                                   silent=media_count == info.media_count)
+        finally:
+            self._archive_walk_depth -= 1
+            if self._archive_walk_depth == 0 and self._transient_op_cb is not None:
+                self._transient_op_cb(None)
 
 # ============================================================================
 # PROCESS  (from pipeline/process.py)
@@ -5494,11 +5701,17 @@ class TargetLock:
         self.log = log
         self._acquired = False
         # PROMPT_archive_report.md, 1.1а: report.html удаляется здесь ТОЛЬКО для реального
-        # archive-прогона (dry_run=False) -- CLI --dry-run тоже проходит через TargetLock
-        # (suppress_logs=False), но пишет СВОЙ отдельный файл в WORKDIR, а не в
-        # TARGET\__служебные_файлы\ -- удалять персистентный TARGET-отчёт из-за пробного
-        # прогона было бы неверно (см. раздел 1.1а: "перезаписывается только при успехе",
-        # dry_run никогда не в TARGET и есть "успех" в этом смысле).
+        # archive-прогона (dry_run=False). Докстринг исправлен 2026-08-19 (Раунд 107 ревью,
+        # придирка): раньше здесь утверждалось, что "CLI --dry-run тоже проходит через
+        # TargetLock" -- верно было ДО Раунда 102 (c7f8920, 2026-08-18); с тех пор `_main()`
+        # передаёт `suppress_logs=args.dry_run` наравне с `dry_run=args.dry_run` (см. её
+        # единственный вызов -- run(), :8288), а run() пропускает TargetLock целиком при
+        # suppress_logs=True -- значит CLI --dry-run (и вообще ЛЮБОЙ suppress_logs=True прогон)
+        # больше НЕ доходит до этого класса вовсе. self.dry_run здесь на практике сейчас всегда
+        # False (единственный вызывающий -- run(), достижимый только когда suppress_logs=False,
+        # а suppress_logs и dry_run в _main() всегда равны друг другу) -- ветка ниже оставлена
+        # не мёртвым кодом, а осознанным запасом на случай, если появится ДРУГОЙ (не CLI)
+        # вызывающий код с dry_run=True/suppress_logs=False одновременно.
         self.dry_run = dry_run
 
     def __enter__(self):
@@ -9500,6 +9713,21 @@ _MENU_BACK = object()  # sentinel: "0" в подменю с allow_back=True -- �
 # архива (source=TARGET, который проверяется -- этому же плейсхолдеру подставляется в target,
 # т.к. у паспорта нет отдельного "второго" TARGET для сверки, см. run_passport()).
 _NO_TARGET_PLACEHOLDER = os.path.join(tempfile.gettempdir(), "PhotoArchive_no_target_placeholder")
+
+# 2026-08-19: единый глобальный КОРЕНЬ распаковки для suppress_logs=True (Config.__post_init__)
+# -- не привязан к конкретному TARGET/SOURCE, в отличие от прежнего дефолта под TARGET.
+# Модульная константа (не инлайн-строка на месте использования в Config), т.к. используется в
+# НЕСКОЛЬКИХ местах, которым нужно ссылаться на РОВНО ТОТ ЖЕ путь: Config.__post_init__ (где под
+# ним назначается PID-подпапка текущего прогона, cfg.tmp_extract = <этот путь>/<pid>) и
+# _sweep_stale_dry_run_pid_dirs() (которая подметает ЧУЖИЕ PID-подпапки здесь же -- живая
+# находка ревизора, Раунд 106 придирка 2 → Раунд 107 замечание: раньше остатки "жёсткого" (не
+# KeyboardInterrupt) прерывания dry-run подчищал только следующий прогон НА ТОМ ЖЕ TARGET;
+# перевод на единый путь под %TEMP% без per-процесс изоляции (просто эта константа как есть,
+# без PID) решил ЭТУ проблему, но открыл новую -- конкурентный прогон мог удалить чужую АКТИВНУЮ
+# распаковку (общий путь, sha256-имя папки не несёт информации о владельце). PID-подпапка -- и
+# то, и другое сразу: подчистка не завязана на TARGET, но по-прежнему не трогает живые чужие
+# прогоны -- см. _pid_is_alive()/_sweep_stale_dry_run_pid_dirs()).
+_DRY_RUN_TMP_EXTRACT_DIR = os.path.join(tempfile.gettempdir(), "PhotoArchive_tmp_extract")
 
 
 def _progress_note_budget(min_width: int = 20, reserve: int = 80) -> int:

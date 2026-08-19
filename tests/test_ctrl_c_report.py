@@ -12,6 +12,9 @@ KeyboardInterrupt и генерировал отчёт с баннером пр�
 (б) вызывающий bare-launch-код заново возбуждает KeyboardInterrupt (через _InterruptedRunReport,
 несущий report_path) после того, как отчёт с баннером прерывания уже записан на диск."""
 import os
+import subprocess
+import sys
+import tempfile
 import zipfile
 
 from PIL import Image
@@ -221,6 +224,105 @@ def test_run_impl_cleans_up_tmp_extract_after_interrupt_mid_archive(tmp_path, mo
     m._run_impl(cfg, log=lambda *a, **k: None, print_summary=False)
 
     assert _own_tmp_extract_entries(cfg.tmp_extract) == []
+
+
+def test_dry_run_default_tmp_extract_leaves_no_trace_on_target_after_interrupt(tmp_path, monkeypatch):
+    """Живая находка пользователя, 2026-08-19: два теста выше явно переопределяют
+    tmp_extract_dir ВНЕ TARGET -- они проверяют, что hash-именованная подпапка внутри НЕГО
+    убирается, но никогда не проверяли реальный сценарий "[2] Пробный прогон"/CLI --dry-run
+    (suppress_logs=True, tmp_extract_dir НЕ задан в конфиге). Дефолтный Config.tmp_extract
+    раньше ВСЕГДА указывал под TARGET, независимо от suppress_logs -- archive-распаковка
+    (реальна даже в dry-run) физически создавала TARGET\\__служебные_файлы\\tmp_extract\\ на
+    диске, и по завершении/после Ctrl+C убиралась только hash-именованная подпапка внутри неё,
+    не сама эта цепочка -- TARGET оставался существовать, пустой, но существовал.
+
+    Фикс -- Config.__post_init__() редиректит tmp_extract на системный %TEMP% (не WORKDIR --
+    портативный .exe многие запускают прямо с флешки, WORKDIR тогда физически совпадает с ней,
+    ровно то ограниченное место, которого dry-run обязан не требовать), когда suppress_logs=True."""
+    source = tmp_path / "source"
+    source.mkdir()
+    _make_zip_with_deferred_dump_folder(source / "album.zip", tmp_path)
+    target = tmp_path / "target"  # НЕ создаётся заранее -- должен остаться отсутствующим
+    workdir = tmp_path / "workdir"  # намеренно НЕ там, где окажется tmp_extract -- см. докстрин
+    workdir.mkdir()
+
+    real_analyze_batch = m.analyze_batch
+    monkeypatch.setattr(m, "analyze_batch", _flaky_analyze_batch(real_analyze_batch, interrupt_on_call=1))
+
+    cfg = m.Config(source=str(source), target=str(target), dry_run=True, suppress_logs=True,
+                    workdir=str(workdir))
+    assert cfg.tmp_extract.startswith(os.path.normpath(tempfile.gettempdir()))
+    m._run_impl(cfg, log=lambda *a, **k: None, print_summary=False)
+
+    assert not target.exists()
+    assert not (workdir / "tmp_extract").exists()  # WORKDIR не стал заменой TARGET-течи
+    assert _own_tmp_extract_entries(cfg.tmp_extract) == []  # %TEMP%-сторона тоже чиста
+
+
+def test_real_build_sweeps_stale_global_dry_run_tmp_extract_leftover(tmp_path, monkeypatch):
+    """Живая находка ревизора, 2026-08-19 (Раунд 106, придирка 2, по итогам фикса выше в этом
+    файле): dry-run/analyze/паспорт (suppress_logs=True) распаковывают в ЕДИНЫЙ глобальный
+    _DRY_RUN_TMP_EXTRACT_DIR под %TEMP%, не привязанный к TARGET. Если такой прогон убьют
+    "жёстко" (Task Manager/крах -- не Ctrl+C, тот перехватывается надёжно и подчищает сразу),
+    остаток раньше подхватывал только следующий прогон НА ТОМ ЖЕ TARGET (когда tmp_extract был
+    его подпапкой) -- теперь путь общий, TARGET ни при чём, так что нужно, чтобы ЛЮБОЙ
+    следующий прогон программы (в т.ч. реальная сборка на СОВЕРШЕННО ДРУГОМ TARGET) тоже его
+    подмёл, а не только очередной suppress_logs=True прогон.
+
+    2026-08-19, Раунд 107 ревью: верхний уровень _DRY_RUN_TMP_EXTRACT_DIR теперь PID-подпапки
+    (не сами sha256-папки распаковки напрямую) -- остаток кладётся под PID заведомо МЁРТВОГО
+    процесса (реально порождённого и дождавшегося завершения, не выдуманное число -- чтобы не
+    зависеть от того, свободен ли конкретный PID в моменте на этой машине) ДО запуска реальной
+    сборки (suppress_logs=False, TARGET из этого теста никак не пересекается с местом остатка)
+    и проверяет, что он исчезает уже к началу этого прогона."""
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+
+    fake_dry_run_tmp_extract = tmp_path / "fake_temp" / "PhotoArchive_tmp_extract"
+    monkeypatch.setattr(m, "_DRY_RUN_TMP_EXTRACT_DIR", str(fake_dry_run_tmp_extract))
+    stale_pid_dir = fake_dry_run_tmp_extract / str(dead.pid)
+    stale = stale_pid_dir / ("b" * 64)
+    stale.mkdir(parents=True)
+    (stale / "leftover.tmp").write_text("orphaned by a hard kill of a previous dry-run")
+
+    source = tmp_path / "source"
+    source.mkdir()
+    _make_jpeg(source / "a.jpg")
+    target = tmp_path / "target"  # СОВЕРШЕННО другой TARGET -- никак не связан с местом остатка
+
+    cfg = m.Config(source=str(source), target=str(target))  # suppress_logs=False -- реальная сборка
+    m._run_impl(cfg, log=lambda *a, **k: None, print_summary=False)
+
+    assert not stale_pid_dir.exists()  # глобальный dry-run путь подметён, хотя эта сборка -- НЕ dry-run
+
+
+def test_stale_dry_run_pid_dir_of_still_alive_process_is_not_swept(tmp_path, monkeypatch):
+    """Раунд 107 ревью (сама причина фикса выше -- PID-подпапки вместо плоских sha256-папок):
+    конкурентный прогон НЕ должен удалять активную распаковку архива ДРУГОГО, ещё не
+    завершившегося прогона под общим _DRY_RUN_TMP_EXTRACT_DIR -- только реально мёртвые PID.
+    Red-before-green этого теста -- сам факт, что до PID-изоляции (плоские sha256-папки, любая
+    "чужая" распознанная папка подметалась безусловно) такой сценарий воспроизводился ревизором
+    исполнением (см. REVIEW-HANDOFF.md, Раунд 107)."""
+    alive = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        fake_dry_run_tmp_extract = tmp_path / "fake_temp" / "PhotoArchive_tmp_extract"
+        monkeypatch.setattr(m, "_DRY_RUN_TMP_EXTRACT_DIR", str(fake_dry_run_tmp_extract))
+        active_dir = fake_dry_run_tmp_extract / str(alive.pid) / ("c" * 64)
+        active_dir.mkdir(parents=True)
+        (active_dir / "in_progress.tmp").write_text("still being extracted by a live process")
+
+        source = tmp_path / "source"
+        source.mkdir()
+        _make_jpeg(source / "a.jpg")
+        target = tmp_path / "target"  # СОВЕРШЕННО другой TARGET -- никак не связан с местом остатка
+
+        cfg = m.Config(source=str(source), target=str(target))  # suppress_logs=False -- реальная сборка
+        m._run_impl(cfg, log=lambda *a, **k: None, print_summary=False)
+
+        assert active_dir.exists()  # чужой ЖИВОЙ прогон не тронут
+    finally:
+        alive.terminate()
+        alive.wait()
 
 
 def test_run_analyze_sweeps_stale_tmp_extract_leftovers_at_start(tmp_path):

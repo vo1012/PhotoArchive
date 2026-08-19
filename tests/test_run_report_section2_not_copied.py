@@ -66,7 +66,7 @@ class TestRenderRunNotCopiedDuplicates:
     def test_shown_calmly_at_the_bottom(self):
         html_out = r._render_run_not_copied({"skipped_present": 7}, {}, "target")
         assert "7 файлов" in html_out
-        assert "уже в архиве, повторно не копировались" in html_out
+        assert "— дубликаты, повторно не копировались" in html_out
         assert "class=\"muted\"" in html_out
 
     def test_preview_wording_differs(self):
@@ -95,7 +95,7 @@ class TestRenderRunNotCopiedOrder:
         html_out = r._render_run_not_copied(run_stats, {}, "target")
         idx_unreadable = html_out.index("не прочитано")
         idx_encrypted = html_out.index("запароленный архив")
-        idx_dup = html_out.index("уже в архиве")
+        idx_dup = html_out.index("— дубликаты")
         assert idx_unreadable < idx_encrypted < idx_dup
 
 

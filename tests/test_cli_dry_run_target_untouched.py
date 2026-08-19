@@ -16,6 +16,7 @@
 же приём, что и в `_bare_launch_run_dryrun()`."""
 import os
 import sys
+import zipfile
 
 from PIL import Image
 
@@ -92,3 +93,34 @@ def test_cli_dry_run_on_existing_archive_does_not_modify_it(tmp_path, monkeypatc
     html = (workdir / "report.html").read_text(encoding="utf-8")
     assert "файлов будет добавлено" in html  # b.jpg корректно распознан как новый, несмотря
                                               # на то что appended.csv для a.jpg не тронут
+
+
+def test_cli_dry_run_with_archive_source_creates_no_target(tmp_path, monkeypatch):
+    """Живая находка пользователя, 2026-08-19: тест выше (test_cli_dry_run_creates_no_target_on_
+    fresh_target) не ловил реальную течь -- его SOURCE не содержит ни одного архива, поэтому
+    ни разу не проходит через SourceWalker._handle_archive(). Config.tmp_extract по умолчанию
+    ВСЕГДА указывал под TARGET ({TARGET}\\__служебные_файлы\\tmp_extract), независимо от
+    suppress_logs -- archive-распаковка (она реальна даже в dry-run, нужно заглянуть внутрь)
+    физически создавала эту папку на диске. _handle_archive() убирает hash-именованную
+    подпапку с распакованным содержимым по завершении, но родительскую цепочку
+    __служебные_файлы\\tmp_extract\\ (и тем самым сам TARGET) этим не убрать -- см. фикс в
+    Config.__post_init__() (tmp_extract редиректится на WORKDIR при suppress_logs=True)."""
+    source = tmp_path / "SOURCE"
+    source.mkdir()
+    img_path = tmp_path / "a.jpg"
+    _make_jpeg(img_path)
+    with zipfile.ZipFile(source / "album.zip", "w") as zf:
+        zf.write(img_path, arcname="a.jpg")
+    target = tmp_path / "TARGET"
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    monkeypatch.setattr(m, "WORKDIR", str(workdir))
+    monkeypatch.setattr(sys, "argv", ["photosort_win.py", "archive", "--source", str(source),
+                                       "--target", str(target), "--dry-run"])
+
+    exit_code = m._main()
+
+    assert exit_code == 0
+    assert not target.exists()  # ключевая проверка -- ни TARGET, ни __служебные_файлы\tmp_extract\
+    html = (workdir / "report.html").read_text(encoding="utf-8")
+    assert "файлов будет добавлено" in html

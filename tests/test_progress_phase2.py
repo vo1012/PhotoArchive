@@ -525,6 +525,73 @@ def test_handle_archive_sets_and_clears_transient_op_around_extraction(tmp_path)
     assert ops[-1] is None  # cleared again after extraction, whether it succeeded or not
 
 
+def test_handle_archive_shows_razbor_arhiva_during_content_walk(tmp_path):
+    """Живая находка пользователя, 2026-08-19 (боевой прогон): "распаковка (X ГБ)" гасилась в
+    None СРАЗУ после самой физической распаковки -- дальнейший обход распакованного содержимого
+    (у архива с горой вложенных файлов -- самая долгая часть прогона) не показывал в поле
+    операции НИЧЕГО, откатывался на статичный resting-текст, хотя "обработано объектов %" тем
+    временем честно стоит на месте (архив тикает одним объектом только по завершении всего
+    содержимого). Теперь между "распаковка" и финальным None должно быть "разбор архива"."""
+    source = tmp_path / "source"
+    source.mkdir()
+    tar_path = source / "album.tar"
+    with tarfile.open(tar_path, "w") as tf:
+        p = tmp_path / "a.jpg"
+        p.write_bytes(b"x" * 10)
+        tf.add(p, arcname="a.jpg")
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)
+    ops = []
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None, transient_op_cb=ops.append)
+    list(walker.walk())
+
+    # Не точная последовательность -- "проверяю отложенное содержимое…" (_open_deferred_gap(),
+    # существующая, отдельная механика) законно перемежается с "разбор архива" (она же --
+    # фолбэк _close_deferred_gap(), пока обход внутри архива, см. её докстрин): важно, что
+    # "разбор архива" реально появляется, и что поле гасится в None РОВНО ОДИН раз -- в самом
+    # конце, а не где-то посреди обхода.
+    assert "разбор архива" in ops
+    assert ops.count(None) == 1
+    assert ops[-1] is None
+
+
+def test_handle_archive_razbor_arhiva_persists_through_nested_archive(tmp_path):
+    """Живая находка пользователя, 2026-08-19 (боевой прогон, архив с гигантским количеством
+    вложенных файлов/вложенных архивов внутри): "разбор архива" должен держаться ВЕСЬ обход
+    распакованного содержимого внешнего архива, включая обработку вложенных архивов внутри --
+    не гаситься в None на завершении КАЖДОГО вложенного архива (это стёрло бы пометку внешнего,
+    хотя его собственная обработка ещё не закончена). Счётчик глубины
+    (SourceWalker._archive_walk_depth) должен гасить transient_op ровно один раз -- когда
+    завершается самый внешний архив, не раньше."""
+    source = tmp_path / "source"
+    source.mkdir()
+    nested_zip = tmp_path / "nested.zip"
+    with zipfile.ZipFile(nested_zip, "w") as zf:
+        zf.writestr("b.jpg", b"y" * 10)
+    tar_path = source / "album.tar"
+    with tarfile.open(tar_path, "w") as tf:
+        p = tmp_path / "a.jpg"
+        p.write_bytes(b"x" * 10)
+        tf.add(p, arcname="a.jpg")
+        tf.add(nested_zip, arcname="nested.zip")
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)
+    ops = []
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None, transient_op_cb=ops.append)
+    list(walker.walk())
+
+    # "разбор архива" может законно повториться (фолбэк _close_deferred_gap(), см. её
+    # докстрин) -- ключевая гарантия не "ровно один раз", а что None НЕ появляется, пока
+    # обработка вложенного архива идёт внутри внешнего: поле гасится в None РОВНО ОДИН раз --
+    # только когда весь внешний архив (включая вложенный) уже полностью обработан.
+    assert "разбор архива" in ops
+    assert ops.count(None) == 1
+    assert ops[-1] is None
+    assert ops.index("разбор архива") < ops.index(None)
+
+
 def test_handle_archive_extracted_log_line_suppressed_when_count_matches_listing(tmp_path):
     # SESSION-HANDOFF.txt п.6 (2026-08-05, боевой прогон): симметрично с уже исправленной
     # archive_no_media (0==0 подавлен, живой репорт 2026-08-02) -- write_object_line() уже
@@ -1319,6 +1386,22 @@ def test_two_line_status_percent_always_has_one_decimal():
     bar.close()
 
 
+def test_two_line_status_percent_truncated_not_rounded_near_100(tmp_path):
+    """Живая находка пользователя, 2026-08-19 (боевой прогон, источник с одним архивом,
+    вмещающим гигантское количество вложенных файлов/вложенных архивов): X/Y = 9996/10000 =
+    99.96% -- f"{99.96:.1f}%" ОКРУГЛЯЕТ до буквального "100.0%" (до этого фикса), хотя реально
+    не готово: архив тикает одним объектом только по завершении ВСЕГО своего содержимого, а на
+    практике оставался последним, самым долгим объектом прогона (2 часа). "100.0%" держалось бы
+    неотличимо от настоящего завершения весь этот остаток. Теперь верхняя граница строго 99.9,
+    а усечение (не округление) не даёт значению вроде 99.96 перепрыгнуть её самостоятельно."""
+    bar = _two_line_bar(total_estimate=10_000)
+    bar.add_object_progress(9996)  # ровно 99.96%
+    line = bar._build_two_line_status()
+    assert "обработано объектов  99.9%" in line
+    assert "100.0%" not in line
+    bar.close()
+
+
 def test_two_line_status_percent_floored_at_0_1_never_shows_literal_zero(tmp_path):
     """Речь пользователя, 2026-08-17: даже с 1 знаком после запятой X/Y*100 округляется в "0.0%"
     для любого X/Y < 0.05% -- на большом total_estimate (или пока обходится куча немедийных
@@ -1337,14 +1420,19 @@ def test_two_line_status_percent_floored_at_0_1_never_shows_literal_zero(tmp_pat
     bar.close()
 
 
-def test_two_line_status_percent_clamped_at_100_when_estimate_undershoots():
+def test_two_line_status_percent_clamped_at_99_9_when_estimate_undershoots():
     """total_estimate -- оценка (_quick_media_count_estimate()), не точный подсчёт -- реальный
     X может обогнать её мимо конца прогона (недооценка). Раньше это дало бы X/Y > 1 в дроби --
-    в процентах это выглядело бы как "142%", что читается сломанным сильнее, чем сама причина."""
+    в процентах это выглядело бы как "142%", что читается сломанным сильнее, чем сама причина.
+
+    2026-08-19 (живой боевой прогон): верхняя граница теперь 99.9, не 100.0 -- буквальный
+    "100.0%" зарезервирован ИСКЛЮЧИТЕЛЬНО за force_complete (реальное завершение, см. тест
+    ниже) -- см. докстрин pct в _build_two_line_status()."""
     bar = _two_line_bar(total_estimate=100)
     bar.add_object_progress(142)
     line = bar._build_two_line_status()
-    assert "обработано объектов 100.0%" in line
+    assert "обработано объектов  99.9%" in line
+    assert "100.0%" not in line
     assert "142" not in line
     bar.close()
 

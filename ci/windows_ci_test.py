@@ -1450,8 +1450,8 @@ def test_exact_dup_examples_in_report():
             html_out = f.read()
         check("Что не скопировано" in html_out,
               "exact-dup-examples: report.html renders Section 2 heading")
-        # _render_run_not_copied(): "2 файла уже в архиве, повторно не копировались — сэкономлено X"
-        check("2 файла уже в архиве" in html_out,
+        # _render_run_not_copied(): "2 файла — дубликаты, повторно не копировались — сэкономлено X"
+        check("2 файла — дубликаты" in html_out,
               "exact-dup-examples: Section 2 shows the aggregated duplicate count "
               "(live pipeline, verified end-to-end)")
 
