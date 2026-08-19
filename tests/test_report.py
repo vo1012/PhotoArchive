@@ -2974,6 +2974,24 @@ def test_svg_hbar_chart_keeps_short_label_untouched():
     assert "…" not in html_out
 
 
+def test_svg_hbar_chart_truncates_cyrillic_uppercase_more_aggressively_than_latin():
+    """Раунд 103 ревизора (2026-08-19): единый коэффициент 0.62 (калиброван на Latin
+    uppercase) не покрывал Cyrillic uppercase -- заглавные кириллические буквы у большинства
+    sans-serif шрифтов заметно шире латинских при том же font_size, и подтверждённый ревизором
+    headless-Chromium кейс ("НОВЫЙ ГОД МОСКВА 2015", 21 символ -- короче старого лимита в 21
+    символ, поэтому вообще НЕ обрезался) физически вылезал за левый край SVG. Не-ASCII подписи
+    теперь обрезаются короче (бюджет символов ниже), чем такая же по длине ASCII-подпись."""
+    cyrillic_label = "НОВЫЙ ГОД МОСКВА 2015"  # 21 символ -- ровно на старой границе необрезки
+    latin_label = "N" * len(cyrillic_label)  # тот же символьный размер, чисто ASCII
+    html_cyr = r._svg_hbar_chart([(cyrillic_label, 10, "10 файлов")], aria_label="Тест")
+    html_lat = r._svg_hbar_chart([(latin_label, 10, "10 файлов")], aria_label="Тест")
+    m_cyr = re.search(r'text-anchor="end"[^>]*>([^<]*)</text>', html_cyr)
+    m_lat = re.search(r'text-anchor="end"[^>]*>([^<]*)</text>', html_lat)
+    assert cyrillic_label not in html_cyr, "кириллическая ЗАГЛАВНАЯ подпись должна обрезаться"
+    assert latin_label in html_lat, "тот же по длине ASCII (даже сплошь заглавный) не должен"
+    assert len(m_cyr.group(1)) < len(m_lat.group(1))
+
+
 def test_top_cameras_chart_hidden_below_minimum_distinct_cameras():
     """Пункт E: "одного-двух пунктов" -- меньше _MIN_DISTINCT_CAMERAS разных камер, диаграмма
     не рендерится совсем, даже если файлов с этими камерами много."""
