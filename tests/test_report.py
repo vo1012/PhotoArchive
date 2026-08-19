@@ -2950,6 +2950,30 @@ def test_build_model_from_rows_aggregates_cameras_excludes_unknown():
     assert model["cameras"] == Counter({"Canon EOS 80D": 2, "iPhone 14": 1})
 
 
+def test_svg_hbar_chart_truncates_long_uppercase_label_conservatively():
+    """2026-08-19, найдено при сверке лендинга с реальным кодом: старый лимит "не трогаем
+    короче 26 символов, иначе обрезаем до 23+…" не учитывал ни font_size/margin_left, ни то,
+    что подписи камер часто сплошь заглавные (шире средней буквы шрифта) -- на реальной EXIF-
+    комбинации Make+Model вида "NIKON CORPORATION"+"NIKON D750" обрезанная строка (24 символа)
+    всё равно физически вылезала за левый край SVG (подтверждено headless Chromium: x < 0),
+    т.к. text-anchor="end" растит текст влево от фиксированной точки. Новый бюджет символов
+    считается от реальной доступной ширины (margin_left-8)/font_size -- при дефолтных
+    margin_left=170/font_size=12 не должен превышать 21 символ (20 + "…")."""
+    long_label = "NIKON CORPORATION NIKON D750"  # 28 символов, реальная EXIF-комбинация
+    html_out = r._svg_hbar_chart([(long_label, 10, "10 файлов")], aria_label="Тест")
+    m = re.search(r'text-anchor="end"[^>]*>([^<]*)</text>', html_out)
+    assert m, "не нашли подпись в SVG"
+    shown = m.group(1)
+    assert len(shown) <= 21, f"подпись слишком длинная для margin_left=170/font_size=12: {shown!r}"
+    assert shown.endswith("…")
+
+
+def test_svg_hbar_chart_keeps_short_label_untouched():
+    html_out = r._svg_hbar_chart([("Canon EOS 80D", 10, "10 файлов")], aria_label="Тест")
+    assert "Canon EOS 80D" in html_out
+    assert "…" not in html_out
+
+
 def test_top_cameras_chart_hidden_below_minimum_distinct_cameras():
     """Пункт E: "одного-двух пунктов" -- меньше _MIN_DISTINCT_CAMERAS разных камер, диаграмма
     не рендерится совсем, даже если файлов с этими камерами много."""

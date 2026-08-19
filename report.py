@@ -1294,12 +1294,26 @@ def _svg_hbar_chart(items: list, width=680, bar_h=22, gap=8, color=COLOR_ACCENT,
         max_v = max(v for _, v, _ in items) or 1
     plot_w = width - margin_left - margin_right
     height = len(items) * (bar_h + gap) + gap
+    # Найдено 2026-08-19 (сверка лендинга с реальным кодом, синтетическая EXIF-камера
+    # "NIKON CORPORATION"+"NIKON D750"): фиксированный лимит "26 символов не трогаем, иначе
+    # обрезаем до 23+…" не учитывал ни font_size, ни margin_left, ни то, что подписи камер/
+    # альбомов часто ПОЛНОСТЬЮ заглавные (заметно шире средней буквы того же шрифта) -- текст
+    # с text-anchor="end" растёт влево от margin_left-8, и на длинных заглавных подписях правый
+    # край обрезанной строки всё равно вылезал за x=0 (левый край viewBox), теряя первые буквы
+    # молча, без какого-либо визуального намёка на обрезку. Бюджет символов теперь считается от
+    # реальной доступной ширины (margin_left-8) и font_size, не захардкожен -- работает для
+    # любого вызывающего кода (в т.ч. _top_formats_hbar() с margin_left=90). Коэффициент 0.62
+    # -- консервативная (специально чуть завышенная) оценка средней ширины символа обычного
+    # sans-serif на заглавных/цифрах, подобрана так, чтобы даже сплошь заглавная подпись не
+    # приближалась к краю впритык.
+    max_label_chars = max(4, int((margin_left - 8) / (font_size * 0.62)))
     parts = []
     y = gap
     for i, (label, v, disp) in enumerate(items):
         w = plot_w * (v / max_v)
         bar_color = colors[i] if colors else color
-        short_label = label if len(label) <= 26 else label[:23] + "…"
+        short_label = (label if len(label) <= max_label_chars
+                       else label[:max_label_chars - 1] + "…")
         parts.append(f'<text x="{margin_left - 8}" y="{y + bar_h * 0.68:.1f}" font-size="{font_size}" '
                       f'text-anchor="end" fill="{COLOR_TEXT}">{html.escape(short_label)}</text>')
         parts.append(f'<rect x="{margin_left}" y="{y}" width="{w:.1f}" height="{bar_h}" '
