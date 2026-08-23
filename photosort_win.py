@@ -435,6 +435,268 @@ def console_log(msg):
         log_line(text, log=print)
 
 
+def _fatal_messagebox(text: str) -> None:
+    """Последний рубеж сообщения об ошибке -- на случай, если НИ GUI (tkinter), НИ обычная
+    консоль (print()/console_log()) не показывают ничего пользователю. 2026-08-22, по прямой
+    просьбе пользователя, build.bat теперь собирает WINDOWED (`--windowed`) .exe (см.
+    _configure_windows_stdio_at_startup()'s докстринг) -- то, что этот докстринг раньше называл
+    гипотетическим будущим ("если exe когда-нибудь соберут как windowed"), теперь реальность
+    голого запуска: sys.stdout/stderr там всегда указывают на os.devnull, дубль в stderr ниже
+    печатается, но никуда не долетает -- сознательно принятая пользователем цена (см. тот же
+    докстринг), это окно теперь ЕДИНСТВЕННЫЙ реальный канал для голого запуска, не один из
+    двух. ctypes.windll.user32.MessageBoxW ни от os.devnull, ни от какого-либо ещё канала не
+    зависит, тот же локальный-импорт паттерн, что и у _prevent_sleep()/gui_menu.py. No-op вне
+    Windows -- вызывать ТОЛЬКО из _main()'s голого-запуска ветки после того, как GUI и
+    текстовое меню уже подвели."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            MB_OK = 0x0
+            MB_ICONERROR = 0x10
+            ctypes.windll.user32.MessageBoxW(None, text, "PhotoArchive", MB_OK | MB_ICONERROR)
+        except Exception:
+            pass
+    try:
+        print(text, file=sys.stderr)
+    except Exception:
+        pass
+
+
+_console_freed_for_gui = False
+_work_console_allocated = False
+
+
+def _configure_windows_stdio_at_startup(has_cli_args: bool) -> None:
+    """2026-08-22, по прямой просьбе пользователя -- предыдущая версия этой функции
+    (`_free_console_for_gui_bare_launch()`, hide-after-the-fact через ShowWindow/FreeConsole)
+    минимизировала, но НЕ убирала чёрный мелькающий экран консоли перед голым GUI-запуском:
+    build.bat собирал КОНСОЛЬНУЮ сборку (`console=True`), а консольная сборка означает, что
+    ОС создаёт видимое окно консоли ДО того, как вообще начинает исполняться код Python --
+    спрятать его можно только ПОСЛЕ того, как этот код успел добежать до вызова, а не
+    предотвратить появление. Живой клик-тест подтвердил: экран всё равно виден и гаснет,
+    именно то, что пользователь прямо попросил убрать целиком -- "если для этого надо
+    отказаться от текстового резерва -- значит отказываемся" (текстовый резерв -- см. ниже).
+
+    Настоящий фикс -- на уровне СБОРКИ, не только кода: build.bat теперь собирает WINDOWED
+    (`--windowed`) .exe -- Windows вообще НИКОГДА не создаёт консоль для этого процесса сама,
+    ни при каких обстоятельствах (в отличие от консольной сборки, где создание окна -- не
+    решение приложения). Это и убирает мелькание полностью, а не просто прячет его быстрее.
+
+    Цена: "текстовый резерв" (см. _fatal_messagebox()'s докстринг) -- та самая автосозданная
+    консоль, служившая ПОСЛЕДНИМ запасным каналом для дублирования сообщения об ошибке через
+    stderr, если ни GUI, ни сам MessageBoxW почему-то не показались бы -- этого канала больше
+    физически не существует для голого запуска (has_cli_args=False): sys.stdout/stderr здесь
+    указывают на os.devnull, попытка print() в них проваливается молча, не падает. Пользователь
+    явно принял эту цену ради полного отсутствия мелькания -- MessageBoxW остаётся единственным
+    каналом сообщения об ошибке для голого запуска.
+
+    ДЛЯ РЕАЛЬНОГО CLI-ПУТИ (has_cli_args=True, например `PhotoArchive.exe --source X --target
+    Y` из существующего терминала) windowed-сборка означала бы то же самое молчание -- и это
+    было бы настоящей регрессией функциональности, не просто внешним видом, поэтому CLI-путь
+    ЯВНО отличается: `AttachConsole(ATTACH_PARENT_PROCESS)` подключается к консоли ТОГО
+    терминала, откуда реально запустили .exe (если он есть -- голый двойной клик через
+    Проводник никакой консоли-родителя не имеет, AttachConsole тогда просто не срабатывает, и
+    CLI-путь тоже проваливается в devnull, что ожидаемо для запуска без какого-либо терминала).
+    При успехе sys.stdout/stderr/stdin переоткрываются на CONOUT$/CONIN$ -- тот же приём, что и
+    у _ensure_work_console() ниже (AllocConsole() там создаёт НОВУЮ консоль для реальной
+    обработки; здесь -- подключение к УЖЕ существующей консоли вызывающего терминала, разные
+    API, одинаковый способ переоткрыть stdio после).
+
+    `_console_freed_for_gui=True` выставляется здесь БЕЗУСЛОВНО (было -- только когда GUI
+    реально подтверждён) -- при windowed-сборке консоли никогда не было с самого начала
+    процесса, семантика "консоль уже недоступна для чтения" (см. _should_pause_before_exit())
+    верна с первой же строки, ждать подтверждения GUI больше незачем.
+
+    КРИТИЧНО: no-op не только вне Windows, но и вне FROZEN-сборки (`sys.frozen`) -- вся эта
+    функция существует ТОЛЬКО чтобы компенсировать отсутствие консоли у windowed PyInstaller-
+    бутлоадера. Обычный dev-запуск (`python photosort_win.py --version`, тот же путь, которым
+    идут ci/windows_ci_test.py's subprocess.run()-тесты на самом Windows CI-раннере) -- ОБЫЧНЫЙ
+    консольный `python.exe`, sys.stdout уже указывает на что-то рабочее -- трогать его не нужно.
+
+    ВТОРАЯ, отдельная проверка -- `sys.stdout is None` -- нужна ДАЖЕ на frozen windowed-сборке:
+    живой запуск собранного `PhotoArchive.exe` через `subprocess.run([EXE, ...],
+    capture_output=True)` (именно так работает ci/smoke_test_exe.py -- тестирует УЖЕ СОБРАННЫЙ
+    .exe, не dev-скрипт, sys.frozen там True) поймал реальный баг первой версии этой функции:
+    windowed-бутлоадер PyInstaller УЖЕ подключает sys.stdout/stderr к предоставленным вызывающим
+    пайпам, если они были явно переданы через STARTUPINFO (тот же механизм, каким
+    `subprocess.run(capture_output=True)`/`Start-Process -RedirectStandardOutput` перенаправляют
+    вывод дочернего процесса, работает независимо от console/windowed подсистемы) -- в этом
+    случае sys.stdout НЕ None, это уже рабочий объект. Без проверки функция всё равно пробовала
+    AttachConsole(), который в этом случае РЕАЛЬНО УСПЕВАЕТ (процесс ещё ни к чему не прикреплён
+    -- пайп это не консоль) и подключается к консоли вызывающего терминала -- дальше код
+    переоткрывал sys.stdout на CONOUT$ этой консоли, ЗАМЕНЯЯ уже рабочий пайп -- вывод уходил в
+    невидимую для теста консоль, `subprocess.run()`'s захваченный `.stdout` оставался пустым.
+    Живой прогон (`Start-Process -RedirectStandardOutput`, эмулирует ci/smoke_test_exe.py)
+    воспроизвёл именно это ДО фикса -- пустой захваченный вывод -- и подтвердил чистый после
+    (см. коммит). Только когда sys.stdout ДЕЙСТВИТЕЛЬНО None (bootloader не получил ни одного
+    валидного хендла -- настоящий голый запуск из терминала без перенаправления, ГДЕ и нужен
+    сам AttachConsole) -- функция вообще что-то трогает; если уже рабочий -- не трогается совсем,
+    независимо от has_cli_args.
+
+    No-op вне Windows и best-effort (проглатывает сбой ctypes) -- тот же паттерн, что и у
+    остальных win32-хелперов этого файла (_fatal_messagebox()/_reclaim_console_focus())."""
+    global _console_freed_for_gui
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        return
+    _console_freed_for_gui = True
+    if sys.stdout is not None:
+        # Вызывающий уже явно перенаправил вывод (pipe/файл) -- уже рабочий, не трогаем вообще.
+        return
+    attached = False
+    if has_cli_args:
+        try:
+            kernel32 = ctypes.windll.kernel32
+            kernel32.AttachConsole.restype = ctypes.c_int
+            kernel32.AttachConsole.argtypes = [ctypes.c_uint32]
+            ATTACH_PARENT_PROCESS = 0xFFFFFFFF
+            attached = bool(kernel32.AttachConsole(ATTACH_PARENT_PROCESS))
+        except Exception:
+            attached = False
+        if attached:
+            try:
+                sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace")
+                sys.stderr = open("CONOUT$", "w", encoding="utf-8", errors="replace")
+                sys.stdin = open("CONIN$", "r", encoding="utf-8", errors="replace")
+            except Exception:
+                attached = False
+    if not attached:
+        try:
+            sys.stdout = open(os.devnull, "w", encoding="utf-8", errors="replace")
+            sys.stderr = open(os.devnull, "w", encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+def _ensure_work_console() -> None:
+    """Парная функция к _configure_windows_stdio_at_startup() -- вызывается ОДИН раз за весь
+    процесс, из gui_menu.run_bare_launch() сразу после того, как мастер вернул выбор
+    пользователя (мастер уже закрыт, реальная обработка -- scan/dry_run/build/passport -- вот-
+    вот начнётся и должна быть видна). AllocConsole() создаёт новое окно консоли (windowed-
+    сборка, см. build.bat, сама по себе никогда её не создаёт -- см. докстринг
+    _configure_windows_stdio_at_startup()); sys.stdout/stderr/stdin переоткрываются на
+    CONOUT$/CONIN$ (просто переприсвоить sys.stdout НЕ восстанавливает Win32-хендлы
+    STD_*_HANDLE, которые напрямую использует _console_stdout_handle() для покраски "ОШИБКА" --
+    но AllocConsole(), по документации MSDN, сам сбрасывает STD_INPUT_HANDLE/STD_OUTPUT_HANDLE/
+    STD_ERROR_HANDLE на новую консоль, если они не были явно ПЕРЕНАПРАВЛЕНЫ -- переоткрытых
+    через open() здесь достаточно, отдельный SetStdHandle() не требуется).
+
+    САМО СОЗДАНИЕ окна (AllocConsole()) идемпотентно (флаг выставляется ДО самого вызова, тот же
+    приём, что и у gui_menu._configure_dpi_awareness()) -- цикл run_bare_launch() возвращается к
+    мастеру и может пройти через эту точку много раз за сессию, AllocConsole() нужен только один
+    раз. Окно между прогонами сворачивается (см. _hide_work_console() -- зовётся из
+    gui_menu.run_bare_launch() в НАЧАЛЕ каждой итерации цикла, пока пользователь снова в мастере)
+    -- поэтому на ВСЕХ итерациях, включая повторные, эта функция безусловно РАЗВОРАЧИВАЕТ окно
+    заново (ShowWindow(SW_RESTORE) + SetForegroundWindow()), не только создаёт его при первом
+    вызове.
+
+    2026-08-23, по прямой просьбе пользователя: SW_SHOW/SW_HIDE (окно физически исчезает, без
+    следа на панели задач) заменены на SW_RESTORE/SW_MINIMIZE (окно сворачивается в панель
+    задач, как обычное) -- пользователь явно попросил именно такую модель ("окно консоли не
+    исчезает совсем, а сворачивается") для этой же связки функций (см. _hide_work_console()).
+    Той же правкой убран прежний блокирующий input()-механизм на этой консоли для Ctrl-C/краша
+    (main(), except-ветки) -- окно теперь чисто визуальная приборная панель, ни один код нигде
+    не ждёт от неё нажатия клавиши.
+
+    No-op вне Windows и best-effort -- тот же паттерн, что и _configure_windows_stdio_at_startup()."""
+    global _work_console_allocated
+    if os.name != "nt":
+        return
+    if not _work_console_allocated:
+        _work_console_allocated = True
+        try:
+            ctypes.windll.kernel32.AllocConsole()
+            sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace")
+            sys.stderr = open("CONOUT$", "w", encoding="utf-8", errors="replace")
+            sys.stdin = open("CONIN$", "r", encoding="utf-8", errors="replace")
+        except Exception:
+            return
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetConsoleWindow.restype = ctypes.c_void_p
+        user32 = ctypes.windll.user32
+        user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        user32.SetForegroundWindow.restype = ctypes.c_int
+        user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+        SW_RESTORE = 9
+        hwnd = kernel32.GetConsoleWindow()
+        if hwnd:
+            user32.ShowWindow(hwnd, SW_RESTORE)
+            user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+
+
+def _hide_work_console() -> None:
+    """Парная функция к _ensure_work_console() выше -- 2026-08-22, по прямой просьбе
+    пользователя: пока пользователь снова в мастере gui_menu._Wizard (шаги 1-2, и сам шаг 3 до
+    финального подтверждения), окно консоли с логом ПРОШЛОГО прогона не должно мешать -- сворачи-
+    ваем его (ShowWindow(SW_MINIMIZE)), не закрываем. Закрытие (FreeConsole()) потребовало бы
+    заново переоткрывать sys.stdout/stderr/stdin через CONOUT$/CONIN$ на КАЖДУЮ итерацию цикла
+    (тот же приём, что и в _ensure_work_console(), но выполненный лишний раз без необходимости)
+    и потеряло бы прокрученную историю лога окна -- просто свернуть/развернуть то же самое окно
+    проще и надёжнее.
+
+    2026-08-23, по прямой просьбе пользователя: SW_HIDE (окно исчезает целиком, без следа на
+    панели задач) заменён на SW_MINIMIZE (обычное сворачивание, с иконкой на панели задач) --
+    см. тот же комментарий в _ensure_work_console() выше.
+
+    No-op, если консоль ещё ни разу не создавалась (_work_console_allocated=False -- самая
+    первая итерация цикла, GetConsoleWindow() тогда всё равно вернул бы 0) или вне Windows."""
+    if os.name != "nt" or not _work_console_allocated:
+        return
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetConsoleWindow.restype = ctypes.c_void_p
+        user32 = ctypes.windll.user32
+        user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        SW_MINIMIZE = 6
+        hwnd = kernel32.GetConsoleWindow()
+        if hwnd:
+            user32.ShowWindow(hwnd, SW_MINIMIZE)
+    except Exception:
+        pass
+
+
+def _check_pause_keypress(log=console_log) -> None:
+    """2026-08-23, по прямой просьбе пользователя ("Ctrl-C -- только способ убить программу,
+    без подтверждений; если нужно остановиться и изучить лог -- добавить паузу обработки по
+    пробелу") -- отложенная часть той же переделки консоли GUI-мастера, что и
+    _hide_work_console()/_ensure_work_console() выше (см. `CLAUDE.md`, "Рабочая консоль
+    GUI-мастера..."). Реализована отдельным заходом сразу следом -- не архитектурно связана с
+    show/hide, но продолжает ту же тему "что можно сделать с работающей консолью, не убивая
+    процесс".
+
+    Неблокирующий опрос клавиши (msvcrt.kbhit()/getch() -- Windows-only, обычный способ читать
+    консольный ввод без реального блокирующего input()) -- вызывается на КАЖДОЙ итерации
+    основного цикла обработки файлов (_run_impl(), между файлами, не внутри одного файла -- не
+    может прервать уже начатую операцию с диском на середине). Пробел -- единственная клавиша,
+    которая что-то делает: входим в РЕАЛЬНУЮ блокирующую паузу (это и есть цель функции --
+    getch() здесь блокирует намеренно, в отличие от остального кода этой сессии, который
+    убирает блокирующий ввод из рабочей консоли), печатаем подсказку, ждём следующего нажатия
+    ЛЮБОЙ клавиши, продолжаем. Любая ДРУГАЯ клавиша в основном опросе (не в самой паузе)
+    молча съедается и игнорируется -- реагируем только на пробел, не на случайные нажатия/
+    вставку из буфера обмена в окно консоли.
+
+    No-op вне Windows (msvcrt не существует, да и не нужен -- на Linux/dev-сессии эта функция
+    не вызывается вовсе, см. её единственный вызов в _run_impl()) и best-effort (проглатывает
+    любой сбой ctypes/msvcrt) -- не должна мочь сломать реальную обработку файлов, худший
+    случай -- пауза просто не сработает."""
+    if os.name != "nt":
+        return
+    try:
+        import msvcrt
+        if not msvcrt.kbhit():
+            return
+        key = msvcrt.getch()
+        if key != b" ":
+            return
+        log("\n[Пауза] Обработка остановлена -- нажмите любую клавишу, чтобы продолжить...")
+        msvcrt.getch()
+        log("[Продолжаю...]\n")
+    except Exception:
+        pass
+
+
 def _extraction_log_name_budget(min_width: int = 15) -> int:
     """Живой репорт пользователя (редизайн живого вывода Фазы 2, 2026-08-01): SourceWalker.
     _handle_archive()'s "  Распаковка <имя> (<X> ГБ)…" идёт через self.log() (=console_log()
@@ -2964,7 +3226,16 @@ def _sweep_stale_dry_run_pid_dirs(log=print) -> None:
     распакованного архива (архив с гигантским содержимым, часы работы ПОСЛЕ того, как сама
     распаковка закончилась) -- mtime-порог ложно счёл бы такую директорию устаревшей и удалил
     её у ещё живого процесса, ровно тот сценарий, ради которого делался фикс "разбор архива"
-    2026-08-19 (не регрессировать его этим же заходом)."""
+    2026-08-19 (не регрессировать его этим же заходом).
+
+    Умозрительный остаточный риск (Раунд 108 ревью, придирка, не поднят как замечание --
+    вероятность низкая, направление ошибки безопасное): если жёстко убитый прогон оставляет
+    мёртвую PID-папку, и ДО следующего запуска программы ОС успевает выдать тот же самый PID
+    совершенно постороннему процессу -- _pid_is_alive() вернёт True (посторонний процесс
+    действительно жив), и эта функция примет чужую папку за "ещё активный прогон", оставив её
+    нетронутой, пока тот посторонний процесс не завершится. Не потеря данных и не регрессия
+    относительно старого поведения -- тот же класс "утечка в %TEMP% переживает дольше, чем
+    хотелось бы", уже принятый как некритичный в Раунде 106 придирке 2 для похожего сценария."""
     root = _DRY_RUN_TMP_EXTRACT_DIR
     if not os.path.isdir(winlong(root)):
         return
@@ -7035,6 +7306,11 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
     _dvd_units_seen = set()
     try:
         for item, tags_by_path in walker_iter:
+            # 2026-08-23, живая находка пользователя: пауза по пробелу (_check_pause_keypress())
+            # изначально была добавлена только в _run_impl() (build/dry-run) -- пользователь явно
+            # потребовал "должна отрабатывать независимо от фазы", т.е. и во время analyze/
+            # Паспорта тоже, не только реальной записи на диск.
+            _check_pause_keypress(log=log)
             # REVIEW-HANDOFF.md, Раунд 86, замечание 2 + follow-up (2026-08-10, речь
             # пользователя): "объектов %" для этого item тикнула уже ВНУТРИ
             # _walk_with_exif_prefetch()/_flush_exif_prefetch_batch() -- на отправку батча в
@@ -8484,6 +8760,9 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
         # them risks the physical file already being deleted by the time we hash/copy it.
         try:
             for item in walker.walk():
+                # 2026-08-23, по прямой просьбе пользователя: пауза по пробелу, см.
+                # _check_pause_keypress()'s докстринг -- между файлами, не внутри одного.
+                _check_pause_keypress(log=log)
                 if cfg.sample_limit and processed_count >= cfg.sample_limit:
                     break
 
@@ -9411,12 +9690,27 @@ def run_passport(target: str, log=print) -> AnalyzeStats:
 def _open_report_in_browser(out_path: str) -> None:
     """webbrowser.open() не понимает \\\\?\\-префикс (winlong()) -- report.html/summary.txt
     пути на практике коротки (рядом с TARGET/.exe, не глубоко в ByDate/Albums), обычный
-    os.path.abspath() ей достаточен."""
+    os.path.abspath() ей достаточен.
+
+    2026-08-23, живая находка пользователя: _reclaim_console_focus() ниже -- код 2026-07-21,
+    из ЭПОХИ ТЕКСТОВОГО МЕНЮ ("голое меню тут же ждёт следующего выбора режима", её же
+    докстринг) -- в сегодняшней GUI-модели это предположение ложно: следующий экран -- окно
+    МАСТЕРА (gui_menu._Wizard), не консоль, а рабочая консоль вообще не должна получать фокус
+    (она приборная панель, см. CLAUDE.md, "Рабочая консоль GUI-мастера..."). Хуже того --
+    вызывалась она БЕЗУСЛОВНО, синхронно блокируя на ~1с (time.sleep(0.3)+time.sleep(0.7))
+    ПРЯМО ПЕРЕД тем, как gui_menu.run_bare_launch() дойдёт до _hide_work_console() -- то есть
+    насильно возвращала фокус консоли, которую через мгновение сворачивают, и ни разу не
+    участвовала в том, чтобы окно НОВОГО мастера (создаётся уже ПОСЛЕ этой функции) вообще
+    получило фокус -- сама и была источником гонки с браузером, которую пытался закрыть
+    _Wizard.build_shell()'s _force_show_normal(). Вызываем её только для текстового меню
+    (_console_freed_for_gui==False -- не-Windows dev-сессия, где консоль реально следующий
+    экран) -- на GUI-пути её заменяет build_shell()'s собственная логика показа окна."""
     try:
         webbrowser.open(os.path.abspath(out_path))
     except Exception:
         pass
-    _reclaim_console_focus()
+    if not _console_freed_for_gui:
+        _reclaim_console_focus()
 
 
 def _reclaim_console_focus() -> None:
@@ -10647,14 +10941,48 @@ def _log_unexpected_crash(log=print) -> None:
         f"файл, если сообщаете о проблеме.")
 
 
+class _GuiExplicitExit(KeyboardInterrupt):
+    """2026-08-22, Раунд 123 ревью (замечание) -- заведён, когда main() ещё различал explicit-
+    выход и настоящий Ctrl-C через состояние консоли (_should_pause_before_exit()); с 2026-08-23
+    (см. её докстринг) GUI-консоль вообще никогда не паузит на выходе, ни для этого типа, ни для
+    голого KeyboardInterrupt -- различие де-факто перестало влиять на поведение main(). Класс
+    оставлен как есть (не голый KeyboardInterrupt) -- документирует НАМЕРЕНИЕ ("пользователь сам
+    попросил выйти", не "процесс прерван извне") в трассировке/логах, дешёвая семантическая
+    информация, даже когда main() сейчас её не читает.
+
+    Поднимается ТОЛЬКО из явного клика "Выход"/"Выход из программы" в GUI (gui_menu.py,
+    _run_wizard()/_ok_input_fn())."""
+
+
+def _should_pause_before_exit(bare_launch: bool) -> bool:
+    """2026-08-23, переписано по прямой просьбе пользователя ("рабочая консоль GUI-мастера --
+    чистая приборная панель, не диалог; не предусматривает работу в ней с клавиатуры").
+    Раньше (см. историю в git/REVIEW-HANDOFF.md, раунды 114/123/128) эта функция различала три
+    состояния консоли GUI-мастера (никогда не отсоединялась / отсоединена без переоткрытия /
+    переоткрыта реальной обработкой) -- вся эта логика опиралась на то, ЧТО именно видно на
+    экране в момент исключения, и раз за разом ломалась, когда появлялся новый способ спрятать/
+    показать окно консоли (Раунд 128 -- ровно такой случай). Новая модель проще: GUI-консоль
+    ВООБЩЕ никогда не паузит на выходе (ни Ctrl-C, ни explicit-выход, ни краш -- краш идёт через
+    отдельное GUI-окно, см. main()'s except Exception и gui_menu._show_crash_notice()) --
+    единственный оставшийся случай паузы -- текстовое меню (не-Windows dev-сессия), где консоль
+    остаётся интерактивной с самого начала и Enter реально что-то значит для пользователя.
+
+    _console_freed_for_gui -- True для ЛЮБОГО реального Windows голого запуска (и GUI, и
+    fallback на _fatal_messagebox(), см. _configure_windows_stdio_at_startup()) -- достаточно
+    самой по себе, состояние _work_console_allocated (была ли консоль вообще переоткрыта под
+    реальную обработку) больше не читается этой функцией."""
+    return bare_launch and not _console_freed_for_gui
+
+
 def main():
     # Every subprocess.run() call in this file (exiftool/7z/ffmpeg/ffprobe/UnRAR) is spawned
     # without CREATE_NEW_PROCESS_GROUP, so Ctrl-C's CTRL_C_EVENT/SIGINT already reaches those
     # children together with this process -- no separate Popen+kill needed here.
     # bare_launch: единый признак голого запуска, переиспользуется ниже для паузы перед
-    # выходом (_pause_before_exit()) -- раньше пересчитывался как len(sys.argv) <= 1 в 4 местах
-    # по отдельности. (2026-07-19: раньше тем же флагом ещё включался белый фон консоли --
-    # см. _console_red_text() докстрока, откачено в этой же сессии.)
+    # выходом (_pause_before_exit(), через _should_pause_before_exit() -- раньше пересчитывался
+    # как len(sys.argv) <= 1 в 4 местах по отдельности. (2026-07-19: раньше тем же флагом ещё
+    # включался белый фон консоли -- см. _console_red_text() докстрока, откачено в этой же
+    # сессии.)
     bare_launch = len(sys.argv) <= 1
     try:
         sys.exit(_main())
@@ -10673,7 +11001,23 @@ def main():
         # потому что сюда долетает и обычный "безымянный" KeyboardInterrupt (Ctrl+C ДО того,
         # как что-либо успело сформировать отчёт, см. _InterruptedRunReport) -- у него этого
         # атрибута нет вовсе.
-        if bare_launch:
+        #
+        # 2026-08-23, по прямой просьбе пользователя ("Ctrl-C -- только способ убить
+        # программу, без дополнительных подтверждений"): рабочая консоль GUI-мастера --
+        # чистая приборная панель, не диалог (см. _hide_work_console()/_ensure_work_console()
+        # ниже -- теперь minimize/restore, не hide/show) -- пользователь никогда не должен
+        # нажимать Enter, чтобы её закрыть, ни при обычном Ctrl-C, ни при explicit-выходе из
+        # GUI (_GuiExplicitExit, поднимается из gui_menu.py). _should_pause_before_exit()
+        # теперь сама возвращает False для ЛЮБОГО Windows-голого-запуска (см. её докстринг) --
+        # отдельная проверка isinstance(e, _GuiExplicitExit), нужная раньше (Раунд 123 ревью)
+        # именно чтобы отличить explicit-выход от настоящего Ctrl-C, больше не нужна -- оба
+        # случая уже не паузят одинаково.
+        # 2026-07-28, живой баг-репорт: report_path -- getattr(), не e.report_path напрямую,
+        # потому что сюда долетает и обычный "безымянный" KeyboardInterrupt (Ctrl+C ДО того,
+        # как что-либо успело сформировать отчёт, см. _InterruptedRunReport) -- у него этого
+        # атрибута нет вовсе. Пауза здесь по-прежнему актуальна для текстового меню
+        # (не-Windows dev-сессия) -- там консоль остаётся интерактивной, Enter имеет смысл.
+        if _should_pause_before_exit(bare_launch):
             _pause_before_exit(True, report_path=getattr(e, "report_path", None))
         sys.exit(130)
     except EOFError:
@@ -10686,8 +11030,11 @@ def main():
         console_log("\nВвод прерван (нет данных на входе).")
         # Same reasoning as the KeyboardInterrupt branch above -- this can itself raise
         # EOFError again if stdin is genuinely closed/redirected (not just Ctrl-Z), which
-        # _pause_before_exit() already swallows internally.
-        if bare_launch:
+        # _pause_before_exit() already swallows internally. Only reachable from the text
+        # menu now -- GUI mode has no console input() calls at all, and
+        # _should_pause_before_exit() below is False unconditionally on a Windows GUI bare
+        # launch anyway (see its docstring).
+        if _should_pause_before_exit(bare_launch):
             _pause_before_exit(True)
         sys.exit(130)
     except Exception:
@@ -10696,17 +11043,48 @@ def main():
         # ошибки пайплайна, вместо того чтобы единственный по-настоящему пугающий момент
         # оставался неокрашенным и без переноса длинных строк (REVIEW-HANDOFF.md Раунд 15).
         _log_unexpected_crash(log=console_log)
-        if bare_launch:
-            # Bare double-click launch -- without this, the console window would flash the
-            # message above and vanish before anyone could read it (same reasoning as
-            # _pause_before_exit()'s own docstring). Not done for CLI/scripted invocations --
-            # blocking on Enter there would hang whatever script/batch called this .exe.
+        # 2026-08-23, по прямой просьбе пользователя: рабочая консоль GUI-мастера -- чистая
+        # приборная панель (см. KeyboardInterrupt-ветку выше), краш там сообщается отдельным
+        # GUI-окном (gui_menu._show_crash_notice(), тот же стиль, что и нотис "Работа
+        # окончена"), не консольным input(). Раньше (Раунд 128 ревью) здесь была попытка
+        # показать/поднять СПРЯТАННОЕ окно консоли перед паузой -- решение оказалось временным
+        # костылём: правильный фикс -- вообще не полагаться на видимость/фокус консоли для
+        # краш-уведомления, GUI-окно не зависит от того, свёрнута консоль (см.
+        # _hide_work_console()) или нет. bare_launch + _console_freed_for_gui==True однозначно
+        # значит "это Windows голый запуск, gui_menu уже успешно импортирован и мастер уже
+        # открывался" (иначе исключение сюда не долетело бы -- см. _main(), путь
+        # _fatal_messagebox() возвращает 1 напрямую, не поднимает исключение).
+        shown_via_gui = False
+        if bare_launch and _console_freed_for_gui:
+            try:
+                import gui_menu
+                gui_menu._show_crash_notice(
+                    "ОШИБКА: Произошла непредвиденная ошибка -- программа остановлена.\n\n"
+                    "Ваши исходные файлы программа не изменяет и не удаляет ни при каких "
+                    "обстоятельствах -- эта ошибка их не затронула.\n\n"
+                    f"Подробности сохранены в {os.path.join(_app_dir(), 'crash.log')} -- "
+                    "приложите этот файл, если сообщаете о проблеме.")
+                shown_via_gui = True
+            except Exception:
+                # best-effort, как и _fatal_messagebox() -- crash.log выше уже написан
+                # независимо от того, получилось ли показать GUI-окно.
+                pass
+        if not shown_via_gui and _should_pause_before_exit(bare_launch):
+            # Текстовое меню (не-Windows dev-сессия) -- единственный оставшийся случай, см.
+            # _should_pause_before_exit()'s докстринг.
             _pause_before_exit(True)
         sys.exit(1)
 
 
 def _main():
     argv = sys.argv[1:]
+    # По прямой просьбе пользователя 2026-08-22 ("чёрный экран до появления меню не должен
+    # выскакивать совсем") -- вызывается БЕЗУСЛОВНО, первой же строкой после разбора argv, для
+    # ОБЕИХ веток (голый запуск и CLI) -- см. _configure_windows_stdio_at_startup()'s докстринг:
+    # build.bat теперь собирает windowed .exe, самой ОС нечего создавать/показывать, ждать
+    # подтверждения GUI (как раньше) больше незачем.
+    if os.name == "nt":
+        _configure_windows_stdio_at_startup(bool(argv))
     if not argv:
         # Полностью голый запуск -- НИ ОДНОГО аргумента командной строки (типично двойной
         # клик по exe). Единственный случай, который заменяется меню (RULES.md, "ЗАПУСК"
@@ -10715,7 +11093,58 @@ def _main():
         # 2026-07-21: run_bare_launch() больше не возвращается обычным путём (каждый пункт
         # меню, включая [3], сам возвращается в главное меню и открывает свой отчёт) --
         # выйти отсюда можно только через KeyboardInterrupt/EOFError, которые ловит main().
-        run_bare_launch(log=console_log)
+        #
+        # 2026-08-22, по прямой просьбе пользователя ("не нужно текстовое дублирование GUI"):
+        # текстовое меню (run_bare_launch() ниже) больше НЕ является интерактивным фоллбэком
+        # для голого запуска на Windows -- GUI-мастер (gui_menu.py) теперь ЕДИНСТВЕННЫЙ
+        # интерфейс для реального пользователя. Если GUI физически не может открыться (нет
+        # дисплея, tkinter не установлен и т.п.) -- _fatal_messagebox() и явный ненулевой выход,
+        # без попытки показать текстовое меню -- на windowed-сборке (см. build.bat) консоли для
+        # него всё равно нет. Сама функция run_bare_launch() (текстовая) НЕ удалена --
+        # ci/windows_ci_test.py и tests/ по-прежнему зовут её НАПРЯМУЮ, минуя _main() целиком,
+        # как единственный способ прогнать всю логику dispatch (mode -> _bare_launch_run_* ->
+        # pause -> continue) без реального tkinter -- см. её же докстринг. На НЕ-Windows (dev-
+        # сессии) голый запуск по-прежнему идёт через неё напрямую -- это internal dev path, не
+        # реальный сценарий конечного пользователя, которого касается это решение.
+        #
+        # 2026-08-22 (продолжение, тот же день) -- раньше здесь ещё стоял вызов
+        # _free_console_for_gui_bare_launch() (переименована в _configure_windows_stdio_at_
+        # startup(), см. её докстринг), гейтованный на probe_display_available()==True, чтобы
+        # НЕ гасить автосозданную консоль, пока GUI не подтверждён -- та консоль была
+        # единственным резервным каналом для _fatal_messagebox()'s stderr-дубля. При windowed-
+        # сборке гейтовать больше нечего -- вызов ушёл на самый верх _main() (см. выше), консоли
+        # не появляется ни в одном из двух исходов. Реальная консоль GUI-пути появляется только
+        # когда работа (scan/dry_run/build/passport) реально стартует -- см.
+        # _ensure_work_console(), вызывается из gui_menu.run_bare_launch().
+        #
+        # 2026-08-21 (Раунд 114 ревью, замечание 2): except Exception раньше оборачивал ВЕСЬ
+        # gui_menu.run_bare_launch() -- то есть не только запуск Tk, но и реальную сборку
+        # архива внутри мастера, из-за чего настоящий сбой посреди GUI-сессии терялся без
+        # crash.log и выдавал вводящее в заблуждение "GUI-меню недоступно". Узкий except
+        # (ImportError -- tkinter не установлен) держит только import; отдельный gui_menu.
+        # probe_display_available() (создаёт и сразу уничтожает пробный tk.Tk()) решает, может
+        # ли GUI открыться вообще -- если да, run_bare_launch() вызывается БЕЗ обёртки, и любое
+        # исключение из середины сессии долетает до main()'s _log_unexpected_crash() как обычно.
+        if os.name == "nt":
+            try:
+                import gui_menu
+            except ImportError:
+                gui_menu = None
+            if gui_menu is not None and gui_menu.probe_display_available():
+                gui_menu.run_bare_launch(log=console_log)
+                return 0
+            _fatal_messagebox(
+                "PhotoArchive не смог открыть графическое меню (нет дисплея или tkinter "
+                "недоступен). Программой всё ещё можно пользоваться из командной строки -- "
+                "список команд: PhotoArchive --help."
+            )
+            return 1
+        try:
+            run_bare_launch(log=console_log)
+        except (KeyboardInterrupt, EOFError):
+            # _InterruptedRunReport (Ctrl+C mid-processing) is a KeyboardInterrupt subclass --
+            # already covered here, must reach main()'s handler untouched, same as before.
+            raise
         return 0
     if argv and argv[0] in ("--version", "-V", "--help", "-h", "--formats"):
         # Глобальные флаги идут напрямую в верхний парсер -- НЕ подставлять "archive" перед

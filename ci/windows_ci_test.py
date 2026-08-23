@@ -3615,6 +3615,58 @@ def test_tmp_extract_wipe_protection():
     check("НЕ трогаю" in r1.stdout, "audit#1: a warning about foreign content is logged")
 
 
+def test_pid_is_alive_win32_branch_real_processes():
+    print("\n=== _pid_is_alive()/_sweep_stale_dry_run_pid_dirs(): win32 ctypes branch on real "
+          "processes (Round 108 review addendum, 2026-08-19) ===")
+    # Before this test, the win32 branch of _pid_is_alive() (OpenProcess/GetExitCodeProcess/
+    # GetLastError) was never exercised by ANY CI run: tests/test_ctrl_c_report.py's sweep
+    # tests only reach the POSIX branch (os.kill(pid, 0), on ubuntu-latest), and this file --
+    # the only one that ever runs on a real windows-latest runner -- had no scenario reaching
+    # it either. Mirrors those pytest tests' setup, but forced onto the win32 branch by
+    # actually running here, on a real Windows machine.
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    alive = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        fake_dir = os.path.join(WORK, "win32_pid_sweep")
+        code = (
+            "import sys, os; sys.path.insert(0, %r)\n"
+            "import photosort_win as m\n"
+            "print('dead_alive:', m._pid_is_alive(%d))\n"
+            "print('alive_alive:', m._pid_is_alive(%d))\n"
+            # PID 4 = System: always running, but OpenProcess() returns NULL/ERROR_ACCESS_DENIED
+            # for an ordinary user -- exactly the "insufficient access, not the same as dead"
+            # disambiguation the function's docstring describes and that was previously only
+            # ever checked by hand.
+            "print('system_alive:', m._pid_is_alive(4))\n"
+            "m._DRY_RUN_TMP_EXTRACT_DIR = %r\n"
+            "dead_pid_dir = os.path.join(m._DRY_RUN_TMP_EXTRACT_DIR, str(%d))\n"
+            "alive_pid_dir = os.path.join(m._DRY_RUN_TMP_EXTRACT_DIR, str(%d))\n"
+            "os.makedirs(os.path.join(dead_pid_dir, 'a' * 64))\n"
+            "os.makedirs(os.path.join(alive_pid_dir, 'b' * 64))\n"
+            "m._sweep_stale_dry_run_pid_dirs(log=lambda *a, **k: None)\n"
+            "print('dead_pid_dir_swept:', not os.path.isdir(dead_pid_dir))\n"
+            "print('alive_pid_dir_kept:', os.path.isdir(alive_pid_dir))\n"
+        ) % (ROOT, dead.pid, alive.pid, fake_dir, dead.pid, alive.pid)
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
+        check(r.returncode == 0,
+              f"win32 _pid_is_alive: unit script exits 0 (stderr={r.stderr[-500:]})")
+        check("dead_alive: False" in r.stdout,
+              "win32 _pid_is_alive: an exited process (GetExitCodeProcess != STILL_ACTIVE) is dead")
+        check("alive_alive: True" in r.stdout,
+              "win32 _pid_is_alive: a running process (STILL_ACTIVE) is alive")
+        check("system_alive: True" in r.stdout,
+              "win32 _pid_is_alive: PID 4 (System, ERROR_ACCESS_DENIED) is treated as alive, not dead")
+        check("dead_pid_dir_swept: True" in r.stdout,
+              "win32 sweep: the PID-subfolder of a dead process is swept")
+        check("alive_pid_dir_kept: True" in r.stdout,
+              "win32 sweep: the PID-subfolder of a live process is left untouched")
+    finally:
+        alive.terminate()
+        alive.wait()
+
+
 def test_negative_free_space_margin_and_numeric_config_validation():
     print("\n=== security audit #2/#7: numeric photoarchive_config.yaml/CLI fields are range-validated ===")
     src = os.path.join(WORK, "src_numeric_cfg")
@@ -4187,6 +4239,7 @@ ALL_TESTS = [
     test_bare_launch_helpers_unit,
     test_bare_launch_menu_argv_gate_and_flow,
     test_tmp_extract_wipe_protection,
+    test_pid_is_alive_win32_branch_real_processes,
     test_negative_free_space_margin_and_numeric_config_validation,
     test_disk_full_graceful_stop,
     test_place_failure_does_not_crash_run,

@@ -146,6 +146,24 @@ class TestBuildDetailRows:
         assert "2 файла" in note_by_dest[r"D:\TARGET\A\VIDEO_TS"]
         assert "1 файл)" in note_by_dest[r"D:\TARGET\B\VIDEO_TS"]
 
+    def test_dvd_unit_nested_subfolder_files_still_collapse_to_one_row(self):
+        """REVIEW-HANDOFF.md, Раунд 96 (придирка): _dvd_unit_file_records()
+        (photosort_win.py) рекурсивна "на случай нестандартного рипа" -- если рип нестандартный
+        и часть файлов юнита лежит во вложенной подпапке ВНУТРИ VIDEO_TS (не только плоско в её
+        корне), os.path.dirname(dest) для этих файлов раньше давал .../VIDEO_TS/Sub, а не
+        .../VIDEO_TS -- юнит раскалывался на 2 строки вместо 1. Group-by теперь ищет ближайшего
+        предка с именем VIDEO_TS (_dvd_unit_root()), не просто прямого родителя."""
+        dvd_reason = "DVD-Video (VIDEO_TS), скопирован целиком"
+        dest_dir = r"D:\TARGET\Albums\DVD5\VIDEO_TS"
+        rows = rx._build_detail_rows({"appended": [
+            _appended(r"D:\RIP\DVD5/VIDEO_TS.IFO", dest_dir + r"\VIDEO_TS.IFO", reason=dvd_reason),
+            _appended(r"D:\RIP\DVD5/Sub/VTS_01_0.VOB", dest_dir + r"\Sub\VTS_01_0.VOB",
+                      reason=dvd_reason),
+        ]})
+        assert len(rows) == 1
+        assert rows[0]["dest_or_dup"] == dest_dir
+        assert "2 файла" in rows[0]["note"]
+
     def test_skipped_present_is_duplicate_gray_not_copied(self):
         rows = rx._build_detail_rows({"skipped": [
             _skipped(r"D:\SOURCE\dup.jpg", r"D:\TARGET\a.jpg", "already_present"),

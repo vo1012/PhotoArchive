@@ -16,7 +16,12 @@ if not exist "%BIN%\7z.exe"       echo [WARN] %BIN%\7z.exe не найден -- 
 if not exist "%BIN%\7z.dll"       echo [WARN] %BIN%\7z.dll не найден -- см. bin\README-BIN.md
 if not exist "%BIN%\UnRAR.exe"    echo [WARN] %BIN%\UnRAR.exe не найден -- см. bin\README-BIN.md
 
-pyinstaller --onefile --name PhotoArchive ^
+REM --windowed/--icon/--add-data assets (2026-08-23, синхронизировано с dev-репозиторием
+REM вместе с gui_menu.py -- см. CLAUDE.md dev-репозитория, "GUI-мастер: архитектура и текущее
+REM поведение голого запуска"): GUI-мастер больше не отдельный неполный трек, официальный
+REM релиз собирается с тем же windowed/иконка/лого, что и dev-сборка.
+pyinstaller --onefile --windowed --name PhotoArchive ^
+  --icon "..\assets\app.ico" ^
   --add-binary "%BIN%\exiftool.exe;bin" ^
   --add-data "%BIN%\exiftool_files;bin\exiftool_files" ^
   --add-binary "%BIN%\ffmpeg.exe;bin" ^
@@ -24,6 +29,8 @@ pyinstaller --onefile --name PhotoArchive ^
   --add-binary "%BIN%\7z.exe;bin" ^
   --add-binary "%BIN%\7z.dll;bin" ^
   --add-binary "%BIN%\UnRAR.exe;bin" ^
+  --add-data "..\assets\logo_full.png;assets" ^
+  --add-data "..\assets\app.ico;assets" ^
   --collect-data reverse_geocoder ^
   ..\photosort_win.py
 

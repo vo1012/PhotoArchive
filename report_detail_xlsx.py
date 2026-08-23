@@ -80,6 +80,30 @@ def _source_dirname(path: str) -> str:
     return m.group(1) if m else ""
 
 
+_VIDEO_TS_DIR_RE = re.compile(r"^VIDEO_TS( \(\d+\))?$")
+
+
+def _dvd_unit_root(dest: str) -> str:
+    """Раунд 96 (придирка, закрыта раунд 116-раунд ответа): группировка DVD-строк раньше брала
+    просто os.path.dirname(dest) -- для нестандартного рипа с файлами во вложенной подпапке
+    ВНУТРИ VIDEO_TS (_dvd_unit_file_records(), photosort_win.py, явно рекурсивна "на случай
+    нестандартного рипа") это раскалывало один физический юнит на несколько групп/строк, ровно
+    тот класс проблемы, что уже был находкой Раунда 95, просто для более узкого случая. Вместо
+    ближайшего родителя -- ищем ближайшего ПРЕДКА с именем "VIDEO_TS"/"VIDEO_TS (N)" (буквальное
+    имя папки-юнита, см. _unique_dvd_dest_name(), base_name="VIDEO_TS"); если такого предка нет
+    (не должно случаться при штатной сборке DVD-юнита) -- откат на прежнее поведение
+    (dirname(dest)), не падаем."""
+    current = dest or ""
+    while current:
+        if _VIDEO_TS_DIR_RE.match(_source_basename(current)):
+            return current
+        parent = _source_dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return _source_dirname(dest)
+
+
 def _row_kind(primary_path: str, fallback_path: str = "") -> str:
     """image/video/raw -- три основных значения колонки "Тип медиа" (спека). "other" --
     осознанный запасной вариант ДЛЯ ЭТОГО модуля, не буквально "ровно три значения" из
@@ -122,7 +146,8 @@ def _build_detail_rows(data: dict) -> list:
     # _handle_dvd_unit() yield'ит один SourceItem на файл, :3598-3609) -- appended.csv для
     # одного DVD-рипа реально содержит 10-30+ строк с одинаковым reason, не одну. "Одна строка
     # в appended.csv" (докстринг этой функции ДО фикса Раунда 95) было утверждением о коде,
-    # непроверенным исполнением -- проверка показала обратное. Группируем по dirname(dest) --
+    # непроверенным исполнением -- проверка показала обратное. Группируем по _dvd_unit_root(dest)
+    # (Раунд 96 придирка: не просто dirname(dest) -- см. её докстринг выше) --
     # все файлы одного юнита физически лежат в одной VIDEO_TS-папке (report.py делает то же
     # самое различие между "постфактум-реклассификация appended.csv" и "живой реестр" для
     # HTML-версии, см. run_stats["dvd_units_copied"] в _render_run_copied() -- но тот реестр
@@ -135,7 +160,7 @@ def _build_detail_rows(data: dict) -> list:
         reason = r.get("reason", "") or ""
         if reason.startswith("DVD-Video"):
             dest = r.get("dest", "") or ""
-            dvd_groups.setdefault(_source_dirname(dest), []).append(r)
+            dvd_groups.setdefault(_dvd_unit_root(dest), []).append(r)
             continue
         source = r.get("source", "") or ""
         dest = r.get("dest", "") or ""
