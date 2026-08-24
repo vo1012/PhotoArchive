@@ -3298,16 +3298,28 @@ def test_bare_launch_helpers_unit():
     # only an approximation and could still overflow a real terminal by a few characters
     # (observed: budget=40 on a 120-column terminal still got visually cut off).
     # ProgressReporter._context_note_budget() replaces the guess with the EXACT known
-    # self.desc length (set_context() uses this to re-truncate the note precisely) -- COLUMNS
-    # env var lets the formula be checked deterministically without needing a real tty.
+    # self.desc length (set_context() uses this to re-truncate the note precisely).
+    #
+    # 2026-08-24, живая находка гейта перед релизом (v0.6.0): раньше этот скрипт управлял
+    # шириной терминала через переменную окружения COLUMNS -- работало, пока _console_columns()
+    # была обёрткой вокруг shutil.get_terminal_size() (та честно читает COLUMNS/LINES, см. её
+    # докстринг в stdlib). 2026-08-23 _console_columns() переписана на прямой os.get_terminal_
+    # size(sys.stdout.fileno()) (фикс потери времени/своб.места/скорости на windowed-сборке,
+    # см. её докстринг в photosort_win.py) -- os.get_terminal_size() COLUMNS не читает вовсе, а
+    # в этом самом тестовом харнессе (subprocess.run(capture_output=True), пайп, не реальный
+    # tty) всегда падает на fallback=80 независимо от переменной окружения. Тест тихо перестал
+    # проверять то, что заявляет ("narrower_terminal_gives_smaller_budget" сравнивал 80 к 80).
+    # Монки-патчим саму _console_columns() (тот же приём, что уже используют юнит-тесты в
+    # tests/test_progress_phase2.py) -- управляет шириной напрямую через тот же сеанс, который
+    # реально читает _context_note_budget(), не через промежуточный, более не читаемый канал.
     code6 = (
-        "import sys, os; os.environ['COLUMNS'] = '120'\n"
-        "sys.path.insert(0, %r)\n"
+        "import sys; sys.path.insert(0, %r)\n"
         "import photosort_win as m\n"
+        "m._console_columns = lambda fallback=80: 120\n"
         "bar = m.ProgressReporter(total=None, desc='Фаза 2-5 — обработка источника', unit='файл')\n"
         "expected = max(15, 120 - len(bar.desc) - len(' — ') - 58)\n"
         "print('budget_matches_exact_desc_len_formula:', bar._context_note_budget() == expected)\n"
-        "os.environ['COLUMNS'] = '60'\n"
+        "m._console_columns = lambda fallback=80: 60\n"
         "print('narrower_terminal_gives_smaller_budget:', bar._context_note_budget() < expected)\n"
         "bar.close()\n"
     ) % ROOT
