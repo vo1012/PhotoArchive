@@ -221,6 +221,38 @@ class _FakeUser32Windll:
         self.SetForegroundWindow = SetForegroundWindow
 
 
+class _FakeKernel32ForCloseHandler:
+    """Заглушка ctypes.windll.kernel32 для _install_console_close_handler() -- та не только
+    зовёт SetConsoleCtrlHandler(), но и присваивает .argtypes/.restype ПРЯМО на переданный
+    объект -- обычный bound method так не умеет (нет __dict__), нужна функция-замыкание в
+    качестве instance-атрибута, тот же приём, что и у _FakeConsoleWindll/_FakeUser32Windll выше."""
+
+    def __init__(self):
+        self.registered = []
+
+        def SetConsoleCtrlHandler(handler, add):
+            self.registered.append(handler)
+            return 1
+        self.SetConsoleCtrlHandler = SetConsoleCtrlHandler
+
+
+def _fake_winfunctype(restype, *argtypes):
+    """Заглушка ctypes.WINFUNCTYPE -- Раунд 142 ревью (замечание): та функция физически не
+    существует в модуле ctypes вне Windows (не атрибут ctypes.windll, который остальные фейки
+    этого файла умеют подменять -- отдельная фабрика на самом модуле ctypes), поэтому тесты,
+    завязанные на _install_console_close_handler()'s HANDLER_ROUTINE = ctypes.WINFUNCTYPE(...),
+    падали на POSIX с AttributeError, проглоченным собственным except Exception функции --
+    SetConsoleCtrlHandler ни разу не вызывался, что делало нулевым покрытие самого диспатча
+    события. Настоящий ctypes.WINFUNCTYPE(restype, *argtypes) возвращает ТИП function-pointer'а;
+    экземпляр этого типа, обёрнутый вокруг питоновской функции, остаётся вызываемым из Python
+    напрямую (тот же питоновский callable) -- эта заглушка воспроизводит ровно это поведение,
+    без реального ctypes function pointer'а (не нужен для теста, который просто зовёт handler(
+    event) напрямую)."""
+    def _wrap(func):
+        return func
+    return _wrap
+
+
 def _fake_windll(kernel32, user32=None):
     attrs = {"kernel32": kernel32}
     if user32 is not None:
@@ -476,6 +508,143 @@ def test_hide_work_console_swallows_ctypes_failure(monkeypatch):
     m._hide_work_console()  # must not raise
 
 
+def test_hide_work_console_for_exit_is_noop_off_windows(monkeypatch):
+    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr(m, "_work_console_allocated", True)
+    m._hide_work_console_for_exit()  # must not raise, and must not touch ctypes at all
+
+
+def test_hide_work_console_for_exit_is_noop_when_never_allocated(monkeypatch):
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(m, "_work_console_allocated", False)
+    fake_kernel32 = _FakeConsoleWindll(console_hwnd=777)
+    import ctypes
+    monkeypatch.setattr(ctypes, "windll", _fake_windll(fake_kernel32), raising=False)
+    m._hide_work_console_for_exit()  # must not raise
+    assert fake_kernel32.calls == []
+
+
+def test_hide_work_console_for_exit_hides_existing_window(monkeypatch):
+    """2026-08-24, живая находка пользователя: крестик на нотисе "Работа окончена" закрывал
+    сам нотис, но рабочая консоль оставалась видна, пока её не закрывала ОС вместе с процессом
+    (не мгновенно на onefile-сборке) -- SW_HIDE (не SW_MINIMIZE, как у _hide_work_console(),
+    предназначенной для промежуточного возврата в мастер той же сессией) прячет окно немедленно
+    и полностью."""
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(m, "_work_console_allocated", True)
+    fake_kernel32 = _FakeConsoleWindll(console_hwnd=777)
+    fake_user32 = _FakeUser32Windll()
+    import ctypes
+    monkeypatch.setattr(ctypes, "windll", _fake_windll(fake_kernel32, fake_user32), raising=False)
+    m._hide_work_console_for_exit()
+    assert fake_kernel32.calls == ["GetConsoleWindow"]
+    SW_HIDE = 0
+    assert fake_user32.calls == [("ShowWindow", 777, SW_HIDE)]
+
+
+def test_hide_work_console_for_exit_swallows_ctypes_failure(monkeypatch):
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(m, "_work_console_allocated", True)
+    fake_kernel32 = _FakeConsoleWindll(console_hwnd=777)
+    import ctypes
+    # Нет user32 в фейковом windll -- ctypes.windll.user32 бросит AttributeError.
+    monkeypatch.setattr(ctypes, "windll", _fake_windll(fake_kernel32), raising=False)
+    m._hide_work_console_for_exit()  # must not raise
+
+
+def test_install_console_close_handler_is_noop_off_windows(monkeypatch):
+    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr(m, "_console_close_handler_ref", None)
+    m._install_console_close_handler()  # must not raise, must not touch ctypes at all
+    assert m._console_close_handler_ref is None
+
+
+def test_install_console_close_handler_registers_one_handler(monkeypatch):
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(m, "_console_close_handler_ref", None)
+    fake_kernel32 = _FakeKernel32ForCloseHandler()
+    import ctypes
+    monkeypatch.setattr(ctypes, "windll", _fake_windll(fake_kernel32), raising=False)
+    monkeypatch.setattr(ctypes, "WINFUNCTYPE", _fake_winfunctype, raising=False)
+    m._install_console_close_handler()
+    assert len(fake_kernel32.registered) == 1
+    assert m._console_close_handler_ref is not None
+
+
+def test_install_console_close_handler_swallows_ctypes_failure(monkeypatch):
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(m, "_console_close_handler_ref", None)
+    import ctypes
+
+    class _Boom:
+        def __getattr__(self, name):
+            raise OSError("simulated SetConsoleCtrlHandler failure")
+    monkeypatch.setattr(ctypes, "windll", _fake_windll(_Boom()), raising=False)
+    m._install_console_close_handler()  # must not raise
+
+
+class TestConsoleCloseHandlerDispatch:
+    """2026-08-24, живой вопрос пользователя ("разве нет нормального способа отработки
+    крестика?") -- CTRL_CLOSE_EVENT больше не зовёт os._exit(0) напрямую (см.
+    _install_console_close_handler()'s докстринг за полным обоснованием): вместо жёсткого обхода
+    всего питоновского shutdown -- _thread.interrupt_main(), тот же механизм, которым Windows
+    уже доставляет обычный Ctrl-C, даёт main()'s except KeyboardInterrupt отработать штатно
+    (PyInstaller чистит свою _MEIxxxxxx, place_file()/_handle_archive() чистят за собой). Тесты
+    вызывают саму внутреннюю функцию-обработчик напрямую (перехваченную через
+    _FakeKernel32ForCloseHandler.registered[0]) с каждым кодом события -- не полагаются на то,
+    что ОС реально пришлёт эти события (недостижимо в pytest)."""
+
+    def _install_and_get_handler(self, monkeypatch):
+        monkeypatch.setattr(os, "name", "nt")
+        monkeypatch.setattr(m, "_console_close_handler_ref", None)
+        fake_kernel32 = _FakeKernel32ForCloseHandler()
+        import ctypes
+        monkeypatch.setattr(ctypes, "windll", _fake_windll(fake_kernel32), raising=False)
+        monkeypatch.setattr(ctypes, "WINFUNCTYPE", _fake_winfunctype, raising=False)
+        m._install_console_close_handler()
+        return fake_kernel32.registered[0]
+
+    def test_ctrl_c_and_break_left_to_default_handler(self, monkeypatch):
+        handler = self._install_and_get_handler(monkeypatch)
+        import _thread
+        interrupt_calls = []
+        monkeypatch.setattr(_thread, "interrupt_main", lambda: interrupt_calls.append(True))
+        exit_calls = []
+        monkeypatch.setattr(os, "_exit", lambda code: exit_calls.append(code))
+        CTRL_C_EVENT, CTRL_BREAK_EVENT = 0, 1
+        assert handler(CTRL_C_EVENT) == 0
+        assert handler(CTRL_BREAK_EVENT) == 0
+        assert interrupt_calls == []
+        assert exit_calls == []
+
+    def test_ctrl_close_event_interrupts_main_thread_gracefully(self, monkeypatch):
+        handler = self._install_and_get_handler(monkeypatch)
+        import _thread
+        interrupt_calls = []
+        monkeypatch.setattr(_thread, "interrupt_main", lambda: interrupt_calls.append(True))
+        exit_calls = []
+        monkeypatch.setattr(os, "_exit", lambda code: exit_calls.append(code))
+        CTRL_CLOSE_EVENT = 2
+        assert handler(CTRL_CLOSE_EVENT) == 1  # "обработано" -- не os._exit()
+        assert interrupt_calls == [True]
+        assert exit_calls == []
+
+    def test_ctrl_logoff_and_shutdown_still_exit_immediately(self, monkeypatch):
+        """System-wide события -- бюджет времени общий на все процессы, оставлены на
+        гарантированный os._exit(0), не на interrupt_main() (см. докстринг)."""
+        handler = self._install_and_get_handler(monkeypatch)
+        import _thread
+        interrupt_calls = []
+        monkeypatch.setattr(_thread, "interrupt_main", lambda: interrupt_calls.append(True))
+        exit_calls = []
+        monkeypatch.setattr(os, "_exit", lambda code: exit_calls.append(code))
+        CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT = 5, 6
+        handler(CTRL_LOGOFF_EVENT)
+        handler(CTRL_SHUTDOWN_EVENT)
+        assert exit_calls == [0, 0]
+        assert interrupt_calls == []
+
+
 class TestShouldPauseBeforeExit:
     """2026-08-23, переписано вместе с _should_pause_before_exit() -- по прямой просьбе
     пользователя ("рабочая консоль GUI-мастера не предусматривает работу в ней с клавиатуры")
@@ -523,7 +692,10 @@ class TestMainNeverPausesOnWindowsGuiBareLaunch:
         import pytest
         with pytest.raises(SystemExit) as exc_info:
             m.main()
-        assert exc_info.value.code == 130
+        # 2026-08-24, живая просьба пользователя: код 0 (не 130) для голого запуска -- см.
+        # main()'s except KeyboardInterrupt докстринг-комментарий (Windows Terminal не
+        # закрывает вкладку сама на ненулевом коде выхода, что выглядело как "не полный выход").
+        assert exc_info.value.code == 0
         assert pause_calls == []
 
     def test_real_keyboard_interrupt_also_skips_pause(self, monkeypatch):
@@ -544,7 +716,8 @@ class TestMainNeverPausesOnWindowsGuiBareLaunch:
         import pytest
         with pytest.raises(SystemExit) as exc_info:
             m.main()
-        assert exc_info.value.code == 130
+        # 2026-08-24: код 0 для голого запуска -- см. предыдущий тест/main()'s докстринг-комментарий.
+        assert exc_info.value.code == 0
         assert pause_calls == []
 
     def test_eof_error_skips_pause_too(self, monkeypatch):

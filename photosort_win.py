@@ -241,7 +241,22 @@ def log_line(msg, log=print):
     переноса строки ни до, ни нормально после). Вместо того чтобы полагаться на этот
     внутренний tqdm-механизм сопоставления потоков, работаем напрямую с уже отслеживаемыми
     нами `_ACTIVE_BARS` -- та же последовательность действий (очистить/напечатать/
-    перерисовать), которую сделал бы `tqdm.write()`, если бы правильно узнал бар."""
+    перерисовать), которую сделал бы `tqdm.write()`, если бы правильно узнал бар.
+
+    2026-08-24 (живой репорт пользователя, "плывущая" статус-строка -- склейка "Расп"/"аковка"
+    и отдельно "[DVD]" без переноса строки): диагностика (временный ctypes-замер реальной
+    позиции курсора + id() самого списка `_ACTIVE_BARS`, обе метрики убраны из кода после
+    находки) показала, что этот список на живом `.exe` иногда пуст ИМЕННО в момент вызовов
+    SourceWalker'а, хотя бар реально виден на экране -- id() отличался от id() того же имени
+    списка, к которому реально аппендит `ProgressReporter.__enter__()`, то есть в процессе
+    существуют ДВЕ независимые копии модуля (самого self-import'а в файле нет -- вероятная
+    связь с PyInstaller onefile/multiprocessing.freeze_support(), корень НЕ найден, см.
+    SESSION-HANDOFF.txt). Из-за этого `if _ACTIVE_BARS:` ниже периодически берёт `else`-ветку,
+    даже когда бар активен -- защита клеится ненадёжно. Прагматичный фикс (предложен
+    пользователем, не ждать находки корня) -- на стороне ВЫЗЫВАЮЩЕГО кода: SourceWalker's
+    редкие/важные уведомления идут через `_log_own_line()` (см. её докстринг), которая сама
+    форсирует "\\n" перед текстом -- гарантированно своя строка независимо от того, сработает
+    ли защита `_ACTIVE_BARS` здесь."""
     if _ACTIVE_BARS:
         for b in _ACTIVE_BARS:
             if b._bar is not None:
@@ -380,12 +395,39 @@ def _console_red_text():
         _set_console_attributes(handle, original)
 
 
+def _console_columns(fallback: int = 80) -> int:
+    """2026-08-23, живая находка пользователя (статус-строка сборки внезапно теряла
+    время/своб.место/скорость, ВСЕГДА, независимо от реального размера окна -- даже
+    развёрнутого на весь экран): `shutil.get_terminal_size()` внутри читает
+    `sys.__stdout__.fileno()` -- `sys.__stdout__` (в отличие от переприсваиваемого
+    `sys.stdout`) заморожен на момент старта интерпретатора и НИКОГДА не обновляется. Для
+    windowed-сборки (`build.bat`, `--windowed`, закреплено 2026-08-22) `sys.__stdout__` при
+    старте процесса -- `None` (окна консоли ещё не существует, см.
+    `_configure_windows_stdio_at_startup()`), и остаётся `None` даже после того, как
+    `_ensure_work_console()` создаёт консоль (`AllocConsole()`) и переоткрывает ТЕКУЩИЙ
+    `sys.stdout`/`sys.stderr` на `CONOUT$` -- `sys.__stdout__` эту переоткрытую консоль не
+    видит вовсе. `shutil.get_terminal_size()` в этом случае тихо (без исключения, без лога)
+    возвращает переданный `fallback` -- программа вела себя так, будто консоль ВСЕГДА ровно
+    80 колонок, что бы реально ни было на экране (подтверждено эмпирически: `os.get_terminal_
+    size(sys.stdout.fileno())` в той же живой консоли корректно вернул 120 -- реальную ширину
+    -- пока `shutil.get_terminal_size()` тем же моментом падал на fallback). До windowed-
+    сборки эта разница была не видна -- процесс всегда стартовал с уже привязанной реальной
+    консолью (унаследованной от родительского терминала), `sys.__stdout__` был валиден с
+    самого начала. Фикс -- спрашивать ширину напрямую у ТЕКУЩЕГО `sys.stdout` (`os.
+    get_terminal_size()`, не `shutil`-обёртку вокруг `sys.__stdout__`), тот же приём, что уже
+    подтверждён живым тестом выше по этому докстрингу."""
+    try:
+        return os.get_terminal_size(sys.stdout.fileno()).columns
+    except (AttributeError, ValueError, OSError):
+        return fallback
+
+
 def _terminal_wrap_width(fraction: float = 2 / 3, min_width: int = 40) -> int:
     """2026-07-12, интерфейс: пользователь пожаловался, что длинные строки в терминальном
     окне смотрятся некрасиво -- ограничиваем СВОИ переносы 2/3 реальной ширины терминала,
     а не даём тексту растягиваться во всю доступную ширину/заворачиваться терминалом как
     попало."""
-    columns = shutil.get_terminal_size(fallback=(80, 24)).columns
+    columns = _console_columns()
     return max(min_width, int(columns * fraction))
 
 
@@ -424,10 +466,21 @@ def console_log(msg):
     отступа) с "ОШИБКА" -- единый признак ошибки по всей кодовой базе, см. _console_red_text()
     -- печатаются ярко-красным. Крэш-хендлер и оба места, где раньше было строчное "ошибка ...",
     приведены к этому же префиксу отдельно (см. _log_unexpected_crash(), :1678, :4247), чтобы
-    реально попасть под это условие, а не только новые строки."""
+    реально попасть под это условие, а не только новые строки.
+
+    2026-08-24, живая просьба пользователя ("текст сливается с рамкой окна"): ведущий пробел
+    на КАЖДОЙ строке -- те же соображения, что и у ведущего пробела в поле операции статус-
+    строки (см. _PHASE_DESC_MAX_LEN рядом), только здесь для обычных console_log()-строк
+    (баннеры, "Оцениваю объём работы", разделители "===...", "Найден остаток...", ошибки).
+    Строки объект-лога/редких уведомлений SourceWalker'а ("  [archive]"/"  Распаковка"/т.п.,
+    см. write_object_line()/write_heavy_notice()) НЕ проходят через console_log() вовсе (прямой
+    print() на bar) -- у них уже есть собственный 2-пробельный отступ, задевать не нужно. Тот же
+    isatty()-гейт, что и у переноса строк ниже -- при перенаправлении в файл/пайп лишний пробел
+    не нужен, ничего не отличается от поведения до этой правки."""
     text = str(msg)
     if sys.stdout.isatty():
         text = _wrap_console_text(text, _terminal_wrap_width())
+        text = "\n".join(" " + line for line in text.split("\n"))
     if text.lstrip().startswith("ОШИБКА"):
         with _console_red_text():
             log_line(text, log=print)
@@ -464,6 +517,17 @@ def _fatal_messagebox(text: str) -> None:
 
 _console_freed_for_gui = False
 _work_console_allocated = False
+_last_bare_launch_object_count = 0  # 2026-08-23, по прямой просьбе пользователя: количество
+# объектов последнего прогона [1]/[2]/[3]/[4] голого меню, для показа в GUI-нотисе "Работа
+# окончена" (см. gui_menu._make_ok_input_fn()). Модульная переменная, не изменение сигнатуры
+# возврата _bare_launch_run_*() -- те же функции вызываются и из текстового режима/CLI
+# (run_bare_launch() в этом файле, analyze --target), которым число не нужно; тот же принцип,
+# что уже применён к _console_freed_for_gui/_work_console_allocated выше (кросс-cutting
+# состояние процесса, не стоит того, чтобы менять сигнатуру для всех вызывающих). Каждая из
+# четырёх функций выставляет её ПРЯМО ПЕРЕД успешным return (не в except/None-ветках -- там
+# нотис в GUI и так не покажется, report_path=None). GUI-код читает её СРАЗУ после вызова,
+# до того как что-либо ещё успеет её перезаписать (следующий _bare_launch_run_*() вызывается
+# только на следующей итерации цикла, после того как нотис уже закрыт).
 
 
 def _configure_windows_stdio_at_startup(has_cli_args: bool) -> None:
@@ -567,6 +631,93 @@ def _configure_windows_stdio_at_startup(has_cli_args: bool) -> None:
             pass
 
 
+_console_close_handler_ref = None  # см. _install_console_close_handler() -- держит ссылку на
+# ctypes-коллбэк живой на весь процесс: если её не хранить в переменной уровня модуля,
+# CFUNCTYPE-объект соберёт сборщик мусора, и Windows будет звать уже освобождённую память при
+# следующем событии консоли (классическая ловушка ctypes-коллбэков, не паранойя).
+
+
+def _install_console_close_handler() -> None:
+    """2026-08-24, живая просьба пользователя ("крестик/Ctrl-C в окне терминала должны давать
+    полный выход, сейчас не так") -- вызывается ОДИН раз, сразу после AllocConsole() в
+    _ensure_work_console() выше. Без этой функции Windows всё равно должна закрывать процесс
+    при CTRL_CLOSE_EVENT (крестик на окне консоли/Windows Terminal) через дефолтное действие --
+    штатный обработчик CPython (см. Modules/signalmodule.c) реагирует только на CTRL_C_EVENT/
+    CTRL_BREAK_EVENT и возвращает FALSE на всё остальное, отдавая CTRL_CLOSE_EVENT дефолтному
+    действию ОС (завершить процесс) -- но это НЕ гарантирует мгновенности (грейс-период до
+    нескольких секунд) и не единственный подозреваемый механизм в этой находке (см. соседний
+    фикс exit-кода в main()'s except KeyboardInterrupt -- Windows Terminal с настройкой
+    "закрывать по завершении: изящно" по умолчанию НЕ закрывает вкладку сама, если процесс
+    вышел с ненулевым кодом, что тоже могло выглядеть как "не полный выход").
+
+    2026-08-24, второй заход (живой вопрос пользователя: "разве нет нормального способа
+    отработки крестика?") -- CTRL_CLOSE_EVENT больше не зовёт os._exit(0) напрямую. Голый
+    os._exit() гарантированно быстр, но и абсолютно "грязен": обходит весь обычный питоновский
+    shutdown, а вместе с ним -- и cleanup, который PyInstaller-бутлоадер для onefile-сборки
+    выполняет ПОСЛЕ возврата из Python-кода (удаление распакованной `_MEIxxxxxx` во временной
+    папке), и except-блоки place_file()/_handle_archive() (см. их докстринги), которые убирают
+    за собой при обычном исключении, но не переживают обход через os._exit(). Настоящая
+    "нормальная" обработка -- _thread.interrupt_main(): та же функция, которой Windows уже
+    доставляет Ctrl-C (штатный обработчик CPython, Modules/signalmodule.c, реагирует именно
+    так) -- поднимает KeyboardInterrupt в главном потоке при первой же проверке ожидающих
+    вызовов, тот же путь, что и обычный Ctrl-C/крестик нотиса "Работа окончена"
+    (main()'s except KeyboardInterrupt -> _hide_work_console_for_exit() -> sys.exit(0), см. её
+    докстринг) -- то есть немедленное скрытие консоли, но ПОЛНОЦЕННЫЙ, а не оборванный, выход.
+    Главный поток НЕ обязательно завис на Tk mainloop() -- тик-таймер (`root.after(200, ...)`,
+    и у мастера, и у нотиса) в худшем случае даёт ~200мс задержку до реакции; во время реальной
+    обработки (не-GUI Python-цикл) прерывание сработает ещё быстрее, тем же способом, каким уже
+    работает обычный Ctrl-C посреди сборки.
+
+    Есть и встроенный запасной вариант: если по какой-то причине interrupt_main() не сработал
+    (совсем экзотический случай -- главный поток заблокирован в некотором C-вызове без единой
+    точки возврата в Python), ОС сама принудительно завершает процесс по CTRL_CLOSE_EVENT самое
+    большее через несколько секунд (тот же грейс-период, что описан в первом абзаце выше для
+    отсутствующего обработчика вообще) -- то есть худший случай без этой функции не хуже, чем
+    был ДО неё, а обычный случай -- быстрее и чище одновременно.
+
+    CTRL_LOGOFF_EVENT/CTRL_SHUTDOWN_EVENT (в отличие от CTRL_CLOSE_EVENT) НЕ переведены на
+    interrupt_main() -- это system-wide события (выход из системы/выключение), где бюджет
+    времени общий на все процессы сразу, не только наш; гарантированный мгновенный os._exit(0)
+    здесь остаётся более безопасным выбором, чем более быстрый, но не строго мгновенный путь
+    через главный поток.
+
+    Обработчики консоли вызываются в ОБРАТНОМ порядке регистрации (последний
+    зарегистрированный -- первым) -- наш, добавленный уже ПОСЛЕ интерпретатора, получает
+    событие раньше штатного. Для CTRL_C_EVENT/CTRL_BREAK_EVENT возвращаем 0 (FALSE, "не
+    обработано") -- эти два оставлены штатному обработчику CPython как и раньше (обычный
+    KeyboardInterrupt, пауза для отчёта Ctrl-C-посреди-сборки и т.д. не должны меняться).
+
+    No-op вне Windows и best-effort -- тот же паттерн, что и у остальных win32-хелперов этого
+    файла. Требует живого клик-теста (крестик на минимизированной/развёрнутой консоли, и в
+    простое на экране мастера, и посреди реальной обработки) -- не проверяется pytest'ом, тот
+    же класс ограничения, что и у остального Windows-специфичного поведения gui_menu.py."""
+    global _console_close_handler_ref
+    if os.name != "nt":
+        return
+    try:
+        import _thread
+        CTRL_CLOSE_EVENT = 2
+        CTRL_LOGOFF_EVENT = 5
+        CTRL_SHUTDOWN_EVENT = 6
+        HANDLER_ROUTINE = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_uint)
+
+        def _handler(event):
+            if event == CTRL_CLOSE_EVENT:
+                _thread.interrupt_main()
+                return 1
+            if event in (CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT):
+                os._exit(0)
+            return 0
+
+        _console_close_handler_ref = HANDLER_ROUTINE(_handler)
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetConsoleCtrlHandler.argtypes = [HANDLER_ROUTINE, ctypes.c_int]
+        kernel32.SetConsoleCtrlHandler.restype = ctypes.c_int
+        kernel32.SetConsoleCtrlHandler(_console_close_handler_ref, True)
+    except Exception:
+        pass
+
+
 def _ensure_work_console() -> None:
     """Парная функция к _configure_windows_stdio_at_startup() -- вызывается ОДИН раз за весь
     процесс, из gui_menu.run_bare_launch() сразу после того, как мастер вернул выбор
@@ -610,6 +761,7 @@ def _ensure_work_console() -> None:
             sys.stdin = open("CONIN$", "r", encoding="utf-8", errors="replace")
         except Exception:
             return
+        _install_console_close_handler()
     try:
         kernel32 = ctypes.windll.kernel32
         kernel32.GetConsoleWindow.restype = ctypes.c_void_p
@@ -653,6 +805,39 @@ def _hide_work_console() -> None:
         hwnd = kernel32.GetConsoleWindow()
         if hwnd:
             user32.ShowWindow(hwnd, SW_MINIMIZE)
+    except Exception:
+        pass
+
+
+def _hide_work_console_for_exit() -> None:
+    """2026-08-24, живая находка пользователя ("крестик на нотисе 'Работа окончена' закрывает
+    нотис, но оставляет терминальное окно") -- вызывается из main()'s except-веток (Keyboard
+    Interrupt/_GuiExplicitExit/EOFError/Exception) ПРЯМО перед sys.exit(), для любого голого
+    Windows-запуска, не только явного клика "Выход". Раньше единственным способом убрать саму
+    рабочую консоль с экрана после решения выйти было дождаться, пока ОС сама закроет окно
+    вместе с завершением процесса -- но у windowed onefile-сборки это не мгновенно
+    (PyInstaller-бутлоадер чистит распакованный `_MEIxxxxxx` во временной папке уже ПОСЛЕ
+    возврата из Python-кода, до пары секунд на этой сборке) -- пользователь успевал заметить
+    "закрыл нотис, а окно консоли всё ещё висит на экране" в этом промежутке, хотя процесс
+    объективно уже шёл к завершению, не завис. Разница с _hide_work_console() выше: та
+    СВОРАЧИВАЕТ (SW_MINIMIZE) для сценария "вернулись в мастер, консоль ещё понадобится этой же
+    сессии" -- здесь именно ПОЛНЫЙ ВЫХОД, окно прячется целиком (SW_HIDE), тот же эффект, что
+    пользователь уже видит на экранах мастера 1-3 (там крестик ничего не оставляет на экране,
+    потому что рабочая консоль в принципе ещё не создана -- см. _ensure_work_console()).
+
+    No-op, если консоль ещё ни разу не создавалась, или вне Windows -- тот же паттерн, что и у
+    _hide_work_console()."""
+    if os.name != "nt" or not _work_console_allocated:
+        return
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetConsoleWindow.restype = ctypes.c_void_p
+        user32 = ctypes.windll.user32
+        user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        SW_HIDE = 0
+        hwnd = kernel32.GetConsoleWindow()
+        if hwnd:
+            user32.ShowWindow(hwnd, SW_HIDE)
     except Exception:
         pass
 
@@ -757,24 +942,61 @@ _STATUS_REFRESH_EVERY_N = 15
 # реальный прогон никогда не заполнит. Речь пользователя, 2026-08-11: поле должно считаться по
 # тому, что реально может появиться В ЭТОМ прогоне, не по глобальному максимуму -- см.
 # ProgressReporter.__init__()'s self._op_field_width.
-_DRY_RUN_PHASE_DESC = "Проверяю источник (пробный прогон)"
-_BUILD_PHASE_DESC = "Разбираю и копирую файлы"
-_ANALYZE_QUICK_PROGRESS_DESC = "analyze — метаданные источника"
-_ANALYZE_PASSPORT_PROGRESS_DESC = "analyze (Паспорт архива) — метаданные + хеширование"
+# 2026-08-24, живая просьба пользователя: название режима убрано из всех четырёх resting-
+# текстов ниже -- теперь оно и так есть в шапке параметров запуска (_log_run_start_header(),
+# печатается ДО этих строк, см. её докстринг), повторять не нужно, только тратит место в поле
+# операции. Заодно исправлена неточность: "analyze (Паспорт архива) — ..." был единственным
+# resting-текстом для mode=="analyze" НЕЗАВИСИМО от self_scan -- полный CLI "analyze --source"
+# (self_scan=False, не паспорт вообще) показывал бы то же самое "(Паспорт архива)", что и
+# реальный паспорт -- generic формулировка ниже верна для обоих случаев одинаково.
+#
+# 2026-08-24, второй заход (та же просьба, "очень длинное название"): "Хеширую и читаю
+# метаданные файлов" (34 символа) всё ещё казалась длинной -- "читаю метаданные" и так
+# подразумевается самим действием (та же метаданные-часть, что уже явно названа в analyze-quick
+# ниже), хеширование -- единственное, что реально отличает этот проход от него, без остального
+# смысл не теряется.
+#
+# 2026-08-24, третий заход (прямая просьба пользователя): жёсткий потолок длины для ВСЕХ
+# resting-текстов ниже -- 2/3 от длины строки, которую пользователь назвал "очень длинной"
+# ("Хеширую и читаю метаданные файлов", 33 символа, см. абзац выше) = 22 символа, округлено.
+#
+# 2026-08-24, четвёртый заход (та же просьба, "можно короче, если сможешь"): реальные значения
+# ушли заметно ниже потолка -- голый глагол без объекта на каждый режим (Проверяю/Копирую/
+# Сканирую/Хеширую), объект и так понятен из контекста (шапка запуска называет режим, соседние
+# поля той же строки уже показывают "всего медиа"/% -- дальше сокращать здесь означало бы уже
+# терять смысл, не только длину). _PHASE_DESC_MAX_LEN остаётся потолком НА БУДУЩЕЕ (см.
+# test_all_phase_descs_fit_the_length_cap в tests/test_progress_phase2.py -- держит все четыре
+# константы под ним, не только на момент этой правки), не целевым значением для каждой строки.
+#
+# 2026-08-24, пятый заход (SESSION-HANDOFF.txt, "ты не доделал -- текст кое-где поменял, но
+# размеры поля не сократил"): транзиентные тексты ниже (_DEFERRED_CONTENT_TRANSIENT_OP/
+# _ARCHIVE_CONTENT_TRANSIENT_OP/распаковка-формат в _handle_archive()) сокращены тем же стилем
+# -- черновые варианты "Смотрю"/"В архиве"/"Извлекаю (999.9ГБ)" из прошлого раунда диагностики
+# применены как есть. Заодно (живая просьба пользователя, тот же заход) -- ведущий пробел перед
+# КАЖДЫМ текстом, способным занять поле операции (все resting-тексты ниже И оба транзиентных
+# текста, И формат "Извлекаю (X)"), иначе поле операции сливалось с левой рамкой окна консоли на
+# глаз -- единообразно, не только для части текстов, иначе отступ то появлялся бы, то пропадал
+# при переключении resting/transient. Ширина поля/`_PHASE_DESC_MAX_LEN`-проверки считаются по
+# строкам УЖЕ С этим пробелом (он часть самой константы, не добавляется отдельно при выводе).
+_PHASE_DESC_MAX_LEN = 22
+_DRY_RUN_PHASE_DESC = " Проверяю"
+_BUILD_PHASE_DESC = " Копирую"
+_ANALYZE_QUICK_PROGRESS_DESC = " Сканирую"
+_ANALYZE_PASSPORT_PROGRESS_DESC = " Хеширую"
 # Единственные тексты, способные ВРЕМЕННО заменить resting-desc в этом же поле (см.
 # SourceWalker's transient_op_cb -- _handle_archive()/_open_deferred_gap()) -- нужны в расчёте
 # ширины поля наравне с resting-desc, иначе именно они переполнялись бы после того, как поле
 # сузили под resting-текст. "999.9ГБ" -- заведомо щедрый потолок под _fmt_size_gb() (реальные
 # архивы на 4+ значных ГБ практически не встречаются, а если встретятся -- строка всё равно не
 # порвётся, просто вернётся старое поведение "переполнение чинит рантайм-обрезка ниже").
-_DEFERRED_CONTENT_TRANSIENT_OP = "проверяю отложенное содержимое…"
-_ARCHIVE_EXTRACT_TRANSIENT_OP_MAX_LEN = len("распаковка (999.9ГБ)")
+_DEFERRED_CONTENT_TRANSIENT_OP = " Смотрю"
+_ARCHIVE_EXTRACT_TRANSIENT_OP_MAX_LEN = len(" Извлекаю (999.9ГБ)")
 # 2026-08-19, живая находка пользователя: "разбор архива" -- transient-op, держащийся ВЕСЬ
 # обход распакованного содержимого архива (см. SourceWalker._archive_walk_depth), в т.ч. как
 # фолбэк _close_deferred_gap() вместо None, пока обход идёт внутри архива -- иначе тот
 # безусловно гасил бы эту пометку в общий resting-desc на каждом первом реальном файле любой
 # папки внутри архива (см. её докстринг).
-_ARCHIVE_CONTENT_TRANSIENT_OP = "разбор архива"
+_ARCHIVE_CONTENT_TRANSIENT_OP = " В архиве"
 _MAX_TRANSIENT_OP_LEN = max(len(_DEFERRED_CONTENT_TRANSIENT_OP), _ARCHIVE_EXTRACT_TRANSIENT_OP_MAX_LEN,
                              len(_ARCHIVE_CONTENT_TRANSIENT_OP))
 
@@ -806,7 +1028,7 @@ def _console_tag_line_budget(tail_len: int, min_width: int = 15, tag_width: int 
     чтобы оба вызывающих места гарантированно получали одинаковый запас."""
     if not sys.stderr.isatty():
         return 80
-    columns = shutil.get_terminal_size(fallback=(80, 24)).columns
+    columns = _console_columns()
     return max(min_width, columns - 2 - tag_width - tail_len - _CONSOLE_TAG_LINE_SAFETY_MARGIN)
 
 
@@ -985,7 +1207,12 @@ class ProgressReporter:
         if two_line:
             tqdm_kwargs = {"bar_format": "{desc}"}
         else:
-            tqdm_kwargs = ({"bar_format": "{desc}всего обработано файлов: {n_fmt} [{elapsed}, {rate_fmt}{postfix}]"}
+            # Ведущий пробел прямо в шаблоне (не в конкретном desc=), 2026-08-24, живая просьба
+            # пользователя ("текст сливается с рамкой окна") -- та же логика, что и у
+            # console_log()/резервных текстов two_line-поля операции выше, но здесь desc=
+            # варьируется от вызывающего кода ("Оцениваю объём работы" и т.п.) -- проще и
+            # надёжнее один раз в самом шаблоне, чем следить за каждым отдельным desc=.
+            tqdm_kwargs = ({"bar_format": " {desc}всего обработано файлов: {n_fmt} [{elapsed}, {rate_fmt}{postfix}]"}
                            if total is None else {})
         stream = _RussianRateStream(sys.stderr, unit)
         # 2026-07-11 (live user report, later the same session): tqdm's set_description()
@@ -1048,7 +1275,7 @@ class ProgressReporter:
         -- запас под хвостовые tqdm-счётчики этого bar_format ("всего обработано файлов: N
         [MM:SS, X.Xфайл/с]"), с большим запасом на случай многочасового прогона с 6-значным
         счётчиком файлов."""
-        columns = shutil.get_terminal_size(fallback=(80, 24)).columns
+        columns = _console_columns()
         if self._disk_usage_path is not None:
             # ", своб.9999.9ГБ" -- postfix, добавленный disk_usage_path (см. update()), тоже
             # часть хвоста и должен учитываться в бюджете, иначе note обрежется криво.
@@ -1240,7 +1467,7 @@ class ProgressReporter:
         # Раунд 86. sys.stderr.isatty() -- та же проверка, что и раньше (не на реальном
         # терминале -- в файл/пайп -- перенос не имеет значения, показываем строку целиком).
         if sys.stderr.isatty():
-            columns = shutil.get_terminal_size(fallback=(80, 24)).columns
+            columns = _console_columns()
             if len(line) > columns:
                 line = base + tail
             if len(line) > columns and free_part:
@@ -1408,6 +1635,36 @@ class ProgressReporter:
         находке в SESSION-HANDOFF.txt, которая перепутала эти две величины)."""
         self._objects_seen += 1
         line = self._format_object_line(tag, path, n_found, letter)
+        if self._bar is not None:
+            self._bar.clear()
+            print(line, file=sys.stderr)
+            self._bar.refresh()
+        else:
+            print(line, file=sys.stderr)
+
+    def write_heavy_notice(self, line: str) -> None:
+        """Как write_object_line(), но для уже готового текста (SourceWalker's редкие/важные
+        уведомления -- "Распаковка ...", "[DVD] новый DVD-диск", "[skip_marker]", ошибки чтения
+        директории -- см. SourceWalker._log_own_line()). 2026-08-24, живой репорт пользователя:
+        эти сообщения шли через self.log() -- модульный console_log()/log_line(), координирующий
+        clear()/print()/refresh() через _ACTIVE_BARS -- на практике ненадёжный (см. докстринг
+        log_line()): "Расп"/"аковка" склеивались без переноса строки. Временный обходной путь
+        (жёсткий "\\n" перед текстом, БЕЗ clear()/refresh()) устранил склейку, но открыл другой
+        баг -- бар не переиспользует свою старую строку (clear() не вызывается вовсе), поэтому
+        КАЖДОЕ такое уведомление оставляет позади себя "замороженный" кадр бара, из-за чего
+        строка визуально "уезжает вверх"/дублируется на каждом архиве/папке. Правильный фикс --
+        этот метод: прямая ссылка на self._bar (передаётся вызывающим кодом как отдельный
+        колбэк, см. SourceWalker.__init__()'s heavy_notice_cb), а не глобальный реестр -- та же
+        гарантия, что и у write_object_line(), не зависит от того, сколько копий модуля
+        загружено в процессе.
+
+        2026-08-24, живой репорт пользователя (та же сессия, следующий заход): print() здесь
+        напрямую, В ОБХОД console_log() -- вместе с координацией бара потерялся и перенос
+        длинных строк (_wrap_console_text()/_terminal_wrap_width()), который раньше делал
+        console_log() для этих же сообщений -- длинный путь DVD-диска пошёл ОДНОЙ строкой без
+        переноса. Тот же isatty()-гейт и тот же перенос здесь, что и в console_log()."""
+        if sys.stdout.isatty():
+            line = _wrap_console_text(line, _terminal_wrap_width())
         if self._bar is not None:
             self._bar.clear()
             print(line, file=sys.stderr)
@@ -2842,7 +3099,7 @@ def _member_name_is_strict_media(name: str) -> bool:
 
 def _fmt_size_gb(size_bytes) -> str:
     """SESSION-HANDOFF.txt, редизайн живого вывода Фазы 2 -- размер для транзиентной операции
-    статус-строки ("распаковка (X)"/"хеширование видеофайла (X)"): "<0.1ГБ" для дробей меньше
+    статус-строки ("Извлекаю (X)"/"хеширование видеофайла (X)"): "<0.1ГБ" для дробей меньше
     0.1 (иначе крошечный файл печатался бы как "0.0ГБ" -- нечитаемо), иначе одна цифра после
     запятой."""
     gb = size_bytes / 1024**3
@@ -3163,6 +3420,43 @@ def _sweep_tmp_extract_dir(tmp_extract_dir: str, log=print) -> None:
             f"{unrecognized[:5]}")
 
 
+def _sweep_stale_photosort_tmp_files(target: str, log=print) -> None:
+    """2026-08-24, живая просьба пользователя ("добавь чистку при старте") -- сметает
+    осиротевшие staging-файлы atomic_copy() (".photosort_tmp_*", см. её докстринг) под TARGET.
+    Они остаются на диске, только если процесс был убит настолько резко, что даже except-блок
+    вокруг shutil.copy2()/os.replace() не успел отработать -- LOGOFF/SHUTDOWN os._exit(), крах,
+    Task Manager, пропажа питания. Обычный Ctrl-C/крестик (KeyboardInterrupt) сюда не относится
+    -- atomic_copy()'s собственные except-блоки уже убирают свой tmp_path сами, orphan'ов не
+    остаётся. Само место назначения файла НИКОГДА не бывает частичным независимо от причины
+    прерывания (copy во временный файл + os.replace(), см. atomic_copy()'s докстринг) -- эта
+    функция просто убирает мусорные огрызки, не восстанавливает и не может потерять данные.
+
+    Полный os.walk() по TARGET, не привязка к конкретному PID/маркеру -- staging-файлы рассеяны
+    по ЛЮБОЙ папке альбома/даты (dest_dir внутри atomic_copy() -- место назначения КОНКРЕТНОГО
+    файла, не единый корень, как у tmp_extract/_sweep_tmp_extract_dir() выше), точечно
+    отследить их без полного обхода нечем. Безопасно относительно гонки с другим живым
+    прогоном на этот же TARGET -- вызывается ТОЛЬКО из Фазы 0 реальной сборки (run()), которая
+    уже держит TargetLock на весь свой прогон, конкурентного владельца этих файлов быть не
+    может. Обычные метаданные каталогов, без чтения содержимого файлов -- тот же порядок
+    стоимости, что и у ensure_target_layout()/report_environment() рядом, вызывается один раз
+    на старте (не dry-run/analyze/паспорт -- suppress_logs=True никогда не создаёт такие файлы
+    вовсе, см. _run_impl())."""
+    if not os.path.isdir(winlong(target)):
+        return
+    removed = 0
+    for dirpath, _dirnames, filenames in os.walk(winlong(target)):
+        for name in filenames:
+            if name.startswith(".photosort_tmp_"):
+                try:
+                    os.remove(os.path.join(dirpath, name))
+                    removed += 1
+                except OSError:
+                    pass
+    if removed:
+        log(f"Найдено и убрано {removed} недокопированных временных файлов "
+            f"(.photosort_tmp_*, остаток аварийно прерванного прогона) в {target}")
+
+
 def _pid_is_alive(pid: int) -> bool:
     """True, если процесс с данным PID ещё РЕАЛЬНО выполняется -- ТОЛЬКО проверка, ничего не
     завершает. На Windows -- OpenProcess() с PROCESS_QUERY_LIMITED_INFORMATION (0x1000), не
@@ -3250,6 +3544,73 @@ def _sweep_stale_dry_run_pid_dirs(log=print) -> None:
             continue  # чужой прогон ещё жив -- возможно, активно распаковывает архив
         log(f"Найден остаток прерванного прогона (PID {name} больше не существует) в {entry_path} — очищаю")
         cleanup_dir(entry_path)
+
+
+_MEI_OWNER_MARKER_FILENAME = ".photoarchive_owner_pid"
+_MEI_DIR_RE = re.compile(r"^_MEI[0-9]+$")
+
+
+def _mark_own_mei_extraction_dir() -> None:
+    """2026-08-24, живая просьба пользователя ("что-то осталось -- не должно копиться, каждый
+    новый запуск должен подчищать всё, что было до него") -- пишет PID текущего процесса в
+    маленький файл-маркер ВНУТРИ sys._MEIPASS (распакованная PyInstaller onefile-бутлоадером
+    папка -- exiftool/ffmpeg/7z/питон-рантайм, сотня+ МБ). Обычно её убирает сам бутлоадер ПОСЛЕ
+    возврата из Python-кода -- но при os._exit()/крахе/Task Manager/пропаже питания этот шаг
+    просто не наступает, папка остаётся в %TEMP% навсегда без этой пары функций.
+
+    Маркер нужен, чтобы _sweep_stale_mei_extraction_dirs() ниже (следующий запуск) могла
+    отличить "это НАША осиротевшая папка, её процесс мёртв" от чужой -- имя `_MEI<цифры>`
+    генерирует ЛЮБОЕ PyInstaller onefile-приложение, не только эта программа, слепое удаление
+    неотмеченных папок рискует стереть временные файлы совершенно постороннего работающего
+    приложения. No-op вне frozen-сборки (sys._MEIPASS просто не существует) и best-effort --
+    тот же паттерн, что и у остальных win32-хелперов этого файла."""
+    mei_dir = getattr(sys, "_MEIPASS", None)
+    if not mei_dir:
+        return
+    try:
+        with open(os.path.join(mei_dir, _MEI_OWNER_MARKER_FILENAME), "w", encoding="ascii") as f:
+            f.write(str(os.getpid()))
+    except OSError:
+        pass
+
+
+def _sweep_stale_mei_extraction_dirs(log=print) -> None:
+    """Парная функция к _mark_own_mei_extraction_dir() выше -- вызывается на КАЖДОМ запуске
+    (любой режим, не только реальная сборка, см. _main()), сразу после разбора argv. Смотрит на
+    СОСЕДНИЕ с текущей `_MEIxxxxxx` папки в том же родителе (обычно %TEMP%) -- те, что несут
+    наш маркер (_mark_own_mei_extraction_dir()) и чей записанный там PID уже мёртв
+    (_pid_is_alive()), убираются целиком. Папки БЕЗ маркера (чужое приложение, или наша же
+    осиротевшая папка от прогона ДО появления этой пары функций) НЕ трогаются -- тот же принцип
+    "в сомнении -- не трогаем", что и у _sweep_tmp_extract_dir()/_sweep_stale_dry_run_pid_dirs()
+    выше (тот же остаточный риск переиспользования PID тоже принят, см. _pid_is_alive()'s
+    докстринг за симметричным случаем).
+
+    No-op вне frozen-сборки и best-effort -- тот же паттерн, что и у остальных win32-хелперов
+    этого файла."""
+    mei_dir = getattr(sys, "_MEIPASS", None)
+    if not mei_dir:
+        return
+    parent = os.path.dirname(mei_dir)
+    own_name = os.path.basename(mei_dir)
+    try:
+        entries = os.listdir(parent)
+    except OSError:
+        return
+    for name in entries:
+        if name == own_name or not _MEI_DIR_RE.match(name):
+            continue
+        candidate = os.path.join(parent, name)
+        try:
+            with open(os.path.join(candidate, _MEI_OWNER_MARKER_FILENAME),
+                      "r", encoding="ascii") as f:
+                pid = int(f.read().strip())
+        except (OSError, ValueError):
+            continue  # без нашего маркера -- не наша папка (или прогон до этого фикса), не трогаем
+        if _pid_is_alive(pid):
+            continue  # другой наш процесс ещё жив (несколько одновременных запусков) -- не трогаем
+        log(f"Найден остаток прерванного запуска (PID {pid} больше не существует) в "
+            f"{candidate} — очищаю")
+        shutil.rmtree(candidate, ignore_errors=True)
 
 
 def _cleanup_own_tmp_extract_entries(cfg: "Config", log=print) -> None:
@@ -3612,9 +3973,14 @@ class SourceWalker:
     def __init__(self, cfg: Config, log=print, progress_cb=None,
                  object_line_cb=None, transient_op_cb=None, object_progress_cb=None,
                  dvd_unit_registry: dict = None, show_placement_letter: bool = False,
-                 defer_media_object_tick: bool = False):
+                 defer_media_object_tick: bool = False, heavy_notice_cb=None):
         self.cfg = cfg
         self.log = log
+        # См. _log_own_line()/ProgressReporter.write_heavy_notice() -- прямая ссылка на бар для
+        # редких/важных уведомлений, в обход ненадёжного self.log()/_ACTIVE_BARS (2026-08-24).
+        # None для любого вызывающего кода, который не передаёт (работает как раньше -- голый
+        # "\n"+self.log() фолбэк в _log_own_line()).
+        self._heavy_notice_cb = heavy_notice_cb
         # Живая находка пользователя, 2026-08-09: "A"/"D" (альбом/по дате) после тега
         # "[папка]"/"[archive]" в консоли -- ТОЛЬКО --dry-run/[3] реальная сборка (по прямой
         # просьбе пользователя), НЕ analyze/[4] Паспорт архива -- та же SourceWalker/
@@ -3820,6 +4186,33 @@ class SourceWalker:
         # время, что раньше искажало EMA.
         self._deferred_gap_open = False
 
+    def _log_own_line(self, msg: str) -> None:
+        """Живая находка пользователя, 2026-08-24: редкие/важные уведомления SourceWalker'а
+        ("Распаковка ...", "[DVD] новый DVD-диск", "[skip_marker]", ошибки чтения директории и
+        т.п.) печатались через self.log() -- ту же обёртку console_log()/log_line(), что и
+        обычные строки, но log_line()'s защита от порчи активного tqdm-бара (bar.clear()/
+        print()/refresh() по модульному _ACTIVE_BARS) на практике оказалась ненадёжной -- живой
+        репорт поймал явную склейку текста с последней строкой бара БЕЗ переноса ("...0.00с/
+        файл:Расп" + "аковка..." на следующей физической строке, затем то же самое с "[DVD]").
+        Диагностика подтвердила: в момент печати _ACTIVE_BARS пуст (сравнение id() показало ДВЕ
+        разные копии этого модуля в процессе -- корень пока не найден, самого self-import'а в
+        файле нет).
+
+        Первая версия фикса (тот же день, первый заход) -- голый "\\n" перед текстом БЕЗ
+        clear()/refresh() -- устранила склейку, но открыла другой баг, тоже живой репорт
+        пользователя: бар не переиспользует свою строку, каждое уведомление оставляет позади
+        "замороженный" кадр -- статус-строка визуально дублировалась и "уезжала вверх".
+        Правильный фикс -- heavy_notice_cb (см. __init__(), ProgressReporter.write_heavy_notice()):
+        прямая ссылка на self._bar того же бара, не зависит от того, сколько копий модуля
+        загружено -- та же гарантия, что уже даёт write_object_line(). "\\n"+self.log() --
+        фолбэк ТОЛЬКО для вызывающего кода, не передавшего callback (например, analyze-режимы
+        без two_line-бара) -- там нет активного бара, портить нечего, но и координировать не с
+        чем, а голая пустая строка перед сообщением всё равно безопаснее случайной склейки."""
+        if self._heavy_notice_cb is not None:
+            self._heavy_notice_cb(msg)
+        else:
+            self.log("\n" + msg)
+
     def _open_deferred_gap(self) -> None:
         """См. self._deferred_gap_open в __init__(). Идемпотентно -- второе и последующие
         откладывания подряд (без промежуточного реального yield'а) не переоткрывают сегмент,
@@ -3889,7 +4282,7 @@ class SourceWalker:
         # _console_tag_line_budget()). Хвост здесь известен ТОЧНО (не оценка, весь текст уже
         # собран выше) -- бюджет считается по его реальной длине, не запасу под неизвестное N.
         display = _truncate_progress_note(display, maxlen=_console_tag_line_budget(len(tail)))
-        self.log(f"  [archive] {display}{tail}")
+        self._log_own_line(f"  [archive] {display}{tail}")
 
     def walk(self):
         source = self.cfg.source
@@ -4049,7 +4442,7 @@ class SourceWalker:
                 "name": display_name,
                 "dest_path": known_dest,
             })
-            self.log(f"  [DVD] дубль уже архивированного диска, пропущен: {disp_base}")
+            self._log_own_line(f"  [DVD] дубль уже архивированного диска, пропущен: {disp_base}")
             return
 
         volume_label = _dvd_unit_volume_label_if_live_disc(video_ts_dirpath, check_volume_label)
@@ -4089,7 +4482,7 @@ class SourceWalker:
         if self._show_placement_letter:
             letter = "A" if (volume_label or album is not None) else "D"
         letter_part = f"{letter} " if letter else " "
-        self.log(f"  [DVD]{letter_part}новый DVD-диск -> {dest_dir} "
+        self._log_own_line(f"  [DVD]{letter_part}новый DVD-диск -> {dest_dir} "
                  f"({len(records)} файлов, {disp_base})")
         for rel, size, mtime, full_path, sha in records:
             dest_path = os.path.join(dest_dir, *rel.split("/"))
@@ -4244,7 +4637,7 @@ class SourceWalker:
             try:
                 entries = sorted(os.listdir(winlong(cur_dirpath)))
             except OSError as e:
-                self.log(f"  не удалось прочитать директорию {cur_dirpath}: {e}")
+                self._log_own_line(f"  не удалось прочитать директорию {cur_dirpath}: {e}")
                 # REVIEW-HANDOFF.md, Раунд 32, задача 4: раньше только текст в лог -- ничего
                 # не считалось, отчёт не давал пользователю базы для сверки "не пропало ли
                 # что-то молча" (права доступа/длинный путь/повреждённая ФС на старой флешке).
@@ -4275,7 +4668,7 @@ class SourceWalker:
                 if SKIP_MARKER in entries:
                     disp = origin_prefix + cur_rel_prefix
                     self.skipped_marker_logs.append(disp)
-                    self.log(f"  [skip_marker] {disp}")
+                    self._log_own_line(f"  [skip_marker] {disp}")
                     continue
 
             subdirs = []
@@ -4514,7 +4907,7 @@ class SourceWalker:
                     st = os.stat(winlong(full))
                 except OSError as e:
                     self.stat_failed_logs.append((disp, str(e)))
-                    self.log(f"  не удалось прочитать {disp}: {e}")
+                    self._log_own_line(f"  не удалось прочитать {disp}: {e}")
                     _tick_object()
                     continue
 
@@ -4566,7 +4959,7 @@ class SourceWalker:
                 # already open on this branch of the walk, it's a cycle -- skip it.
                 full_real = os.path.normcase(os.path.realpath(full))
                 if full_real in cur_ancestors:
-                    self.log(f"  [symlink_loop] пропущена зацикленная папка (junction/symlink "
+                    self._log_own_line(f"  [symlink_loop] пропущена зацикленная папка (junction/symlink "
                              f"ведёт на себя или предка по дереву): {full}")
                     continue
                 rel = f"{cur_rel_prefix}/{name}" if cur_rel_prefix else name
@@ -4762,13 +5155,13 @@ class SourceWalker:
         # _fmt_size_gb() -- та же функция, что уже используется в статус-строке (transient_op_cb
         # чуть ниже) -- живой репорт пользователя (2026-08-01): ручной f"{...:.1f} ГБ}" здесь
         # печатал "0.0 ГБ" для мелких архивов, "<0.1ГБ" читается однозначно.
-        self.log(f"  Распаковка {display_name_for_log} ({_fmt_size_gb(compressed_size)})…")
+        self._log_own_line(f"  Распаковка {display_name_for_log} ({_fmt_size_gb(compressed_size)})…")
         # SESSION-HANDOFF.txt, редизайн живого вывода Фазы 2: та же пауза, что и строкой
         # выше, но теперь ЕЩЁ и в статус-строке (ProgressReporter.set_transient_op()) -- этот
         # self.log() вызов -- отдельная, всегда печатаемая строка лога, transient_op_cb --
         # НЕЗАВИСИМЫЙ канал именно в бар, раньше распаковка была видна ТОЛЬКО в логе.
         if self._transient_op_cb is not None:
-            self._transient_op_cb(f"распаковка ({_fmt_size_gb(compressed_size)})")
+            self._transient_op_cb(f" Извлекаю ({_fmt_size_gb(compressed_size)})")
         ok = extract_archive(archive_path, fmt, extract_dir, log=self.log)
         if not ok:
             if self._transient_op_cb is not None:
@@ -6765,6 +7158,15 @@ class AnalyzeStats:
     # ("в каких папках свалка"), n_dump_items выше остаётся плоским int для существующего
     # консольного вывода/analyze_report.csv, эта разбивка аддитивна, ничего не заменяет.
     dump_items_by_folder: Counter = field(default_factory=Counter)
+    # Живая находка пользователя, 2026-08-24 (Паспорт архива): _render_passport_integrity()
+    # (report.py) показывает только счётчик ("N файлов лежат не внутри альбома/даты"), не
+    # пути -- в отличие от архивов/битых файлов/дублей, у которых полный список путей уже есть
+    # в passport_detail.xlsx (см. _build_passport_detail_rows()). dump_items_by_folder выше
+    # агрегирует по папке (для Листа 3 обычного прогона), не хранит имя файла -- этого
+    # достаточно для report.html, но недостаточно, чтобы найти КОНКРЕТНЫЙ файл в паспорте.
+    # item.origin_display -- тот же формат пути, что уже хранят exact_dup_edges/near_dup_edges
+    # (см. их докстринг), _passport_abs_path()/_passport_normalize_dest() понимают его как есть.
+    dump_item_paths: list = field(default_factory=list)
     # SESSION-HANDOFF.txt, 2026-08-07 (группировка альбом/дата в analyze-отчёте): YY/QQ --
     # медиафайлы, которые нашли альбом, и медиафайлы, которым альбом не нашёлся (разложатся по
     # дате) -- фильтр по item.ftype in ("image", "raw", "video"), в отличие от n_dump_items/
@@ -7184,6 +7586,19 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
     SOURCE, на TARGET на самом деле собственная разметка программы с прошлого прогона, а не
     независимое доказательство (живой репорт пользователя, 2026-08-01, см. докстринг
     resolve_date()/_PASSPORT_SELF_SCAN_RECOGNIZED_TOP ниже)."""
+    # Живая просьба пользователя, 2026-08-24 ("раньше такое было"): та же разделитель+шапка
+    # параметров запуска, что и у _run_impl() (сборка/пробный прогон) -- Анализ/Паспорт архива
+    # раньше не печатали её вовсе. self_scan+mode=="analyze"/mode=="analyze-quick" -- те же два
+    # ярлыка режима, что уже использует _BARE_LAUNCH_MODE_LABELS ("Паспорт архива"/"Сканирование
+    # источника") -- голый mode=="analyze" без self_scan достижим только через полный CLI
+    # ("analyze --source ..." без --target), не имеет своего пункта голого меню, отдельный ярлык.
+    if self_scan and mode == "analyze":
+        _mode_label = "Паспорт архива"
+    elif mode == "analyze-quick":
+        _mode_label = "Сканирование источника"
+    else:
+        _mode_label = "Анализ источника"
+    _log_run_start_header(_mode_label, cfg, log=log)
     # Остатки чужого прошлого прерванного прогона (Ctrl+C/крах) -- та же проверка, что
     # _run_impl()'s Фаза 0 делает для реальной сборки/--dry-run, раньше отсутствовала здесь
     # вовсе (живая находка пользователя, 2026-08-09). Симметричный вызов после основного цикла
@@ -7262,7 +7677,7 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
     walker = SourceWalker(cfg, log=log, object_line_cb=bar.write_object_line,
                            transient_op_cb=bar.set_transient_op,
                            object_progress_cb=bar.add_object_progress,
-                           defer_media_object_tick=True)
+                           defer_media_object_tick=True, heavy_notice_cb=bar.write_heavy_notice)
     # REVIEW-HANDOFF.md, Раунд 54, замечание 2 + Раунд 55, придирка: батч <= cfg.sample_limit,
     # когда он задан -- без этого прогрев набирал полные _ANALYZE_EXIF_PREFETCH_BATCH_SIZE=200
     # файлов ДО первой проверки sample_limit (она снаружи генератора, физически не может
@@ -7317,7 +7732,11 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
             # exiftool, а не на завершение (см. object_progress_cb= выше и докстринг
             # _flush_exif_prefetch_batch()) -- здесь тикать второй раз не нужно, defer_media_
             # object_tick=True на SourceWalker уже отключил тик на самом обходе.
-            bar.update(1, note="большое видео" if (
+            # Ведущий пробел, 2026-08-24, живая просьба пользователя -- для two_line-бара это
+            # note ЗАМЕНЯЕТ поле операции (см. update()'s self._transient_op = note), тот же
+            # текст должен подчиняться той же конвенции отступа, что и resting/transient-тексты
+            # рядом (_DRY_RUN_PHASE_DESC и т.п.).
+            bar.update(1, note=" большое видео" if (
                 item.ftype == "video" and item.size > 200 * 1024**2) else None)
             stats.total_files += 1
             stats.total_bytes += item.size
@@ -7425,8 +7844,37 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
             # самый частый реальный случай (DVD без метки тома живого диска), не идеальное
             # предсказание, но не хуже прежнего "молчания" и не вводит в заблуждение неверным
             # именем альбома.
-            if is_dvd_unit_item:
+            if is_dvd_unit_item and self_scan:
+                # Живая находка пользователя, 2026-08-24 (Паспорт архива): item.rel_path для
+                # DVD-юнита -- синтетический (f"{display_name}/VIDEO_TS/{rel}", см.
+                # _handle_dvd_unit()) -- display_name это метка ЖИВОГО диска либо голое
+                # "VIDEO_TS", когда её нет; self_scan никогда не видит живой диск (сканирует
+                # уже архивированные файлы на диске) -- значит display_name здесь ВСЕГДА голое
+                # "VIDEO_TS", без связи с реальным местом юнита внутри TARGET (например,
+                # Albums\Альбом\...\VIDEO_TS\). Безусловный album=None ветки ниже (верный для
+                # ПРЕДСКАЗАНИЯ будущего места на обычном SOURCE, см. её докстринг) на self_scan
+                # ошибочно топил ЛЮБОЙ DVD-юнит, реально лежащий внутри настоящего альбома, в
+                # "вне альбома/даты" -- юнит физически СТОИТ там, куда его положила сама
+                # программа. item.read_path -- реальный абсолютный путь на диске (self_scan:
+                # cfg.source == TARGET) -- относительно него find_album() видит истинное
+                # положение, той же Albums-обрезкой, что и обычные файлы ниже. self_scan_rel_path
+                # используется и здесь, и в RECOGNIZED_TOP-проверке чуть ниже -- та же причина
+                # (item.rel_path там тоже был бы синтетическим "VIDEO_TS/...").
+                try:
+                    self_scan_rel_path = os.path.relpath(item.read_path, cfg.source).replace("\\", "/")
+                except ValueError:
+                    self_scan_rel_path = item.rel_path
+                find_album_rel_path, find_album_boundary = self_scan_rel_path, None
+                _top, _sep, _rest = find_album_rel_path.partition("/")
+                if _sep and _top.strip().lower() == "albums":
+                    find_album_rel_path = _rest
+                album, subpath, album_prefix = find_album(find_album_rel_path, find_album_boundary,
+                                                           dump_names=cfg.dump_segment_names_lower,
+                                                           dump_prefixes=cfg.dump_segment_prefixes_tuple,
+                                                           bydate_only=cfg.source_bydate_only)
+            elif is_dvd_unit_item:
                 album, subpath, album_prefix = None, [], None
+                self_scan_rel_path = item.rel_path
             else:
                 find_album_rel_path, find_album_boundary = item.rel_path, item.archive_boundary_idx
                 if self_scan:
@@ -7439,6 +7887,7 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                                                            dump_names=cfg.dump_segment_names_lower,
                                                            dump_prefixes=cfg.dump_segment_prefixes_tuple,
                                                            bydate_only=cfg.source_bydate_only)
+                self_scan_rel_path = item.rel_path
             # SESSION-HANDOFF.txt, "большой разбор report.html", пункт A (дерево структуры
             # архива) -- бакет для этого элемента, тем же строителем путей, что и реальная
             # сборка (build_album_dest_dir()/build_bydate_dest_dir()), но с фиктивным
@@ -7468,7 +7917,7 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                     album_names.add("/".join(full_segments[:i + 1]))
                 if item.ftype in ("image", "raw", "video"):
                     stats.n_media_in_albums += 1
-            elif self_scan and item.rel_path.split("/", 1)[0].strip().lower() in _PASSPORT_SELF_SCAN_RECOGNIZED_TOP:
+            elif self_scan and self_scan_rel_path.split("/", 1)[0].strip().lower() in _PASSPORT_SELF_SCAN_RECOGNIZED_TOP:
                 # Живой репорт пользователя (2026-08-01): на TARGET (self_scan) find_album()
                 # ЗАКОНОМЕРНО не находит альбом под ByDate/RAW/_Unsorted -- их листовые
                 # день/месяц-папки безусловно dump-тэгнуты (см. is_dump_segment()/DUMP_TAG), а
@@ -7478,7 +7927,8 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                 # пути уже отвечает на вопрос "альбом или дата", просто без строки-имени.
                 # Albums сюда сознательно не входит: файл прямо в "Albums/" без имени альбома
                 # под ним -- это и есть настоящая находка "мимо программы", её нужно ловить.
-                # item.rel_path использует "/" как разделитель (тот же паттерн, что find_album()
+                # self_scan_rel_path (== item.rel_path, кроме DVD-юнитов -- см. её вычисление
+                # выше) использует "/" как разделитель (тот же паттерн, что find_album()
                 # :3455 / _process_decided_item :5285) -- НЕ os.sep, проверено фактическим
                 # прогоном (первая версия фикса ошибочно сплитила по "\\", тест краснел до
                 # исправления, см. ci/windows_ci_test.py).
@@ -7486,6 +7936,7 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
             else:
                 stats.n_dump_items += 1
                 stats.dump_items_by_folder[os.path.dirname(item.rel_path)] += 1
+                stats.dump_item_paths.append(item.origin_display)
                 if item.ftype in ("image", "raw", "video"):
                     stats.n_media_by_date += 1
                     stats.bydate_media_by_folder[os.path.dirname(item.rel_path)] += 1
@@ -8033,11 +8484,27 @@ def classify_found_archives(raw_roots: list, cfg: Config, mode: str) -> tuple:
     return top_level, nested
 
 
+def _log_run_start_header(mode_label: str, cfg: Config, log=print) -> None:
+    """Разделитель + шапка параметров запуска (режим/SOURCE/TARGET/WORKDIR/TMP_EXTRACT_DIR/время
+    старта) -- печатается в НАЧАЛЕ каждого прогона в рабочую консоль, общую для всех прогонов
+    одной сессии GUI-мастера (см. CLAUDE.md, "Рабочая консоль GUI-мастера..." -- окно между
+    прогонами сворачивается, не пересоздаётся, вывод предыдущего прогона остаётся выше в
+    буфере). Живая просьба пользователя, 2026-08-24 ("раньше такое было", позже уточнено --
+    добавить и рабочую папку) -- визуально отделять разные запуски друг от друга и сразу видеть
+    параметры каждого, не листая вверх до предыдущего. Используется и `_run_impl()` (сборка/
+    пробный прогон), и `run_analyze()` (анализ/паспорт) -- единственный общий момент, где эти
+    четыре режима бы иначе печатали разный по форме заголовок."""
+    log("")
+    log("=" * 70)
+    log(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {mode_label}")
+    log(f"  SOURCE: {cfg.source}")
+    log(f"  TARGET: {cfg.target}")
+    log(f"  WORKDIR: {cfg.workdir}")
+    log(f"  TMP_EXTRACT_DIR: {cfg.tmp_extract}")
+    log("=" * 70)
+
+
 def report_environment(cfg: Config, log=print, stats: dict = None):
-    log(f"SOURCE: {cfg.source}")
-    log(f"TARGET: {cfg.target}")
-    log(f"WORKDIR (локально): {cfg.workdir}")
-    log(f"TMP_EXTRACT_DIR: {cfg.tmp_extract}")
     # ТЗ-меню 2026-07-10, раздел 5: suppress_logs=True (интерактивный "пробный прогон")
     # сознательно НЕ создаёт TARGET заранее (ensure_target_layout() пропущен) -- на первом
     # прогоне в свежую папку disk_usage() на несуществующем пути упал бы FileNotFoundError.
@@ -8623,6 +9090,7 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
         "warn_path_truncated": 0, "warn_tier_c_long_path": 0,
     }
 
+    _log_run_start_header("Пробный прогон" if cfg.dry_run else "Сборка архива", cfg, log=log)
     log("=== Фаза 0: окружение ===")
     # Остатки чужого прошлого прерванного прогона (Ctrl+C/крах) -- см. _cleanup_own_tmp_extract_
     # entries() докстринг. Симметричный вызов после основного цикла ниже (после except
@@ -8632,6 +9100,11 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
     if not cfg.suppress_logs:
         ensure_target_layout(cfg)
         check_rules_version(cfg, log=log)
+        # Остатки atomic_copy()'s staging-файлов от аварийно убитого прошлого прогона -- см.
+        # _sweep_stale_photosort_tmp_files()'s докстринг. Безопасно здесь -- run() уже держит
+        # TargetLock на этот TARGET (see её __enter__/__exit__), конкурентного владельца этих
+        # файлов быть не может.
+        _sweep_stale_photosort_tmp_files(cfg.target, log=log)
     report_environment(cfg, log=log, stats=stats)
     phase0_end = time.monotonic()
 
@@ -8752,7 +9225,8 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
         walker = SourceWalker(cfg, log=log, object_line_cb=bar.write_object_line,
                                transient_op_cb=bar.set_transient_op,
                                object_progress_cb=bar.add_object_progress,
-                               dvd_unit_registry=dvd_unit_registry, show_placement_letter=True)
+                               dvd_unit_registry=dvd_unit_registry, show_placement_letter=True,
+                               heavy_notice_cb=bar.write_heavy_notice)
         # NB: items are analyzed and placed one at a time (no read-ahead batching).
         # Files extracted from an archive live in TMP_EXTRACT only until that archive's
         # generator scope closes (walker.py cleans up in a `finally` right after its last
@@ -8812,7 +9286,14 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
                 # для любого видео, независимо от размера; само число уже говорит, большое
                 # видео или маленькое, спец-текст под порог был нужен только пока размера не
                 # было в строке вовсе.
-                note = f"хеширование видеофайла ({_fmt_size_gb(item.size)})" if item.ftype == "video" else None
+                # 2026-08-24, живая просьба пользователя (единый потолок ~22-25 символов для
+                # ВСЕХ текстов поля операции, ведущий пробел -- та же конвенция, что и у
+                # resting/transient-констант рядом): "хеширование видеофайла (X)" (это note,
+                # для two_line-бара ЗАМЕНЯЕТ поле операции, см. update()'s self._transient_op =
+                # note) было заметно длиннее потолка (32 символа с "999.9ГБ") -- короткий noun,
+                # тем же стилем, что уже применён к транзиентным операциям (" В архиве"/
+                # " Извлекаю (X)").
+                note = f" Видео ({_fmt_size_gb(item.size)})" if item.ftype == "video" else None
                 # Раунд 6 ревью (REVIEW-HANDOFF.md, живой баг-репорт "программа зависла"): note
                 # должен появиться на экране ДО блокирующего analyze_batch(), не после -- иначе
                 # бар всю паузу молча показывает состояние предыдущего файла, что визуально
@@ -9677,7 +10158,23 @@ def run_passport(target: str, log=print) -> AnalyzeStats:
     что-то внутри уже собранного архива дедуплицируется само с собой, это находка, не сверка с
     отдельным внешним TARGET, которого у паспорта нет. cfg.target получает
     _NO_TARGET_PLACEHOLDER -- реально не читается для mode="analyze" (см. run_analyze()),
-    Config.__post_init__ просто требует source != target."""
+    Config.__post_init__ просто требует source != target.
+
+    2026-08-24, живая просьба пользователя: паспорт раньше был готов "проверить" ЛЮБУЮ папку
+    (Desktop, Downloads, что угодно) -- self_scan просто трактовал бы всё как "не внутри
+    альбома/даты", без единого предупреждения, что это вообще не архив, а не осмысленный
+    результат проверки. Единственная точка входа для всех трёх вызывающих (меню [4], CLI
+    "analyze --target", GUI-мастер) -- сюда и добавлена жёсткая проверка, а не дублируется в
+    каждом из трёх мест по отдельности (GUI и так уже блокирует "Далее" тем же самым
+    _target_has_existing_archive() через _describe_passport_target() -- эта проверка здесь для
+    двух остальных путей, у которых собственного клиентского гейта нет; для GUI это defense-
+    in-depth, не единственная линия защиты). Та же сигнатура архива (__служебные_файлы, либо
+    Albums+ByDate), что уже использует подменю выбора диска -- не переизобретаем."""
+    if not _target_has_existing_archive(target):
+        log(f"ОШИБКА: {target} не похож на архив PhotoArchive (нет папки __служебные_файлы, "
+            f"ни характерных Albums/ByDate) -- Паспорт проверяет уже собранный архив, не любую "
+            f"папку. Укажите путь к архиву.")
+        return None
     yaml_overrides = load_yaml_config(CONFIG_YAML_PATH, log=log)
     try:
         cfg = Config(source=target, target=_NO_TARGET_PLACEHOLDER, sample_limit=0, **yaml_overrides)
@@ -10038,7 +10535,7 @@ def _progress_note_budget(min_width: int = 20, reserve: int = 80) -> int:
     ("XXX [MM:SS, N.Nфайл/с]" ~40+ симв.)."""
     if not sys.stderr.isatty():
         return 60  # нет реального терминала (файл/пайп) -- поведение как было до этой правки
-    columns = shutil.get_terminal_size(fallback=(80, 24)).columns
+    columns = _console_columns()
     return max(min_width, columns - reserve)
 
 
@@ -10175,7 +10672,7 @@ def _log_menu_line_wrapped(head: str, sep: str, tail, log, indent: str = "    ")
     _wrap_console_text() (textwrap, break_long_words=False -- одно "слово" без пробелов
     длиннее ширины остаётся как есть, не режется посередине)."""
     parts = [tail] if isinstance(tail, str) else list(tail)
-    columns = shutil.get_terminal_size(fallback=(80, 24)).columns if sys.stdout.isatty() else 80
+    columns = _console_columns() if sys.stdout.isatty() else 80
     full_tail = "  ".join(parts)
     line = f"{head}{sep}{full_tail}"
     if len(line) <= columns:
@@ -10449,7 +10946,7 @@ def _pause_before_exit(interactive_mode: bool, input_fn=input, report_path: str 
         _open_report_in_browser(report_path)
 
 
-def _pause_for_report(report_path: str, input_fn=input, log=print):
+def _pause_for_report(report_path: str, input_fn=input, log=print, auto_open_browser: bool = True):
     """2026-07-21, по прямой просьбе пользователя (по итогам живого прогона релиза v0.1.1) --
     общая пауза после ЛЮБОГО из трёх пунктов голого меню ([1]/[2]/[3]), не только после
     сборки: работа уже закончена, результат уже виден на экране, Enter -- явный сигнал "я
@@ -10461,11 +10958,20 @@ def _pause_for_report(report_path: str, input_fn=input, log=print):
     НЕ гасится, всплывает как обычно и завершает всю программу через main(), см. её docstring).
 
     None -- отчёт не формировался (сборка отклонена/не удалась, или ни один SOURCE не
-    обработался) -- тогда ждать нечего, вызывающий код просто возвращается в меню сам."""
+    обработался) -- тогда ждать нечего, вызывающий код просто возвращается в меню сам.
+
+    auto_open_browser (2026-08-23, по прямой просьбе пользователя): текстовый режим (CLI/dev
+    без GUI, единственный вызывающий здесь input_fn=input) не тронут -- Enter по-прежнему сам
+    открывает браузер, тот же довод, что и в её же комментарии выше. Для GUI (см. вызывающие
+    места в gui_menu.py, все передают False) открытие браузера стало отдельным, необязательным
+    действием пользователя -- кликабельной ссылкой ВНУТРИ самого нотиса (_notice_window()),
+    не побочным эффектом клика по кнопке "В главное меню". `_open_report_in_browser()` вызывает
+    сам `gui_menu._make_ok_input_fn()`'s колбэк ссылки, не эта функция -- см. её докстринг."""
     if not report_path:
         return
     input_fn("\nРабота окончена. Нажмите Enter, чтобы открыть отчёт и вернуться в главное меню: ")
-    _open_report_in_browser(report_path)
+    if auto_open_browser:
+        _open_report_in_browser(report_path)
 
 
 def print_welcome_banner(log=print):
@@ -10557,6 +11063,8 @@ def _bare_launch_run_view(sources: list, log=print) -> str:
         # внутри), заново возбуждаем KeyboardInterrupt, чтобы main() отработал как обычно
         # (пауза с report_path для голого запуска, "Прервано пользователем." + exit 130).
         raise _InterruptedRunReport(report_path)
+    global _last_bare_launch_object_count
+    _last_bare_launch_object_count = stats.total_files
     return report_path
 
 
@@ -10597,6 +11105,8 @@ def _bare_launch_run_passport(target: str, log=print) -> str:
         # отчёт уже записан на диск (в TARGET, не WORKDIR -- см. докстринг выше), заново
         # возбуждаем KeyboardInterrupt для единообразной обработки в main().
         raise _InterruptedRunReport(out_path)
+    global _last_bare_launch_object_count
+    _last_bare_launch_object_count = stats.total_files
     return out_path
 
 
@@ -10711,6 +11221,8 @@ def _bare_launch_run_dryrun(sources: list, target: str, input_fn=input, log=prin
         # прерывания уже на диске, заново возбуждаем KeyboardInterrupt для main().
         log(f"\n  Отчёт (данные на момент остановки): {_display_path(out_path)}")
         raise _InterruptedRunReport(out_path)
+    global _last_bare_launch_object_count
+    _last_bare_launch_object_count = total_processed
     return out_path
 
 
@@ -10809,6 +11321,8 @@ def _bare_launch_run_build(sources: list, target: str, input_fn=input, log=print
     # "чтобы убедиться".
     log("  Ваши исходные фотографии остались на месте — программа их не трогает.")
     log("  Архив — их полная копия, готовая к использованию.")
+    global _last_bare_launch_object_count
+    _last_bare_launch_object_count = total_processed
     return report_path
 
 
@@ -10950,8 +11464,9 @@ class _GuiExplicitExit(KeyboardInterrupt):
     попросил выйти", не "процесс прерван извне") в трассировке/логах, дешёвая семантическая
     информация, даже когда main() сейчас её не читает.
 
-    Поднимается ТОЛЬКО из явного клика "Выход"/"Выход из программы" в GUI (gui_menu.py,
-    _run_wizard()/_ok_input_fn())."""
+    Поднимается из явного клика "Выход"/"Выход из программы" в GUI (gui_menu.py,
+    _run_wizard()/_ok_input_fn()) -- и, 2026-08-24, из крестика на нотисе "Работа окончена"
+    (_notice_window(), тот же смысл -- полный выход, не "продолжить")."""
 
 
 def _should_pause_before_exit(bare_launch: bool) -> bool:
@@ -11019,7 +11534,20 @@ def main():
         # (не-Windows dev-сессия) -- там консоль остаётся интерактивной, Enter имеет смысл.
         if _should_pause_before_exit(bare_launch):
             _pause_before_exit(True, report_path=getattr(e, "report_path", None))
-        sys.exit(130)
+        # См. _hide_work_console_for_exit()'s докстринг -- прячет рабочую консоль немедленно,
+        # не дожидаясь, пока её закроет сама ОС вместе с процессом (у onefile-сборки это не
+        # мгновенно). No-op, если консоль не создавалась/не Windows.
+        _hide_work_console_for_exit()
+        # 2026-08-24, живая просьба пользователя: голый Windows-запуск (крестик/"Выход" в GUI,
+        # Ctrl-C в рабочей консоли -- всё это KeyboardInterrupt/_GuiExplicitExit, приходят сюда
+        # одинаково) -- ненулевой код 130 не давал терминальному хосту (Windows Terminal,
+        # дефолтная настройка "закрывать по завершении: изящно" -- закрывает автоматически
+        # ТОЛЬКО код 0) закрыть саму вкладку/окно, даже когда наш процесс и Tk-окна уже
+        # полностью завершились -- выглядело как "не полный выход". Для голого запуска это не
+        # ошибка, а штатное завершение по воле пользователя, код 0 честен. Настоящий CLI-запуск
+        # (--source/--target и т.п., bare_launch=False) код не меняем -- 130 там осмысленный
+        # конвенциональный код для скриптов/автоматизации, которые могут на него полагаться.
+        sys.exit(0 if bare_launch else 130)
     except EOFError:
         # Found on real Windows hardware while testing the new bare-launch menu
         # (run_bare_launch() -- multiple new input() prompts aimed exactly at
@@ -11036,6 +11564,7 @@ def main():
         # launch anyway (see its docstring).
         if _should_pause_before_exit(bare_launch):
             _pause_before_exit(True)
+        _hide_work_console_for_exit()
         sys.exit(130)
     except Exception:
         # 2026-07-19: log=console_log (was the print() default) -- крэш-текст теперь идёт
@@ -11073,6 +11602,7 @@ def main():
             # Текстовое меню (не-Windows dev-сессия) -- единственный оставшийся случай, см.
             # _should_pause_before_exit()'s докстринг.
             _pause_before_exit(True)
+        _hide_work_console_for_exit()
         sys.exit(1)
 
 
@@ -11085,6 +11615,15 @@ def _main():
     # подтверждения GUI (как раньше) больше незачем.
     if os.name == "nt":
         _configure_windows_stdio_at_startup(bool(argv))
+    # 2026-08-24, живая просьба пользователя ("что-то осталось -- не должно копиться, каждый
+    # новый запуск должен подчищать всё, что было до него") -- безусловно, для ЛЮБОГО запуска
+    # (голого и CLI, любого режима), не только реальной сборки: _MEIxxxxxx -- распакованная
+    # PyInstaller-бутлоадером папка (exiftool/ffmpeg/7z/рантайм), которую сам бутлоадер убирает
+    # только при обычном graceful-выходе -- см. _mark_own_mei_extraction_dir()'s докстринг.
+    # Sweep -- ДО собственной пометки (нечего сопоставлять с самим собой, own_name уже исключён
+    # явно, но порядок "сначала прибраться за старым, потом отметиться" яснее читается).
+    _sweep_stale_mei_extraction_dirs()
+    _mark_own_mei_extraction_dir()
     if not argv:
         # Полностью голый запуск -- НИ ОДНОГО аргумента командной строки (типично двойной
         # клик по exe). Единственный случай, который заменяется меню (RULES.md, "ЗАПУСК"
@@ -11383,6 +11922,24 @@ def _main():
 
 
 if __name__ == "__main__":
+    # Раунд 142 ревью [БЛОКЕР], живая находка: этот файл исполняется как `__main__`
+    # (sys.modules["__main__"]) -- но gui_menu.py делает `import photosort_win as m` на своей
+    # первой строке, а `sys.modules` не считает "__main__" и "photosort_win" одним и тем же
+    # модулем по ключу словаря, поэтому этот `import` заново ИСПОЛНЯЕТ весь файл с нуля,
+    # порождая ВТОРОЙ, независимый экземпляр модуля со своими копиями ВСЕХ module-level
+    # глобалов (_work_console_allocated, _console_freed_for_gui и т.д.), не совпадающими по
+    # identity с копией "__main__". Тот же класс бага, что сессия уже нашла и точечно обошла
+    # для _ACTIVE_BARS (см. её докстринг в log_line()) -- здесь исправляется в корне: явно
+    # регистрируем ЭТОТ ЖЕ объект модуля под его настоящим именем ДО того, как что-либо (в т.ч.
+    # gui_menu.py, импортируемый глубоко внутри main()/_main()) успеет импортировать его заново
+    # -- `import photosort_win` дальше находит уже существующую запись в sys.modules и
+    # переиспользует ровно этот экземпляр, вторая копия больше не создаётся. setdefault(), не
+    # безусловное присваивание -- если модуль КОГДА-ЛИБО уже был по-настоящему импортирован под
+    # этим именем раньше этой точки (на практике не происходит -- ci/windows_ci_test.py и
+    # тесты запускают файл только через `python -m`/`pytest`, никогда оба пути в одном
+    # процессе), не перетирает существующую запись.
+    sys.modules.setdefault("photosort_win", sys.modules["__main__"])
+
     # Must run before anything else: some bundled dependency (reverse_geocoder) spawns
     # multiprocessing workers, and under a frozen PyInstaller exe each spawned worker
     # re-execs this very exe -- without freeze_support() it lands back in argparse with

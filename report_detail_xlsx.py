@@ -426,6 +426,15 @@ def _build_passport_detail_rows(stats, target_path: str = None) -> list:
             rows.append(_passport_row(_passport_abs_path(path, target_path), "похожая серия", i,
                                        "", None))
 
+    # Живая находка пользователя, 2026-08-24: "N файлов лежат не внутри альбома/даты"
+    # (_render_passport_integrity()) раньше был единственным пунктом карточки "Целостность
+    # архива" БЕЗ путей вовсе, даже в детализации -- в отличие от архивов/битых файлов/дублей
+    # выше, найти КОНКРЕТНЫЙ файл было невозможно. stats.dump_item_paths -- тот же формат пути
+    # (item.origin_display), что и exact_dup_edges/near_dup_edges, см. её докстринг.
+    for path in stats.dump_item_paths:
+        rows.append(_passport_row(_passport_abs_path(path, target_path), "вне альбома/даты", 0,
+                                   "", None))
+
     rows.sort(key=lambda d: (d["folder"], d["name"]))
     return rows
 

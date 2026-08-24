@@ -137,7 +137,15 @@ _CONTENT_INNER_WIDTH = _CONTENT_WIDTH - 48
 # `winfo_reqheight()` при `tk scaling==1.0` (та же методология, что и у остальных констант этого
 # файла) через реальный `render_*_screen()` с намеренно длинными путями/показанным
 # warn-комментарием, с запасом (round up + ~10-15px):
-_MODE_SCREEN_HEIGHT = 260  # живой замер: 248 (статичный экран, не зависит от состояния)
+_MODE_SCREEN_HEIGHT = 260  # живой замер: 248 (статичный экран, не зависит от состояния).
+# 2026-08-23: футер версии/автора/ссылки (по прямой просьбе пользователя) НЕ живёт здесь --
+# после двух неудачных попыток (сначала отступ сверху, потом отступ не с той стороны -- обе
+# росли высоту content) выяснилось, что пользователь имел в виду настоящий низ ОКНА, а не низ
+# content-области: у `nav` (нижняя панель кнопок, `build_shell()`) уже есть фиксированные,
+# всегда зарезервированные 60px -- на экране 1 полностью пустые (ни одна из трёх кнопок не
+# показывается, см. _configure_nav() ниже). Футер теперь живёт ТАМ (см. render_mode_screen()),
+# не добавляя ни одного пикселя новой высоты -- эта константа не тронута, её первоначальный
+# смысл ("статичный экран, есть небольшой запас") восстановлен как есть.
 _PATHS_SCREEN_HEIGHT = 286  # живая находка пользователя 2026-08-22 (продолжение): нижний
 # динамический комментарий (build/dry_run, оба пути выбраны) реально обрезался снизу почти до
 # одной строки -- старое число (215, "живой замер... 200") занижало реальную натуральную высоту
@@ -477,13 +485,85 @@ def _render_comment_box(parent, message: str, tone: str, wrap_px: int = None) ->
         fill="x", pady=(_px(2), _px(8)))
 
 
-def _describe_target(mode: str, raw_target: str) -> dict:
+def _same_path_error(resolved: str, source) -> dict | None:
+    """Общая проверка для _describe_target(): SOURCE и итоговый (резолвленный) TARGET
+    указывают на один и тот же путь -- архив читал бы сам себя. Дублирует сравнение
+    Config.__post_init__() (photosort_win.py, os.path.realpath+normcase), чтобы отловить это
+    ещё на Шаге 2 (не давать нажать "Далее"), а не только на реальном запуске -- по аналогии с
+    отсутствием архива для паспорта (_describe_passport_target()). source может быть None
+    (режимы, которым он не нужен) -- тогда проверка неприменима."""
+    if source is None:
+        return None
+    try:
+        source_real = os.path.normcase(os.path.realpath(source))
+        target_real = os.path.normcase(os.path.realpath(resolved))
+    except OSError:
+        return None
+    if source_real != target_real:
+        return None
+    return {"resolved": resolved, "tone": "error", "ok": False,
+            "message": "Источник и архив указывают на один и тот же путь — архив читал бы сам "
+                       "себя как источник. Выберите разные папки."}
+
+
+def _config_guards_error(resolved: str, source) -> dict | None:
+    """Остальные три жёстких `ValueError` из `Config.__post_init__()` (`photosort_win.py`),
+    соседние с проверкой в `_same_path_error()` выше, но НЕ то же самое (равенство путей --
+    не единственный способ архиву съесть сам себя) -- найдено ревизором вне раунда, 2026-08-24,
+    по прямому вопросу пользователя: "все ли защиты... реализованы в GUI". Сейчас все три
+    ловятся только в момент реального запуска -- `run_bare_launch()` тихо возвращается на Шаг 1
+    без единого видимого сообщения (рабочая консоль -- не то место, где пользователь по дизайну
+    должен искать причину, см. CLAUDE.md, "Рабочая консоль GUI-мастера..."). Дублирует то же
+    сравнение (`os.path.normcase(os.path.realpath(...))`+`startswith`), что и сам
+    `Config.__post_init__()`, чтобы отловить это ещё на Шаге 2, той же схемой, что и
+    `_same_path_error()`. source может быть None (режимы, которым он не нужен) -- тогда первая
+    проверка неприменима, остальные две от source не зависят.
+
+    1. SOURCE внутри TARGET -- прогон читал бы то, что сам же туда пишет (обратный случай,
+       TARGET подпапкой внутри SOURCE, -- намеренно ПОДДЕРЖИВАЕМЫЙ сценарий, см. комментарий в
+       Config.__post_init__(), guard'а не требует).
+    2. TARGET == рабочая папка программы -- самый опасный: FAQ.md советует при неудаче "удалить
+       TARGET целиком", для этого выбора это стёрло бы саму программу.
+    3. Рабочая папка программы внутри TARGET -- обратный случай той же опасности."""
+    try:
+        target_real = os.path.normcase(os.path.realpath(resolved))
+        workdir_real = os.path.normcase(os.path.realpath(m.WORKDIR))
+    except OSError:
+        return None
+    if source is not None:
+        try:
+            source_real = os.path.normcase(os.path.realpath(source))
+        except OSError:
+            source_real = None
+        if source_real is not None and source_real.startswith(target_real + os.sep):
+            return {"resolved": resolved, "tone": "error", "ok": False,
+                    "message": "Источник находится внутри архива — прогон мог бы повторно "
+                               "поглощать файлы, только что записанные им же самим. "
+                               "Выберите источник вне папки архива."}
+    if target_real == workdir_real:
+        return {"resolved": resolved, "tone": "error", "ok": False,
+                "message": "Архив совпадает с рабочей папкой программы (там лежат сам "
+                           "PhotoArchive.exe, конфиг и логи) — использовать её как архив "
+                           "опасно. Выберите другую папку."}
+    if workdir_real.startswith(target_real + os.sep):
+        return {"resolved": resolved, "tone": "error", "ok": False,
+                "message": "Рабочая папка программы находится внутри выбранного архива — по "
+                           "той же причине, что и выше. Выберите архив вне папки, где лежит "
+                           "PhotoArchive.exe."}
+    return None
+
+
+def _describe_target(mode: str, raw_target: str, source: str = None) -> dict:
     """Состояние TARGET для блока-комментария экрана 2 (build/dry_run) -- определяет и текст, и
     РЕАЛЬНЫЙ target, который пойдёт в dispatch (см. докстринг модуля про голый корень диска).
-    Приоритет состояний (только одно актуальное сообщение за раз, ТЗ): корень диска -> уже
-    существующий архив -> чужая непустая папка -> пустая/новая."""
+    Приоритет состояний (только одно актуальное сообщение за раз, ТЗ): SOURCE == TARGET / SOURCE
+    внутри TARGET / TARGET == рабочая папка программы / рабочая папка внутри TARGET (после
+    резолва) -> корень диска -> уже существующий архив -> чужая непустая папка -> пустая/новая."""
     if m._is_bare_drive_root(raw_target):
         resolved = os.path.join(raw_target, "__PhotoArchive__")
+        error = _same_path_error(resolved, source) or _config_guards_error(resolved, source)
+        if error:
+            return error
         if m._target_has_existing_archive(resolved):
             tone = "info" if mode == "dry_run" else "confirm"
             action = "прогон посчитает дедупликацию по нему" if mode == "dry_run" \
@@ -496,6 +576,9 @@ def _describe_target(mode: str, raw_target: str) -> dict:
                         f"и {action}.")
         return {"resolved": resolved, "tone": tone, "message": message, "ok": True}
     resolved = raw_target
+    error = _same_path_error(resolved, source) or _config_guards_error(resolved, source)
+    if error:
+        return error
     if m._target_has_existing_archive(resolved):
         tone = "info" if mode == "dry_run" else "confirm"
         action = "прогон посчитает дедупликацию по нему" if mode == "dry_run" \
@@ -575,7 +658,23 @@ def _auto_yes_input_fn(prompt: str) -> str:
     return "да"
 
 
-def _make_ok_input_fn(report_path: str):
+def _open_report_link(report_path: str) -> None:
+    """Клик по ссылке отчёта в нотисе "Работа окончена" (_make_ok_input_fn() ниже) -- живая
+    находка пользователя, 2026-08-24: раньше звала photosort_win._open_report_in_browser(),
+    которая несёт унаследованную (2026-07-21, эпоха текстового меню) попытку вернуть фокус
+    консоли (_reclaim_console_focus()) -- для GUI-режима она уже гейтована
+    (_console_freed_for_gui всегда True для frozen windowed-сборки) и не должна срабатывать, но
+    пользователь явно попросил: "нужно просто запустить браузер", без каких-либо манипуляций
+    окном консоли вообще -- даже гипотетических/гейтованных. Голый webbrowser.open(), тот же
+    паттерн, что и у _open_site_link() (best-effort, сбой браузера не должен мочь сломать сам
+    мастер)."""
+    try:
+        m.webbrowser.open(os.path.abspath(report_path))
+    except Exception:
+        pass
+
+
+def _make_ok_input_fn(report_path: str, count_label: str = "Обработано объектов"):
     """Фабрика адаптера для _pause_for_report() -- возврат полностью игнорируется вызывающей
     функцией (см. её докстринг в photosort_win.py), сам input_fn(prompt) просто блокирует до
     клика. report_path передаётся замыканием, не параметром самого input_fn -- сигнатура
@@ -584,10 +683,11 @@ def _make_ok_input_fn(report_path: str):
     2026-08-22 (по прямой просьбе пользователя): в текстовом режиме путь к отчёту уже напечатан
     отдельной строкой (log(f"Отчёт: {out_path}") в run_analyze_for_source()/аналогах) ДО самого
     prompt'а -- в GUI это невидимо (log=print уходит в консоль позади окна, а не в сам нотис),
-    поэтому здесь путь дописывается прямо в текст нотиса. Кнопка -- "В главное меню" (не
-    "Продолжить", тоже по прямой просьбе пользователя тем же заходом) -- называет реальное
-    действие клика (см. run_bare_launch(): после _pause_for_report() цикл continue возвращается
-    к новому _run_wizard(), то есть к экрану 1).
+    путь показывается в самом нотисе (2026-08-23: как link_text кликабельной ссылки, см. ниже
+    -- НЕ дублируется отдельно в тексте message, живая находка пользователя "задвоение"). Кнопка
+    -- "В главное меню" (не "Продолжить", тоже по прямой просьбе пользователя тем же заходом) --
+    называет реальное действие клика (см. run_bare_launch(): после _pause_for_report() цикл
+    continue возвращается к новому _run_wizard(), то есть к экрану 1).
 
     2026-08-22, второй заход (по прямой просьбе пользователя): второй кнопкой добавлен прямой
     "Выход" -- без него единственный способ закрыть программу ПОСЛЕ просмотра отчёта -- дойти
@@ -607,17 +707,168 @@ def _make_ok_input_fn(report_path: str):
     которую пользователь в этот момент не видит (он только что кликнул в Tk-окне нотиса) --
     кнопка не давала заявленного прямого выхода, просто переносила лишний шаг из GUI в консоль.
     m._GuiExplicitExit -- отдельный тип именно для этого: main() пропускает паузу для него
-    БЕЗУСЛОВНО (см. её докстринг), не полагаясь на состояние консоли."""
+    БЕЗУСЛОВНО (см. её докстринг), не полагаясь на состояние консоли.
+
+    2026-08-23, живая находка пользователя ("нажмите Enter -- и две кнопки, нет логики"):
+    `prompt` -- аргумент, зафиксированный сигнатурой `input_fn(prompt)` (см. выше) -- несёт
+    ТЕКСТ ДЛЯ КОНСОЛИ (`_pause_for_report()`, `photosort_win.py`: "Нажмите Enter, чтобы..."),
+    рассчитанный на однокнопочный `input()` текстового режима. В GUI, где выбор идёт двумя
+    настоящими кнопками, а не клавишей, этот текст противоречил сам себе -- окно предлагало
+    "нажать Enter", хотя нажимать нужно было мышью одну из двух подписанных кнопок. `prompt`
+    больше не используется для текста нотиса вовсе (аргумент остаётся неиспользуемым -- сигнатура
+    фиксирована вызывающей стороной) -- сообщение теперь описывает ровно то, что реально делает
+    каждая кнопка/ссылка.
+
+    2026-08-23, второй заход (по прямой просьбе пользователя): открытие браузера убрано из
+    побочных эффектов кнопки "В главное меню" -- раньше клик по ней ОДНОВРЕМЕННО и открывал
+    браузер (`_pause_for_report()`'s `_open_report_in_browser()` после `input_fn()`), и создавал
+    новое окно мастера, и это самое совпадение по времени было НАСТОЯЩЕЙ причиной раунда находок
+    "окно мастера позади браузера" (см. `CLAUDE.md`, "GUI-мастер: архитектура..." -- вся история
+    `_reclaim_console_focus()`/`_force_show_normal()`/`_reclaim_wizard_focus()`). Теперь открытие
+    отчёта -- отдельная кликабельная ссылка ВНУТРИ этого же нотиса (`link_command=`), кнопка "В
+    главное меню" только закрывает нотис и возвращает в мастер, ничего не открывая сама. Гонка за
+    фокус с браузером для ЭТОГО пути (единственного, дающего DPI-независимо воспроизводимую
+    находку раньше) больше физически не возникает -- открытие браузера и создание нового окна
+    мастера больше не гарантированно совпадают по времени вовсе (пользователь может кликнуть
+    ссылку, почитать отчёт сколько угодно, и только потом отдельным кликом вернуться в меню).
+    `auto_open_browser=False` в вызовах `m._pause_for_report()` (см. `run_bare_launch()`)
+    отключает старый безусловный вызов `_open_report_in_browser()` для GUI-режима -- текстовый
+    режим (`input_fn=input`) не тронут, там открытие по Enter остаётся прежним.
+
+    2026-08-24, живая находка пользователя (третий заход): ссылка отчёта теперь зовёт отдельную
+    `_open_report_link()` (см. её докстринг выше), не `m._open_report_in_browser()` -- та несёт
+    унаследованную попытку вернуть фокус консоли, для GUI-режима уже гейтованную, но пользователь
+    явно попросил "просто запустить браузер", без каких-либо манипуляций окном консоли вообще."""
     def _ok_input_fn(prompt: str) -> str:
-        choice = _notice_window(f"{prompt.strip()}\n\nОтчёт: {report_path}",
-                                  button_label="В главное меню", show_exit=True)
+        # 2026-08-23, живая находка пользователя: путь к отчёту раньше показывался ДВАЖДЫ --
+        # один раз голым текстом в message ("Отчёт сохранён здесь: {path}"), второй раз ниже
+        # отдельной ссылкой с текстом-заглушкой "Открыть отчёт в браузере" -- задвоение. Путь
+        # больше не дублируется в message -- сам путь и есть link_text, кликабелен целиком, одно
+        # упоминание вместо двух.
+        #
+        # 2026-08-23, второй заход (по прямой просьбе пользователя, явный порядок блоков):
+        # "Найдено/Обработано объектов: X" (X -- m._last_bare_launch_object_count, та же
+        # переменная, что читает статус-строка терминала, см. её докстринг в photosort_win.py)
+        # -> ссылка на отчёт -> ТОЛЬКО ПОТОМ описание кнопок. count_label ("Найдено объектов"
+        # для analyze/паспорта, "Обработано объектов" для dry-run/сборки) передаётся вызывающей
+        # стороной (run_bare_launch()) -- эта фабрика не знает режим сама.
+        message = f"Работа окончена.\n\n{count_label}: {m._last_bare_launch_object_count}"
+        footer_text = (
+            "«В главное меню» вернёт вас к выбору следующего действия (рабочее окно свернётся "
+            "в панель задач).\n"
+            "«Выход» закроет программу."
+        )
+        choice = _notice_window(message, button_label="В главное меню", show_exit=True,
+                                  link_text=f"Отчёт: {report_path}",
+                                  link_command=lambda: _open_report_link(report_path),
+                                  footer_text=footer_text)
         if choice == "exit":
             raise m._GuiExplicitExit
         return ""
     return _ok_input_fn
 
 
+def _diag_focus_poll_start(duration_s: float = 8.0) -> list:
+    """ВРЕМЕННАЯ диагностика (2026-08-24, живая просьба пользователя -- продолжение открытой
+    задачи "после отчёта фокус остаётся не на нотисе"). Тот же приём, что уже сработал для
+    находки "две копии _ACTIVE_BARS" (печать в файл + чтение постфактум, env-гейт
+    `PHOTOARCHIVE_DIAG_STDIO`, убран после находки) -- ловить момент через диалог с
+    пользователем не получается (сама попытка поймать -- уже переключение на другую программу,
+    после которого проблема исчезает), значит логировать должен сам процесс, без участия
+    пользователя в критический момент.
+
+    2026-08-24, ВТОРОЙ заход -- первая версия (см. git-историю) фильтровала строки по смене
+    PID владельца foreground-окна и логировала только имя exe. Живой прогон её опроверг: PID
+    оставался "наш" (own=True) с самой первой миллисекунды -- гипотеза "фокус держит ЧУЖОЙ
+    процесс (conhost.exe/Windows Terminal)" неверна. Но это не значит, что фокус реально на
+    нотисе -- у ОДНОГО нашего процесса несколько СВОИХ окон (консоль и нотис), PID-фильтр в
+    принципе не мог отличить их друг от друга. Эта версия сравнивает HWND напрямую: консоль
+    (`GetConsoleWindow()`, известен сразу) и нотис (реальный top-level этого Tk-root, тот же
+    `GetAncestor(..., GA_ROOT)`-приём, что и у `_set_crisp_taskbar_icon()` -- `winfo_id()` сам
+    по себе НЕ top-level, см. её докстринг) -- строка пишется на любую смену HWND (не PID),
+    is_console/is_notice -- явные булевы флаги, а не только имя exe.
+
+    Возвращает [0] -- мутируемый holder на один элемент: вызывающая сторона (_notice_window())
+    заполняет его реальным top-level HWND нотиса, как только тот известен (после
+    update_idletasks(), см. вызов ниже) -- до этого поток видит там 0 и просто не может
+    сопоставить is_notice, что тоже видно в логе (is_notice=False, notice_hwnd=0).
+
+    Гейт `PHOTOARCHIVE_DIAG_FOCUS` -- без него функция no-op (возвращает holder сразу, поток не
+    стартует), нулевая цена в обычной работе. Пишет в `%TEMP%\\photoarchive_focus_diag.log`
+    (append, не перезаписывает старые сессии). Поток фоновый/daemon -- не блокирует и не может
+    сломать сам нотис, любая ошибка проглатывается. Убрать целиком после находки (тот же
+    принцип, что и у уже убранного `PHOTOARCHIVE_DIAG_STDIO` -- не постоянная часть кодовой
+    базы)."""
+    holder = [0]
+    if os.name != "nt" or not os.environ.get("PHOTOARCHIVE_DIAG_FOCUS"):
+        return holder
+    import ctypes
+    import tempfile
+    import threading
+    import time
+
+    def _worker():
+        try:
+            log_path = os.path.join(tempfile.gettempdir(), "photoarchive_focus_diag.log")
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            user32.GetForegroundWindow.restype = ctypes.c_void_p
+            user32.GetWindowThreadProcessId.restype = ctypes.c_ulong
+            user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p,
+                                                          ctypes.POINTER(ctypes.c_ulong)]
+            user32.IsIconic.restype = ctypes.c_int
+            user32.IsIconic.argtypes = [ctypes.c_void_p]
+            kernel32.GetConsoleWindow.restype = ctypes.c_void_p
+            kernel32.OpenProcess.restype = ctypes.c_void_p
+            kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+            kernel32.QueryFullProcessImageNameW.argtypes = [
+                ctypes.c_void_p, ctypes.c_ulong, ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_ulong)]
+            own_pid = os.getpid()
+            console_hwnd = kernel32.GetConsoleWindow()
+            t0 = time.monotonic()
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write("\n--- diag session start pid=%d console_hwnd=%s %s ---\n"
+                         % (own_pid, console_hwnd, time.strftime("%H:%M:%S")))
+                f.flush()
+                last_hwnd = None
+                while time.monotonic() - t0 < duration_s:
+                    hwnd = user32.GetForegroundWindow()
+                    if hwnd != last_hwnd:
+                        pid = ctypes.c_ulong(0)
+                        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                        exe_name = "?"
+                        if pid.value:
+                            # PROCESS_QUERY_LIMITED_INFORMATION -- доступно даже без прав на
+                            # чужой процесс.
+                            h = kernel32.OpenProcess(0x1000, False, pid.value)
+                            if h:
+                                buf = ctypes.create_unicode_buffer(260)
+                                size = ctypes.c_ulong(260)
+                                if kernel32.QueryFullProcessImageNameW(
+                                        h, 0, buf, ctypes.byref(size)):
+                                    exe_name = os.path.basename(buf.value)
+                                kernel32.CloseHandle(h)
+                        notice_hwnd = holder[0]
+                        console_iconic = (bool(user32.IsIconic(console_hwnd))
+                                            if console_hwnd else "?")
+                        elapsed_ms = int((time.monotonic() - t0) * 1000)
+                        f.write("%6dms hwnd=%s pid=%s own=%s exe=%s is_console=%s "
+                                 "notice_hwnd=%s is_notice=%s console_iconic=%s\n"
+                                 % (elapsed_ms, hwnd, pid.value, pid.value == own_pid, exe_name,
+                                    hwnd == console_hwnd, notice_hwnd,
+                                    bool(notice_hwnd) and hwnd == notice_hwnd, console_iconic))
+                        f.flush()
+                        last_hwnd = hwnd
+                    time.sleep(0.05)
+        except Exception:
+            pass
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return holder
+
+
 def _notice_window(message: str, button_label: str = "Продолжить", show_exit: bool = False,
+                     link_text: str = None, link_command=None, footer_text: str = None,
                      _retry: bool = False) -> str:
     """Отдельное лёгкое окно ВНЕ мастера (пауза после отчёта -- не один из трёх шагов, тот же
     принцип, что и раньше: фиксированный размер/степ-индикатор нужны только самому мастеру).
@@ -633,9 +884,25 @@ def _notice_window(message: str, button_label: str = "Продолжить", sho
     Escape/крестик/button_label -- все ведут к одному и тому же исходу, "не выходить") или
     "exit" (вторая кнопка) -- caller (_make_ok_input_fn()) решает, что с этим делать; сама эта
     функция ничего не знает про KeyboardInterrupt/run_bare_launch(), только про то, какую
-    кнопку нажали."""
+    кнопку нажали.
+
+    link_text/link_command (2026-08-23, по прямой просьбе пользователя): опциональная
+    кликабельная строка-ссылка МЕЖДУ текстом и кнопками -- клик зовёт link_command() (например,
+    m._open_report_in_browser(path)), сама ссылка НЕ закрывает окно (в отличие от кнопок) --
+    открыть отчёт и решить, что делать дальше (меню/выход), теперь два независимых действия
+    пользователя, не одно, склеенное в одну кнопку (см. _make_ok_input_fn() за конкретным
+    случаем и обоснованием, почему открытие браузера перестало быть побочным эффектом клика по
+    кнопке). Оба параметра None -- ссылка не рисуется вовсе, старое поведение не меняется для
+    любого другого вызывающего кода.
+
+    footer_text (2026-08-23, по прямой просьбе пользователя, явный порядок блоков: "Найдено/
+    Обработано объектов" -> ссылка на отчёт -> ТОЛЬКО ПОТОМ описание кнопок) -- отдельный
+    текстовый блок ПОСЛЕ ссылки, до кнопок (обычный `message` выше пакуется ПЕРВЫМ, до ссылки --
+    описание кнопок туда больше не годится, раз порядок теперь другой). None -- блок не
+    рисуется, тот же принцип, что и у link_text/link_command."""
     import tkinter as tk
 
+    diag_notice_hwnd_holder = _diag_focus_poll_start() if not _retry else None
     _configure_dpi_awareness()
     root = tk.Tk()
     if not _retry:
@@ -643,6 +910,18 @@ def _notice_window(message: str, button_label: str = "Продолжить", sho
     root.title("PhotoArchive")
     root.resizable(False, False)
     root.configure(bg=_BG)
+    # 2026-08-23, живая находка пользователя: этому окну ни разу не ставилась иконка --
+    # оставался голый дефолт Tcl/Tk (значок-"перышко"), не логотип программы. `_Wizard.
+    # build_shell()` уже делает то же самое (iconbitmap + _set_crisp_taskbar_icon() для
+    # чёткости на панели задач, см. её докстринг) -- здесь окно живёт ровно один показ,
+    # хендл иконки закрывается сразу после root.destroy() ниже, отдельный self на
+    # переиспользование между вызовами не нужен (в отличие от _Wizard, тут нет).
+    ico_path = m.resource_path("assets/app.ico")
+    try:
+        root.iconbitmap(ico_path)
+    except Exception:
+        pass
+    notice_hicon = _set_crisp_taskbar_icon(root, ico_path)
 
     result = ["continue"]
 
@@ -650,14 +929,29 @@ def _notice_window(message: str, button_label: str = "Продолжить", sho
         result[0] = choice
         root.quit()
 
-    root.protocol("WM_DELETE_WINDOW", lambda: _close("continue"))
+    # 2026-08-24, живая просьба пользователя: крестик на нотисе "Работа окончена" (show_exit=
+    # True) должен означать то же самое, что кнопка "Выход" -- полный выход из программы, не
+    # "продолжить"/вернуться в меню. Для нотиса БЕЗ развилки (show_exit=False, см.
+    # _show_crash_notice()) поведение не меняется -- там "exit" не имеет смысла (единственная
+    # кнопка -- "Закрыть", возвращаемое значение вызывающая сторона не читает), крестик там
+    # по-прежнему просто "continue".
+    root.protocol("WM_DELETE_WINDOW", lambda: _close("exit" if show_exit else "continue"))
     root.bind("<Return>", lambda _e: _close("continue"))
     root.bind("<Escape>", lambda _e: _close("continue"))
 
     frame = tk.Frame(root, bg=_BG, padx=_px(24), pady=_px(20))
     frame.pack()
     tk.Label(frame, text=message, bg=_BG, fg=_TEXT, font=("Segoe UI", 9), justify="left",
-              wraplength=_px(520)).pack(pady=(0, _px(16)))
+              wraplength=_px(520)).pack(pady=(0, _px(16) if not link_text else _px(4)))
+    if link_text:
+        link = tk.Label(frame, text=link_text, bg=_BG, fg=_GREEN,
+                          font=("Segoe UI", 9, "underline"), justify="left",
+                          wraplength=_px(520), cursor="hand2", anchor="w")
+        link.pack(fill="x", pady=(0, _px(4) if footer_text else _px(16)))
+        link.bind("<Button-1>", lambda _e: link_command())
+    if footer_text:
+        tk.Label(frame, text=footer_text, bg=_BG, fg=_TEXT, font=("Segoe UI", 9), justify="left",
+                  wraplength=_px(520)).pack(pady=(0, _px(16)))
     # Стиль совпадает с кнопками нижней панели мастера (2026-08-22, по прямой просьбе
     # пользователя, "привести к общему виду кнопок") -- раньше единственная акцентная
     # (зелёный фон/белый текст) кнопка во всём интерфейсе, тот же принцип, что уже применён к
@@ -680,7 +974,41 @@ def _notice_window(message: str, button_label: str = "Продолжить", sho
     root.update_idletasks()
     if not _retry and _cap_dpi_scale_to_fit(root, root.winfo_reqwidth(), root.winfo_reqheight()):
         root.destroy()
-        return _notice_window(message, button_label, show_exit, _retry=True)
+        _destroy_hicon(notice_hicon)
+        return _notice_window(message, button_label, show_exit, link_text, link_command,
+                                footer_text, _retry=True)
+
+    # 2026-08-24, живая находка пользователя + диагностика (PHOTOARCHIVE_DIAG_FOCUS, см.
+    # _diag_focus_poll_start()): после того как реальная обработка заканчивается, рабочая
+    # консоль (ещё не свёрнута -- _hide_work_console() зовётся только на СЛЕДУЮЩЕЙ итерации
+    # цикла run_bare_launch(), когда пользователь уже вернулся к мастеру) остаётся настоящим
+    # foreground-окном ОС, пока пользователь сам не кликнет по этому нотису -- Tk просто
+    # ПОКАЗЫВАЕТ новое окно (видно, поверх по Z-order), но не запрашивает для него реальный
+    # foreground сам. Живой лог подтвердил: foreground держит именно консоль (is_console=True)
+    # все ~8с ожидания, переключается на нотис только по клику пользователя. Раньше похожие
+    # попытки (_force_show_normal()/удалённая _reclaim_wizard_focus(), см. CLAUDE.md) звали
+    # SetForegroundWindow() на root.winfo_id() -- НЕ настоящий top-level HWND (тот же урок, что
+    # уже учтён в _set_crisp_taskbar_icon() -- нужен GetAncestor(..., GA_ROOT)), что могло быть
+    # причиной их "нет подтверждённого эффекта". Здесь -- корректный HWND, наш процесс и так уже
+    # foreground (владеет и консолью, и этим нотисом), поэтому SetForegroundWindow() для
+    # СВОЕГО ЖЕ окна не должен подпадать ни под одно ограничение MSDN (не кража фокуса у чужого
+    # процесса). Best-effort -- не должно мочь сломать сам нотис.
+    real_hwnd = None
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        user32.GetAncestor.restype = ctypes.c_void_p
+        user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        user32.SetForegroundWindow.restype = ctypes.c_int
+        user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+        GA_ROOT = 2
+        real_hwnd = user32.GetAncestor(root.winfo_id(), GA_ROOT)
+        if real_hwnd:
+            user32.SetForegroundWindow(real_hwnd)
+    except Exception:
+        pass
+    if diag_notice_hwnd_holder is not None and real_hwnd:
+        diag_notice_hwnd_holder[0] = real_hwnd
 
     job = [None]
 
@@ -699,6 +1027,7 @@ def _notice_window(message: str, button_label: str = "Продолжить", sho
         except tk.TclError:
             pass
     root.destroy()
+    _destroy_hicon(notice_hicon)
     return result[0]
 
 
@@ -716,38 +1045,148 @@ def _show_crash_notice(message: str) -> None:
     _notice_window(message, button_label="Закрыть", show_exit=False)
 
 
-def _reclaim_wizard_focus(root) -> None:
-    """2026-08-23, по прямой просьбе пользователя, живое описание СТАРОГО текстово-меню
-    поведения: после открытия HTML-отчёта в браузере фокус ни на миг не уходил из терминала --
-    ровно то, что делала photosort_win._reclaim_console_focus() (2026-07-21) для консоли (см.
-    её докстринг там же). Первая попытка перенести это на мастер (SetWindowPos(HWND_TOPMOST) с
-    несколькими async-повторами через root.after()) была реализована ИНАЧЕ и оказалась
-    ненадёжной на практике (см. историю в git/SESSION-HANDOFF.txt, несколько раундов живого
-    клик-теста). Эта версия -- та же, доказанно рабочая синхронная схема, что и у консоли:
-    SetForegroundWindow() (без AttachThreadInput/SetWindowPos-трюков) дважды, с той же
-    нарастающей паузой (0.3с, затем ещё 0.7с). Разница с консолью -- ЭТО НОВОЕ окно, ещё ни разу
-    не прошедшее через mainloop() -- голый time.sleep() оставил бы его непрорисованным, пауза
-    разбита на маленькие шаги с root.update() между ними, чтобы окно успевало появиться на
-    экране, сохраняя ту же суммарную временную схему.
+def _ensure_new_wizard_window_normal(root) -> None:
+    """2026-08-23, живая находка пользователя (ручное тестирование): после клика "В главное
+    меню" в нотисе "Работа окончена" новое окно мастера иногда оказывалось СВЁРНУТЫМ -- переход
+    должен выглядеть так же, как между Шагами 1-2-3 самого мастера (одно окно исчезло, другое
+    появилось, оба разворачиваются нормально). Разница именно в этом переходе: внутри мастера
+    смена экранов НЕ создаёт новый `tk.Tk()` (тот же `root`, меняется только `content`) --
+    только здесь (`_run_wizard()` после нотиса) старый `root` уже уничтожен и создаётся
+    ПОЛНОСТЬЮ новый. Синтетически воспроизвести не удалось (несколько изолированных попыток --
+    создание/уничтожение окна-нотиса перед сворачиванием консоли и созданием нового root, через
+    python.exe и pythonw.exe -- ни разу не дали IsIconic()==1), но фикс дешёвый и безопасный в
+    любом случае: явно попросить у Windows нормальное/развёрнутое состояние и один раз (БЕЗ
+    синхронных задержек -- та цена уже признана бесполезной для соседней находки про фокус
+    после отчёта, Раунд 130 ревью, код удалён 2026-08-24 как мёртвый -- см. git-историю, если
+    тема когда-нибудь понадобится снова) забрать фокус. No-op вне Windows и best-effort -- не
+    должна мочь сломать сам мастер.
 
-    Вызывается ТОЛЬКО когда run_bare_launch() только что реально показал отчёт (браузер только
-    что открылся, см. reclaim_focus в _Wizard.build_shell()/_run_wizard()) -- не на каждом
-    создании мастера. No-op вне Windows (см. вызывающую сторону) и best-effort (проглатывает
-    любой сбой ctypes/Tcl) -- не должна мочь сломать сам мастер, худший случай -- фокус просто
-    не вернётся."""
-    import ctypes
-    import time
+    2026-08-24, вторая живая находка пользователя (тот же класс, что и первая, но раньше не
+    пойманный): звалась БЕЗУСЛОВНО из build_shell() сразу после создания голого `root`
+    (заголовок/логотип на месте, но `content` -- ещё заглушка высотой 1px, кнопки `nav` ещё не
+    упакованы, геометрия ещё НЕ отцентрирована -- см. _center_window()/_apply_fixed_content_
+    size(), они выполняются только внутри render_*_screen(), который _cap_and_show() зовёт уже
+    ПОСЛЕ build_shell()). `deiconify()`/`state("normal")`/`SetForegroundWindow()` здесь
+    заставляют Windows реально отобразить окно НЕМЕДЛЕННО, в этом недособранном виде -- маленькое
+    окно в левом верхнем углу экрана (Tk-дефолт для ещё не спозиционированного окна), которое
+    почти сразу дорастает/переезжает в нормальный центрированный вид, когда следующим шагом
+    отрабатывает render_mode_screen(). Раньше комментарий в build_shell() ошибочно утверждал
+    "заглушка невидима пользователю... _cap_and_show() центрирует до первой прорисовки на
+    экране" -- неверно ИМЕННО из-за этого безусловного вызова, который сам форсировал прорисовку
+    раньше времени. Вызывающая сторона перенесена в _cap_and_show() (после render_fn() и
+    DPI-cap-цикла, когда содержимое и геометрия уже окончательны) -- окно теперь становится
+    видимым/переднеплановым только один раз, уже в готовом виде, без промежуточного кадра."""
     try:
+        root.deiconify()
+        root.state("normal")
+    except Exception:
+        pass
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
         hwnd = root.winfo_id()
         user32 = ctypes.windll.user32
         user32.SetForegroundWindow.restype = ctypes.c_int
         user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
-        for delay in (0.3, 0.7):
-            end = time.time() + delay
-            while time.time() < end:
-                root.update()
-                time.sleep(0.02)
-            user32.SetForegroundWindow(hwnd)
+        user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+
+
+def _set_crisp_taskbar_icon(root, ico_path: str, prev_hicon=None):
+    """2026-08-23, живая находка пользователя: иконка мастера в панели задач выглядела заметно
+    размытой при запуске (Шаг 1-2), но становилась чёткой сразу после Шага 3, когда появляется
+    рабочая консоль (`_ensure_work_console()`, `photosort_win.py`) -- та иконку НЕ выставляет
+    вообще, просто наследует иконку процесса из PE-ресурсов `.exe` (`--icon` в `build.bat`),
+    которую Windows Explorer извлекает сам, с корректным выбором разрешения под DPI.
+
+    Причина найдена диагностикой (не догадкой) -- живой `WM_GETICON`/`GetIconInfo` на реальном
+    Tk-окне после `root.iconbitmap(ico_path)` (см. вызов выше) показал: Tk грузит из
+    многоразмерного `.ico` (16/24/32/48/64/128/256, см. `assets/app.ico`) только один-единственный
+    кадр 32×32 -- и ставит его И на `ICON_SMALL`, И на `ICON_BIG` (тот самый hicon у обоих). На
+    таскбаре, отрисовываемом крупнее 32px (что угодно выше 100% DPI-масштаба), Windows вынужден
+    растягивать этот маленький кадр -- отсюда размытие. Иконка процесса (консоль) размытой не
+    была, потому что её извлекает сам Explorer/DWM, умеющий доставать из ресурса `.exe` кадр
+    подходящего разрешения самостоятельно -- Tk's `iconbitmap()` этого не делает.
+
+    Фикс -- не полагаться на `iconbitmap()` для крупной иконки: грузим кадр 256×256 напрямую
+    (`LoadImageW`, тот же .ico-файл) и выставляем его через `WM_SETICON`/`ICON_BIG` явно.
+    Загрузка большого кадра и downscale Windows'ом при отрисовке (таскбар/Alt-Tab меньше 256px)
+    всегда даёт чёткую картинку — в отличие от upscale маленького кадра, который и вызывал
+    размытие. `ICON_SMALL` (заголовок окна, обычно и так 16-32px) не трогаем -- там `iconbitmap()`
+    уже даёт корректный результат, размытие было только в панели задач.
+
+    prev_hicon (Раунд 134 ревью, замечание): `LoadImageW()` создаёт НОВЫЙ GDI-объект при
+    КАЖДОМ вызове -- в отличие от иконки, которой раньше владел сам Tk, вручную загруженный
+    хендл обязан освобождать вызывающий код (`DestroyIcon()`), иначе он копится на каждую
+    итерацию `run_bare_launch()`'s цикла (новый `_Wizard()` на каждый возврат в меню, см. его
+    докстринг) и удваивается на DPI-overflow retry (`_cap_and_show()`, `wiz.build_shell(
+    _retry=True)` на том же `_Wizard`). Вызывающая сторона (`build_shell()`) хранит хендл на
+    `self._taskbar_hicon` и передаёт его следующим вызовом этой же функции -- прошлый хендл
+    освобождается ЗДЕСЬ, сразу после того как новый успешно встал на место (не раньше -- если
+    новая загрузка/`WM_SETICON` не удались, старая иконка должна остаться рабочей, не потеряться
+    вместе с уничтоженным хендлом), возвращаемое значение -- новый хендл для следующего раза.
+    `_Wizard.destroy()` освобождает последний хендл при реальном выходе из мастера.
+
+    No-op вне Windows и best-effort (проглатывает любой сбой ctypes/файла) -- та же
+    осторожность, что и у остальных win32-хелперов этого файла: не должна мочь сломать сам
+    мастер."""
+    if os.name != "nt":
+        return prev_hicon
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        user32.GetAncestor.restype = ctypes.c_void_p
+        user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        user32.LoadImageW.restype = ctypes.c_void_p
+        user32.LoadImageW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint,
+                                       ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+        user32.SendMessageW.restype = ctypes.c_void_p
+        user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                                         ctypes.c_void_p, ctypes.c_void_p]
+        GA_ROOT = 2
+        WM_SETICON = 0x0080
+        ICON_BIG = 1
+        IMAGE_ICON = 1
+        LR_LOADFROMFILE = 0x00000010
+        real_hwnd = user32.GetAncestor(root.winfo_id(), GA_ROOT)
+        hicon_big = user32.LoadImageW(None, ico_path, IMAGE_ICON, 256, 256, LR_LOADFROMFILE)
+        if real_hwnd and hicon_big:
+            user32.SendMessageW(real_hwnd, WM_SETICON, ICON_BIG, hicon_big)
+            if prev_hicon:
+                user32.DestroyIcon(prev_hicon)
+            return hicon_big
+    except Exception:
+        pass
+    return prev_hicon
+
+
+def _destroy_hicon(hicon) -> None:
+    """Парная к _set_crisp_taskbar_icon() -- освобождает хендл, возвращённый ею, когда окно,
+    которому он принадлежал, реально закрывается (не пересобирается, см. вызывающие места).
+    No-op вне Windows/при hicon=None и best-effort -- тот же принцип, что и у самой
+    _set_crisp_taskbar_icon()."""
+    if not hicon or os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.user32.DestroyIcon(hicon)
+    except Exception:
+        pass
+
+
+_SITE_URL_DISPLAY = "vo1012.github.io/PhotoArchive"  # 2026-08-23: короткая форма m.SITE_URL
+# (без "https://") для футера экрана 1 -- сама ссылка (клик) идёт на m.SITE_URL целиком, это
+# только то, что видно в интерфейсе.
+
+
+def _open_site_link() -> None:
+    """2026-08-23, по прямой просьбе пользователя (футер экрана 1: версия/автор/ссылка на
+    сайт) -- best-effort, тот же паттерн, что и у photosort_win._open_report_in_browser()
+    (тоже голый webbrowser.open() в try/except, не должна мочь сломать сам мастер)."""
+    try:
+        m.webbrowser.open(m.SITE_URL)
     except Exception:
         pass
 
@@ -765,15 +1204,30 @@ class _Wizard:
         self.back_btn = None
         self.cancel_btn = None
         self.next_btn = None
+        self.nav = None
+        self.footer = None  # см. build_shell()/render_mode_screen() -- футер версии/ссылки
         self.state = {"mode": None, "source": None, "target": None, "target_comment": None}
         self.action = None  # "next" / "back" / "cancel"
         self._keep_alive_job = [None]
+        self._taskbar_hicon = None  # см. _set_crisp_taskbar_icon()/destroy() -- Раунд 134 ревью
 
-    def build_shell(self, _retry: bool = False, reclaim_focus: bool = False) -> None:
+    def build_shell(self, _retry: bool = False) -> None:
         import tkinter as tk
 
         _configure_dpi_awareness()
         root = tk.Tk()
+        # 2026-08-24, живая находка пользователя (второй заход -- первая попытка, перенос
+        # _ensure_new_wizard_window_normal() из build_shell() в _cap_and_show(), не помогла):
+        # диагностика по кадрам (EnumWindows-полинг каждые ~5мс через реальный собранный .exe)
+        # показала, что окно становится visible=True размером ~79x101 (крошечное, ~1/10 от
+        # финального) ЗАДОЛГО до того, как содержимое/геометрия готовы -- Tk-окно видимо по
+        # умолчанию СРАЗУ после tk.Tk(), задолго до первого явного deiconify()/geometry(); одно
+        # только ОТКЛАДЫВАНИЕ момента вызова "показать нормально" ничего не меняет, если само
+        # окно никогда не было спрятано. withdraw() здесь -- пока голое, без единого виджета --
+        # прячет его физически; _ensure_new_wizard_window_normal() (см. _cap_and_show(), зовётся
+        # уже после того, как render_fn() и DPI-cap-цикл дали окну финальные content/геометрию)
+        # деiconify'ит его уже полностью готовым, без промежуточного крошечного кадра.
+        root.withdraw()
         if not _retry:
             # На повторной сборке (см. _cap_dpi_scale_to_fit() ниже) _dpi_scale уже осознанно
             # уменьшен под конкретный экран -- пересчитывать его здесь заново значило бы
@@ -789,10 +1243,12 @@ class _Wizard:
         # try/except -- iconbitmap() требует .ico именно на Windows (на других платформах Tk
         # ждёт другой формат), падать из-за иконки не должны ни там, ни если файл почему-то не
         # нашёлся.
+        ico_path = m.resource_path("assets/app.ico")
         try:
-            root.iconbitmap(m.resource_path("assets/app.ico"))
+            root.iconbitmap(ico_path)
         except Exception:
             pass
+        self._taskbar_hicon = _set_crisp_taskbar_icon(root, ico_path, self._taskbar_hicon)
 
         header = tk.Frame(root, bg=_BG, height=_px(56))
         header.pack(fill="x")
@@ -820,7 +1276,10 @@ class _Wizard:
         # центрирует -- content ещё пуст (ни один render_*_screen() не вызван), заглушка
         # невидима пользователю: следующим же шагом вызывающая сторона (_cap_and_show())
         # вызывает render, который сам ставит нужную константу и центрирует до первой
-        # прорисовки на экране.
+        # прорисовки на экране. Это утверждение реально верно, только пока ничто в build_shell()
+        # не форсирует показ окна раньше срока -- см. _ensure_new_wizard_window_normal()'s
+        # докстринг, 2026-08-24: раньше именно это тут и происходило (безусловный вызов в конце
+        # build_shell()), заглушка была видна как вспышка маленького окна в углу экрана.
         content = tk.Frame(root, bg=_BG, padx=_px(24), pady=_px(10),
                             width=_px(_CONTENT_WIDTH), height=1)
         content.pack_propagate(False)
@@ -852,6 +1311,23 @@ class _Wizard:
         # "Выход" там стал полноценным пунктом списка режимов, "Назад"/"Далее" на первом шаге
         # были бы кнопками в никуда).
 
+        # Футер версии/автора/ссылки (2026-08-23, по прямой просьбе пользователя) -- живёт
+        # ЗДЕСЬ, в уже существующей фиксированной 60px `nav`, не в `content` (см. докстринг
+        # _MODE_SCREEN_HEIGHT за историей двух неудачных попыток добавить высоту content вместо
+        # этого). На экране 1 (единственном, где он виден -- см. _configure_nav()) `nav`
+        # полностью пуста (ни одна из трёх кнопок не показана), место уже зарезервировано,
+        # ничего не растёт. self.nav сохранена на self, чтобы render_mode_screen()/
+        # _configure_nav() могли обращаться к footer -- сам widget создан один раз здесь (как
+        # back_btn/cancel_btn/next_btn выше), не пересоздаётся на каждый рендер экрана.
+        self.footer = tk.Frame(nav, bg=_BG)
+        tk.Label(self.footer, text=f"Версия {m.__version__} · {m.__copyright__} · ", bg=_BG,
+                  fg=_MUTED, font=("Segoe UI", 8)).pack(side="left")
+        site_link = tk.Label(self.footer, text=_SITE_URL_DISPLAY, bg=_BG, fg=_GREEN,
+                               font=("Segoe UI", 8, "underline"), cursor="hand2")
+        site_link.pack(side="left")
+        site_link.bind("<Button-1>", lambda _e: _open_site_link())
+        self.nav = nav
+
         # DPI-cap (_cap_dpi_scale_to_fit()) здесь больше НЕ проверяется -- своя фиксированная
         # константа высоты на каждый экран (_MODE_SCREEN_HEIGHT/_PATHS_SCREEN_HEIGHT/_CONFIRM_
         # SCREEN_HEIGHT, ставится _apply_fixed_content_size() в конце render_*_screen()) --
@@ -873,22 +1349,14 @@ class _Wizard:
         # 2026-08-23, второй заход (по прямой просьбе пользователя, живое описание СТАРОГО
         # текстово-меню поведения): в текстовом меню окно браузера открывалось видимо, но
         # фокус ни на миг не уходил из терминала -- ровно то, что делала
-        # _reclaim_console_focus() выше. Первая попытка фикса для мастера (SetWindowPos(
-        # HWND_TOPMOST) с несколькими async-повторами через root.after()) была РЕАЛИЗОВАНА
-        # ИНАЧЕ и оказалась ненадёжной на практике -- эта версия просто переносит ТУ ЖЕ,
-        # доказанно рабочую синхронную схему на мастер: SetForegroundWindow() (без
-        # AttachThreadInput/SetWindowPos-трюков) дважды, с той же нарастающей паузой
-        # (0.3с, затем ещё 0.7с). Разница с консолью -- ЭТО НОВОЕ окно, ещё ни разу не
-        # прошедшее через mainloop(), голый time.sleep() оставил бы его непрорисованным --
-        # пауза разбита на маленькие шаги с root.update() между ними, чтобы окно успевало
-        # появиться на экране, сохраняя ту же суммарную временную схему.
+        # _reclaim_console_focus() выше. Перенос той же синхронной схемы на мастер
+        # (SetForegroundWindow() дважды, с нарастающей паузой) не подтвердил эффекта на живом
+        # клик-тесте (Раунд 130 ревью) -- код удалён 2026-08-24 как мёртвый (см. git-историю,
+        # если тема когда-нибудь понадобится снова).
         #
-        # ОТКЛЮЧЕНО (Раунд 130 ревью, см. run_bare_launch()'s вызов _run_wizard()) --
-        # run_bare_launch() сейчас всегда передаёт reclaim_focus=False, эта ветка в
-        # продакшене не исполняется. Оставлено на будущее, не мёртвый код.
-        if reclaim_focus and os.name == "nt":
-            _reclaim_wizard_focus(root)
-
+        # _ensure_new_wizard_window_normal() НЕ зовётся здесь (звалась раньше, до 2026-08-24) --
+        # см. её докстринг за причиной (звать нужно ПОСЛЕ того, как экран реально нарисован и
+        # отцентрирован, не сразу после создания голого root).
         self.root = root
         self.content = content
         self._start_keep_alive()
@@ -960,6 +1428,12 @@ class _Wizard:
 
     def destroy(self) -> None:
         self._stop_keep_alive()
+        # см. _set_crisp_taskbar_icon()/_destroy_hicon() -- Раунд 134 ревью: последний хендл,
+        # оставшийся после DPI-retry цепочки (та освобождает все ПРОМЕЖУТОЧНЫЕ сама сразу при
+        # пересборке), освобождается здесь -- реальный выход из мастера, дальше root уже не
+        # будет пересобираться.
+        _destroy_hicon(self._taskbar_hicon)
+        self._taskbar_hicon = None
         self.root.destroy()
 
     def _clear_content(self) -> None:
@@ -969,6 +1443,11 @@ class _Wizard:
     def _configure_nav(self, back_enabled: bool, next_label, next_enabled: bool,
                         next_command, show_cancel: bool = True) -> None:
         import tkinter as tk
+        # Футер (2026-08-23) -- по умолчанию скрыт на КАЖДОМ вызове (безусловно, до всей
+        # остальной логики этого метода) -- только render_mode_screen() показывает его заново
+        # ПОСЛЕ этого вызова (см. её докстринг). Экраны 2/3 никогда его не запрашивают, значит
+        # он остаётся скрытым для них автоматически, без отдельного if/else здесь.
+        self.footer.pack_forget()
         # Каждая из трёх кнопок нижней панели скрывается целиком (pack_forget), не просто
         # дизейблится, когда неактуальна на текущем экране -- показывать серую кнопку без
         # действия было бы лишним визуальным шумом (экран 1 вообще не показывает ни одной --
@@ -1036,6 +1515,11 @@ class _Wizard:
         # явного snятия Enter на этом экране тихо вызывал бы чужую логику предыдущего шага.
         self._configure_nav(back_enabled=False, next_label=None, next_enabled=False,
                              next_command=lambda: None, show_cancel=False)
+        # Футер версии/автора/ссылки -- ТОЛЬКО этот экран (см. build_shell()/_configure_nav()
+        # за тем, почему это не растит высоту окна: живёт в уже пустой на этом экране nav, не
+        # в content). Показывается ПОСЛЕ _configure_nav() выше -- та безусловно прячет его в
+        # начале каждого вызова (см. её докстринг), сюда возвращается только явным pack() здесь.
+        self.footer.pack(side="left")
         self.root.unbind("<Return>")
         self.root.bind("<Escape>", lambda _e: self._on_close())
         self._apply_fixed_content_size(_MODE_SCREEN_HEIGHT)
@@ -1182,7 +1666,7 @@ class _Wizard:
         mode = self.state["mode"]
         if mode == "passport":
             return _describe_passport_target(self.state["target"])
-        return _describe_target(mode, self.state["target"])
+        return _describe_target(mode, self.state["target"], self.state["source"])
 
     def _paths_valid(self) -> bool:
         mode = self.state["mode"]
@@ -1190,7 +1674,9 @@ class _Wizard:
             return self.state["source"] is not None
         if mode == "passport":
             return self.state["target"] is not None and self._compute_target_info()["ok"]
-        return self.state["source"] is not None and self.state["target"] is not None
+        if self.state["source"] is None or self.state["target"] is None:
+            return False
+        return self._compute_target_info()["ok"]
 
     def _confirm_paths(self) -> None:
         mode = self.state["mode"]
@@ -1275,21 +1761,20 @@ def _cap_and_show(wiz: "_Wizard", render_fn) -> None:
         wiz.root.destroy()
         wiz.build_shell(_retry=True)
         render_fn()
+    # 2026-08-24, живая находка пользователя: содержимое и геометрия (_center_window(), внутри
+    # render_fn()) уже окончательны на этом месте -- самое ПОЗДНЕЕ безопасное место звать
+    # deiconify()/foreground (см. _ensure_new_wizard_window_normal()'s докстринг за причиной,
+    # почему звать её раньше, из build_shell(), давало видимую вспышку недорисованного окна).
+    _ensure_new_wizard_window_normal(wiz.root)
 
 
-def _run_wizard(reclaim_focus: bool = False) -> dict:
+def _run_wizard() -> dict:
     """Один полный проход экранов 1->2->3. Возвращает {"mode", "source", "target"} после
     "Начать" на экране 3. m._GuiExplicitExit (2026-08-22, Раунд 123 ревью -- был голый
     KeyboardInterrupt, см. её докстринг в photosort_win.py) -- крестик/Escape/"Выход из
-    программы" на любом экране (см. _Wizard._on_close).
-
-    reclaim_focus -- прокидывается в build_shell() как есть. ОТКЛЮЧЕНО (Раунд 130 ревью):
-    единственный вызывающий код (run_bare_launch()) сейчас всегда передаёт False -- механизм
-    подтверждённо не решал проблему "окно позади браузера", ценой была секунда синхронной
-    задержки на каждый возврат из отчёта. Параметр и _reclaim_wizard_focus() оставлены
-    нетронутыми на будущее, не мёртвый код для удаления без причины."""
+    программы" на любом экране (см. _Wizard._on_close)."""
     wiz = _Wizard()
-    wiz.build_shell(reclaim_focus=reclaim_focus)
+    wiz.build_shell()
     screen = "mode"
     try:
         while True:
@@ -1351,11 +1836,7 @@ def run_bare_launch(log=print) -> None:
         # Windows; на повторных итерациях прячет уже существующее окно (не закрывает -- см. её
         # докстринг про то, почему ShowWindow(SW_HIDE), а не FreeConsole()).
         m._hide_work_console()
-        # reclaim_focus=False всегда -- Раунд 130 ревью: подтверждённо бесполезная секунда
-        # синхронной задержки на каждый возврат из отчёта (пользователь протестировал живьём,
-        # эффекта не было), _reclaim_wizard_focus() сама и её тесты оставлены на будущее, если
-        # для темы "окно позади браузера" найдётся рабочий механизм.
-        result = _run_wizard(reclaim_focus=False)
+        result = _run_wizard()
         mode = result["mode"]
 
         # До этой точки консоль этого процесса отсоединена (_main() зовёт
@@ -1373,18 +1854,25 @@ def run_bare_launch(log=print) -> None:
 
         if mode == "view":
             report_path = m._bare_launch_run_view([result["source"]], log=log)
-            m._pause_for_report(report_path, input_fn=_make_ok_input_fn(report_path), log=log)
+            m._pause_for_report(
+                report_path,
+                input_fn=_make_ok_input_fn(report_path, count_label="Найдено объектов"),
+                log=log, auto_open_browser=False)
             continue
 
         if mode == "passport":
             report_path = m._bare_launch_run_passport(result["target"], log=log)
-            m._pause_for_report(report_path, input_fn=_make_ok_input_fn(report_path), log=log)
+            m._pause_for_report(
+                report_path,
+                input_fn=_make_ok_input_fn(report_path, count_label="Найдено объектов"),
+                log=log, auto_open_browser=False)
             continue
 
         if mode == "dry_run":
             report_path = m._bare_launch_run_dryrun([result["source"]], result["target"],
                                                       input_fn=_auto_yes_input_fn, log=log)
-            m._pause_for_report(report_path, input_fn=_make_ok_input_fn(report_path), log=log)
+            m._pause_for_report(report_path, input_fn=_make_ok_input_fn(report_path), log=log,
+                                 auto_open_browser=False)
             continue
 
         report_path = m._bare_launch_run_build([result["source"]], result["target"],
@@ -1392,5 +1880,6 @@ def run_bare_launch(log=print) -> None:
         if report_path is None:
             log("  Возвращаемся в главное меню.")
         else:
-            m._pause_for_report(report_path, input_fn=_make_ok_input_fn(report_path), log=log)
+            m._pause_for_report(report_path, input_fn=_make_ok_input_fn(report_path), log=log,
+                                 auto_open_browser=False)
         continue

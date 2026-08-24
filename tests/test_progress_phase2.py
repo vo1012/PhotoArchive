@@ -521,8 +521,56 @@ def test_handle_archive_sets_and_clears_transient_op_around_extraction(tmp_path)
     walker = m.SourceWalker(cfg, log=lambda *a, **k: None, transient_op_cb=ops.append)
     list(walker.walk())
 
-    assert any(op is not None and "распаковка" in op for op in ops)
+    assert any(op is not None and "Извлекаю" in op for op in ops)
     assert ops[-1] is None  # cleared again after extraction, whether it succeeded or not
+
+
+def test_log_own_line_uses_heavy_notice_cb_without_leading_newline(tmp_path):
+    """Живая находка пользователя, 2026-08-24 (третий заход -- фикс "\\n" устранил склейку, но
+    открыл дублирование/"уезжание вверх" статус-строки, т.к. бар не переиспользовал свою
+    строку): heavy_notice_cb -- прямая ссылка на бар (ProgressReporter.write_heavy_notice()),
+    вызывается с СЫРЫМ текстом без добавленного "\n" -- сам bar.clear() перед печатью уже
+    гарантирует чистую строку, второй перевод строки был бы лишним пустым отступом."""
+    source = tmp_path / "source"
+    source.mkdir()
+    tar_path = source / "album.tar"
+    with tarfile.open(tar_path, "w") as tf:
+        p = tmp_path / "a.jpg"
+        p.write_bytes(b"x" * 10)
+        tf.add(p, arcname="a.jpg")
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)
+    notices = []
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None, heavy_notice_cb=notices.append)
+    list(walker.walk())
+
+    assert notices  # at least the extraction notice fired
+    assert any("Распаковка" in n for n in notices)
+    assert not any(n.startswith("\n") for n in notices)
+
+
+def test_log_own_line_falls_back_to_log_with_leading_newline_without_cb(tmp_path):
+    """Симметричный случай -- без heavy_notice_cb (analyze-режимы без two_line-бара и т.п.):
+    старое поведение (self.log("\\n" + msg)) остаётся как есть, координировать не с чем, но и
+    склеить с чем-то на экране тоже, безопасный фолбэк."""
+    source = tmp_path / "source"
+    source.mkdir()
+    tar_path = source / "album.tar"
+    with tarfile.open(tar_path, "w") as tf:
+        p = tmp_path / "a.jpg"
+        p.write_bytes(b"x" * 10)
+        tf.add(p, arcname="a.jpg")
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)
+    lines = []
+    walker = m.SourceWalker(cfg, log=lines.append)
+    list(walker.walk())
+
+    extraction_lines = [ln for ln in lines if "Распаковка" in ln]
+    assert extraction_lines
+    assert all(ln.startswith("\n") for ln in extraction_lines)
 
 
 def test_handle_archive_shows_razbor_arhiva_during_content_walk(tmp_path):
@@ -546,12 +594,11 @@ def test_handle_archive_shows_razbor_arhiva_during_content_walk(tmp_path):
     walker = m.SourceWalker(cfg, log=lambda *a, **k: None, transient_op_cb=ops.append)
     list(walker.walk())
 
-    # Не точная последовательность -- "проверяю отложенное содержимое…" (_open_deferred_gap(),
-    # существующая, отдельная механика) законно перемежается с "разбор архива" (она же --
-    # фолбэк _close_deferred_gap(), пока обход внутри архива, см. её докстрин): важно, что
-    # "разбор архива" реально появляется, и что поле гасится в None РОВНО ОДИН раз -- в самом
-    # конце, а не где-то посреди обхода.
-    assert "разбор архива" in ops
+    # Не точная последовательность -- "Смотрю" (_open_deferred_gap(), существующая, отдельная
+    # механика) законно перемежается с "В архиве" (она же -- фолбэк _close_deferred_gap(), пока
+    # обход внутри архива, см. её докстрин): важно, что "В архиве" реально появляется, и что
+    # поле гасится в None РОВНО ОДИН раз -- в самом конце, а не где-то посреди обхода.
+    assert m._ARCHIVE_CONTENT_TRANSIENT_OP in ops
     assert ops.count(None) == 1
     assert ops[-1] is None
 
@@ -582,14 +629,14 @@ def test_handle_archive_razbor_arhiva_persists_through_nested_archive(tmp_path):
     walker = m.SourceWalker(cfg, log=lambda *a, **k: None, transient_op_cb=ops.append)
     list(walker.walk())
 
-    # "разбор архива" может законно повториться (фолбэк _close_deferred_gap(), см. её
-    # докстрин) -- ключевая гарантия не "ровно один раз", а что None НЕ появляется, пока
-    # обработка вложенного архива идёт внутри внешнего: поле гасится в None РОВНО ОДИН раз --
-    # только когда весь внешний архив (включая вложенный) уже полностью обработан.
-    assert "разбор архива" in ops
+    # "В архиве" может законно повториться (фолбэк _close_deferred_gap(), см. её докстрин) --
+    # ключевая гарантия не "ровно один раз", а что None НЕ появляется, пока обработка вложенного
+    # архива идёт внутри внешнего: поле гасится в None РОВНО ОДИН раз -- только когда весь
+    # внешний архив (включая вложенный) уже полностью обработан.
+    assert m._ARCHIVE_CONTENT_TRANSIENT_OP in ops
     assert ops.count(None) == 1
     assert ops[-1] is None
-    assert ops.index("разбор архива") < ops.index(None)
+    assert ops.index(m._ARCHIVE_CONTENT_TRANSIENT_OP) < ops.index(None)
 
 
 def test_handle_archive_extracted_log_line_suppressed_when_count_matches_listing(tmp_path):
@@ -1247,6 +1294,35 @@ def test_two_line_status_shows_elapsed_time_before_rate(monkeypatch):
     bar.close()
 
 
+def test_console_columns_returns_real_terminal_width(monkeypatch):
+    # REVIEW-HANDOFF.md, Раунд 134, придирка: все существующие тесты подменяют
+    # _console_columns() целиком (лямбдой), ни один не гоняет её РЕАЛЬНОЕ тело -- эти три теста
+    # мокают то, что _console_columns() читает (os.get_terminal_size()), а не саму функцию.
+    fake_size = m.os.terminal_size((137, 40))
+    monkeypatch.setattr(m.os, "get_terminal_size", lambda fd: fake_size)
+    assert m._console_columns() == 137
+
+
+def test_console_columns_falls_back_when_stdout_has_no_fileno(monkeypatch):
+    # sys.__stdout__-ловушка (см. _console_columns()'s докстринг) -- windowed-сборка стартует
+    # с sys.stdout=None до AllocConsole(); .fileno() на None -- AttributeError.
+    class _NoFileno:
+        pass
+
+    monkeypatch.setattr(m.sys, "stdout", _NoFileno())
+    assert m._console_columns(fallback=42) == 42
+
+
+def test_console_columns_falls_back_on_os_error(monkeypatch):
+    # stdout.fileno() существует, но реального терминала нет (файл/пайп) -- os.get_terminal_size()
+    # поднимает OSError на такой fd, тот же путь, что и раньше покрывал shutil-обёртку.
+    def _raise(fd):
+        raise OSError("not a terminal")
+
+    monkeypatch.setattr(m.os, "get_terminal_size", _raise)
+    assert m._console_columns(fallback=55) == 55
+
+
 def test_two_line_status_drops_elapsed_field_when_terminal_too_narrow(monkeypatch):
     # Речь пользователя, 2026-08-07 ("нужно не допустить переноса строки статуса"): время --
     # единственное поле, добавленное этой правкой, не часть уже проверенного пользователем на
@@ -1263,8 +1339,7 @@ def test_two_line_status_drops_elapsed_field_when_terminal_too_narrow(monkeypatc
     bar = _two_line_bar()
     monkeypatch.setattr(bar, "_t0", bar._t0 - 20)  # 20s elapsed -> "00:20", однозначный маркер поля
     monkeypatch.setattr(m.sys.stderr, "isatty", lambda: True)
-    monkeypatch.setattr(m.shutil, "get_terminal_size",
-                         lambda fallback=(80, 24): m.os.terminal_size((80, 24)))
+    monkeypatch.setattr(m, "_console_columns", lambda fallback=80: 80)
     line = bar._build_two_line_status()
     assert "00:20" not in line
     assert "с/файл" not in line
@@ -1284,8 +1359,7 @@ def test_two_line_status_fits_80_columns_even_for_longest_op_description(monkeyp
                               two_line=True, total_estimate=100)
     bar.add_object_progress(42)
     monkeypatch.setattr(m.sys.stderr, "isatty", lambda: True)
-    monkeypatch.setattr(m.shutil, "get_terminal_size",
-                         lambda fallback=(80, 24): m.os.terminal_size((80, 24)))
+    monkeypatch.setattr(m, "_console_columns", lambda fallback=80: 80)
     line = bar._build_two_line_status()
     assert len(line) <= 80, (len(line), line)
     assert "обработано объектов" in line  # ключевой сигнал сохранён даже при обрезке текста
@@ -1308,9 +1382,8 @@ def test_two_line_status_fits_below_55_columns_by_dropping_media_count_field(mon
     bar.add_object_progress(42)
     monkeypatch.setattr(m.sys.stderr, "isatty", lambda: True)
     for columns in (40, 30):
-        monkeypatch.setattr(m.shutil, "get_terminal_size",
-                             lambda fallback=(80, 24), columns=columns:
-                             m.os.terminal_size((columns, 24)))
+        monkeypatch.setattr(m, "_console_columns",
+                             lambda fallback=80, columns=columns: columns)
         line = bar._build_two_line_status()
         assert len(line) <= columns, (columns, len(line), line)
         assert "обработано объектов" in line
@@ -1339,22 +1412,78 @@ def test_two_line_status_op_field_width_sized_per_bar_not_global_max():
     """Речь пользователя, 2026-08-11: раньше ширина поля операции (_TWO_LINE_OP_FIELD_WIDTH,
     удалена) считалась ОДНИМ общим максимумом по ВСЕМ resting-desc программы разом (Раунд 67
     сознательно к этому и привёл -- см. архивную версию этого теста в git-истории) -- на
-    практике это разбухало пустым местом для короткого resting-текста (например,
-    "analyze — метаданные источника", 30 символов) до ширины самого длинного из ВСЕХ
-    ("analyze (Паспорт архива) — метаданные + хеширование", 51 символ), даже когда эти два
-    режима физически не могут появиться в одном прогоне. Теперь self._op_field_width считается
-    ПО КАЖДОМУ бару отдельно (max его собственного desc и _MAX_TRANSIENT_OP_LEN) -- короткий
-    resting-desc больше не тащит за собой чужую ширину, колонка "| всего медиа" у него теперь
-    ближе к началу строки, а не на одной вертикали с самым длинным desc программы."""
+    практике это разбухало пустым местом для короткого resting-текста до ширины самого
+    длинного из ВСЕХ, даже когда эти два режима физически не могут появиться в одном прогоне.
+    Теперь self._op_field_width считается ПО КАЖДОМУ бару отдельно (max его собственного desc и
+    _MAX_TRANSIENT_OP_LEN) -- короткий resting-desc больше не тащит за собой чужую ширину.
+
+    2026-08-24: "длинный" desc здесь -- синтетическая строка, не производственная константа --
+    раньше тест сравнивал против m._ANALYZE_PASSPORT_PROGRESS_DESC, но эта строка сама была
+    сокращена в этом же коммите (живая просьба пользователя, "очень длинное название") --
+    завязка на КОНКРЕТНУЮ production-константу делает тест хрупким к будущим сокращениям текста,
+    хотя проверяется МЕХАНИЗМ (per-bar ширина), не конкретное значение этой строки."""
     short_bar = _two_line_bar()  # "Разбираю и копирую файлы" (24 символа)
-    long_bar = m.ProgressReporter(total=None, desc=m._ANALYZE_PASSPORT_PROGRESS_DESC,
-                                   unit="файл", two_line=True)  # 51 символ
+    long_desc = "Э" * 60  # заведомо длиннее любого resting-desc и порога транзиентных текстов
+    long_bar = m.ProgressReporter(total=None, desc=long_desc, unit="файл", two_line=True)
     short_pos = short_bar._build_two_line_status().index("| всего медиа")
     long_pos = long_bar._build_two_line_status().index("| всего медиа")
     assert short_pos < long_pos
-    assert long_pos - short_pos == len(m._ANALYZE_PASSPORT_PROGRESS_DESC) - short_bar._op_field_width
+    assert long_pos - short_pos == len(long_desc) - short_bar._op_field_width
     short_bar.close()
     long_bar.close()
+
+
+class TestPhaseDescNamesDontRepeatModeFromHeader:
+    """Живая просьба пользователя, 2026-08-24: название режима теперь и так есть в шапке
+    параметров запуска (_log_run_start_header(), печатается ДО этих resting-текстов) -- не
+    нужно повторять его тут, тратя место в поле операции статус-строки. Заодно
+    _ANALYZE_PASSPORT_PROGRESS_DESC (используется и для реального self_scan="Паспорт архива",
+    и для голого CLI "analyze --source" без self_scan) больше не называет режим "Паспорт
+    архива" безусловно -- раньше это было неточно для второго случая (не паспорт вообще)."""
+
+    def test_no_desc_contains_a_mode_name_or_the_word_analyze(self):
+        mode_words = ["Паспорт архива", "Пробный прогон", "Сборка архива",
+                      "Сканирование источника", "analyze", "passport"]
+        descs = [m._DRY_RUN_PHASE_DESC, m._BUILD_PHASE_DESC,
+                 m._ANALYZE_QUICK_PROGRESS_DESC, m._ANALYZE_PASSPORT_PROGRESS_DESC]
+        for desc in descs:
+            for word in mode_words:
+                assert word.lower() not in desc.lower(), (desc, word)
+
+    def test_analyze_descs_are_shorter_than_before_this_fix(self):
+        """Регрессия по значению, не только по отсутствию слов режима -- реальная экономия
+        места в поле операции, не просто перефразировка той же длины."""
+        assert len(m._ANALYZE_QUICK_PROGRESS_DESC) < len("analyze — метаданные источника")
+        assert len(m._ANALYZE_PASSPORT_PROGRESS_DESC) < \
+            len("analyze (Паспорт архива) — метаданные + хеширование")
+        assert len(m._DRY_RUN_PHASE_DESC) < len("Проверяю источник (пробный прогон)")
+
+    def test_all_phase_descs_fit_the_length_cap(self):
+        """Живая просьба пользователя, 2026-08-24 (третий заход, прямая цифра): жёсткий потолок
+        длины -- 2/3 от длины "Хеширую и читаю метаданные файлов" (33 символа, та самая строка,
+        которую пользователь назвал "очень длинное название") = 22 символа. Регрессия на
+        будущее -- если кто-то снова удлинит один из этих текстов, тест должен покраснеть, не
+        полагаться на то, что кто-то вручную заметит и посчитает символы.
+
+        Пятый заход (SESSION-HANDOFF.txt, "ты не доделал"): транзиентные тексты (способные
+        ВРЕМЕННО заменить эти же resting-тексты в том же поле, см. _MAX_TRANSIENT_OP_LEN) под
+        тем же потолком -- та же регрессия на будущее, не только для resting."""
+        descs = [m._DRY_RUN_PHASE_DESC, m._BUILD_PHASE_DESC,
+                 m._ANALYZE_QUICK_PROGRESS_DESC, m._ANALYZE_PASSPORT_PROGRESS_DESC,
+                 m._DEFERRED_CONTENT_TRANSIENT_OP, m._ARCHIVE_CONTENT_TRANSIENT_OP]
+        for desc in descs:
+            assert len(desc) <= m._PHASE_DESC_MAX_LEN, (desc, len(desc))
+        assert m._ARCHIVE_EXTRACT_TRANSIENT_OP_MAX_LEN <= m._PHASE_DESC_MAX_LEN
+
+    def test_all_phase_descs_and_transient_ops_have_leading_space(self):
+        """Живая просьба пользователя, 2026-08-24: поле операции сливалось с левой рамкой окна
+        консоли на глаз -- ведущий пробел нужен у КАЖДОГО текста, способного занять это поле,
+        иначе отступ то появлялся бы, то пропадал при переключении resting/transient (хуже, чем
+        не делать вообще)."""
+        for text in (m._DRY_RUN_PHASE_DESC, m._BUILD_PHASE_DESC, m._ANALYZE_QUICK_PROGRESS_DESC,
+                     m._ANALYZE_PASSPORT_PROGRESS_DESC, m._DEFERRED_CONTENT_TRANSIENT_OP,
+                     m._ARCHIVE_CONTENT_TRANSIENT_OP):
+            assert text.startswith(" "), text
 
 
 def test_two_line_status_object_progress_without_total_estimate():
@@ -1609,8 +1738,7 @@ def test_write_object_line_without_letter_keeps_old_format(capsys):
 def test_object_line_truncates_long_path_from_the_front(monkeypatch):
     bar = _two_line_bar()
     monkeypatch.setattr(m.sys.stderr, "isatty", lambda: True)
-    monkeypatch.setattr(m.shutil, "get_terminal_size",
-                         lambda fallback=(80, 24): m.os.terminal_size((80, 24)))
+    monkeypatch.setattr(m, "_console_columns", lambda fallback=80: 80)
     long_path = "C:\\" + "x" * 200 + "\\end.jpg"
     line = bar._format_object_line("folder", long_path, 1)
     assert line.startswith("  [папка]   …")
@@ -1627,8 +1755,7 @@ def test_object_line_indent_matches_source_walker_log_lines(monkeypatch):
     # группы строк чередуются в одном и том же выводе -- отступ должен совпадать буквально.
     bar = _two_line_bar()
     monkeypatch.setattr(m.sys.stderr, "isatty", lambda: True)
-    monkeypatch.setattr(m.shutil, "get_terminal_size",
-                         lambda fallback=(80, 24): m.os.terminal_size((80, 24)))
+    monkeypatch.setattr(m, "_console_columns", lambda fallback=80: 80)
     archive_line = bar._format_object_line("archive", "Foto.zip", 5)
     folder_line = bar._format_object_line("folder", "Album", 3)
     self_log_style = "  [archive] Foto.zip: archive_extracted 5 медиафайлов"
@@ -1648,8 +1775,7 @@ def test_log_archive_budget_has_same_safety_margin_as_object_line(monkeypatch):
     # object_line's "универсального" резерва под неизвестное число), не отдельным
     # необъяснённым запасом в одном месте и его отсутствием в другом.
     monkeypatch.setattr(m.sys.stderr, "isatty", lambda: True)
-    monkeypatch.setattr(m.shutil, "get_terminal_size",
-                         lambda fallback=(80, 24): m.os.terminal_size((80, 24)))
+    monkeypatch.setattr(m, "_console_columns", lambda fallback=80: 80)
     # Реальные вызывающие методы, не переизобретённая вручную арифметика -- иначе тест мог бы
     # незаметно перестать проверять фактическое поведение _object_line_budget()/_log_archive().
     bar = _two_line_bar()
@@ -1672,14 +1798,16 @@ def test_log_archive_truncates_long_path_same_as_object_line(tmp_path, monkeypat
     lines = []
     walker = m.SourceWalker(cfg, log=lines.append)
     monkeypatch.setattr(m.sys.stderr, "isatty", lambda: True)
-    monkeypatch.setattr(m.shutil, "get_terminal_size",
-                         lambda fallback=(80, 24): m.os.terminal_size((80, 24)))
+    monkeypatch.setattr(m, "_console_columns", lambda fallback=80: 80)
     prefix = "F:\\" + "Отпуск 2015\\" + "Фото\\"  # placeholder-имена, не реальные с боевого прогона
     long_path = prefix + "x" * 20 + ".zip"
     assert len(long_path) == 44
     walker._log_archive(long_path, "archive_no_media")
     assert len(lines) == 1
-    line = lines[0]
+    # SourceWalker._log_own_line() (2026-08-24, живой репорт пользователя -- "плывущая" статус-
+    # строка, склейка с активным баром) прибавляет ведущий "\n" перед КАЖДЫМ таким сообщением --
+    # снят здесь же, бюджет по ширине терминала считается по видимому тексту, не по "\n".
+    line = lines[0].lstrip("\n")
     assert line.startswith("  [archive] …")
     assert line.endswith(": найдено медиафайлов 0")
     assert len(line) <= 80
@@ -1700,8 +1828,7 @@ def test_extraction_log_name_budget_returns_large_value_when_not_a_tty(monkeypat
 
 def test_extraction_log_message_no_longer_wraps_at_80_columns(monkeypatch):
     monkeypatch.setattr(m.sys.stdout, "isatty", lambda: True)
-    monkeypatch.setattr(m.shutil, "get_terminal_size",
-                         lambda fallback=(80, 24): m.os.terminal_size((80, 24)))
+    monkeypatch.setattr(m, "_console_columns", lambda fallback=80: 80)
     archive_name = "archive-2026-07-09_20-14-47.zip"  # the exact name from the live bug report
     budget = m._extraction_log_name_budget()
     truncated = m._truncate_progress_note(archive_name, maxlen=budget)
@@ -1721,8 +1848,7 @@ def test_extraction_log_message_no_longer_wraps_at_80_columns(monkeypatch):
 def test_extraction_log_message_still_wraps_without_the_fix_at_80_columns(monkeypatch):
     # Sanity-check the repro itself: the ORIGINAL (untruncated) message really did wrap at a
     # plain 80-column console -- if this stops being true, the fix above is testing nothing.
-    monkeypatch.setattr(m.shutil, "get_terminal_size",
-                         lambda fallback=(80, 24): m.os.terminal_size((80, 24)))
+    monkeypatch.setattr(m, "_console_columns", lambda fallback=80: 80)
     msg = "  Распаковка archive-2026-07-09_20-14-47.zip (6.2 ГБ)…"
     width = m._terminal_wrap_width()
     wrapped = textwrap.wrap(msg.strip(), width=width, initial_indent="  ", subsequent_indent="    ",
@@ -2011,8 +2137,7 @@ def test_bare_n_zero_precursor_does_not_bypass_throttle(monkeypatch):
 
 def _narrow_terminal(monkeypatch, columns: int):
     monkeypatch.setattr(m.sys.stdout, "isatty", lambda: True)
-    monkeypatch.setattr(m.shutil, "get_terminal_size",
-                         lambda fallback=(80, 24): m.os.terminal_size((columns, 24)))
+    monkeypatch.setattr(m, "_console_columns", lambda fallback=80, columns=columns: columns)
 
 
 def test_log_menu_line_wrapped_fits_on_one_line(monkeypatch):

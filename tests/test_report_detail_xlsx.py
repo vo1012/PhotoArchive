@@ -357,7 +357,7 @@ def _passport_stats(**overrides):
     base = dict(
         encrypted_archive_paths=[], failed_archive_paths=[],
         disputed_records=[], unreadable_records=[],
-        exact_dup_edges=[], near_dup_edges=[],
+        exact_dup_edges=[], near_dup_edges=[], dump_item_paths=[],
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -454,6 +454,27 @@ class TestBuildPassportDetailRows:
         assert group_by_name["b1.jpg"] == group_by_name["b2.jpg"]
         assert group_by_name["a1.jpg"] != group_by_name["b1.jpg"]
 
+    def test_dump_item_paths_get_own_category_no_color_no_group(self):
+        """Живая находка пользователя, 2026-08-24: "N файлов лежат не внутри альбома/даты"
+        (_render_passport_integrity()) раньше был единственным пунктом карточки без путей в
+        детализации вовсе -- stats.dump_item_paths теперь тоже попадает в xlsx, тем же
+        принципом, что и архивы/битые файлы/дубли выше."""
+        stats = _passport_stats(dump_item_paths=["SomeStray/photo.jpg"])
+        rows = rx._build_passport_detail_rows(stats)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["folder"] == "SomeStray"
+        assert row["name"] == "photo.jpg"
+        assert row["category"] == "вне альбома/даты"
+        assert row["note"] == ""
+        assert row["color"] is None
+        assert row["group_id"] == 0
+
+    def test_dump_item_paths_made_absolute_with_target_path(self):
+        stats = _passport_stats(dump_item_paths=["SomeStray/photo.jpg"])
+        rows = rx._build_passport_detail_rows(stats, target_path=r"D:\TARGET")
+        assert rows[0]["folder"] == r"D:\TARGET\SomeStray"
+
 
 class TestGeneratePassportDetailXlsx:
     def test_returns_none_when_nothing_found(self, tmp_path):
@@ -502,6 +523,20 @@ class TestGeneratePassportReportWiresDetailXlsxButton:
         assert 'disabled aria-disabled="true">Детализированный отчёт' in html_out
         assert f'href="{rx.PASSPORT_DETAIL_XLSX_FILENAME}"' not in html_out
         assert not (tmp_path / rx.PASSPORT_DETAIL_XLSX_FILENAME).exists()
+
+    def test_dump_items_alone_activate_the_button(self, tmp_path):
+        """Живая находка пользователя, 2026-08-24: "N файлов лежат не внутри альбома/даты" мог
+        быть ЕДИНСТВЕННОЙ находкой паспорта -- до фикса dump_item_paths не попадал в xlsx вовсе,
+        значит rows была бы пуста и кнопка осталась бы неактивной, хотя report.html уже
+        показывает "N файлов..." -- несоответствие между "что видно" и "что можно раскрыть"."""
+        stats = _FakeAnalyzeStats()
+        stats.n_dump_items = 1
+        stats.dump_item_paths = ["SomeStray/photo.jpg"]
+        out_path = tmp_path / "passport.html"
+        r.generate_passport_report(stats, str(out_path))
+        html_out = out_path.read_text(encoding="utf-8")
+        assert f'href="{rx.PASSPORT_DETAIL_XLSX_FILENAME}"' in html_out
+        assert (tmp_path / rx.PASSPORT_DETAIL_XLSX_FILENAME).exists()
 
     def test_old_verification_page_no_longer_written(self, tmp_path):
         """PROMPT_report_detail_xlsx.md, решение 2026-08-16: "HTML Паспорта -- только числа,

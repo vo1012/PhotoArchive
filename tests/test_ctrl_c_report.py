@@ -116,6 +116,10 @@ def test_bare_launch_run_dryrun_raises_interrupted_report_with_banner(tmp_path, 
 def test_bare_launch_run_passport_raises_interrupted_report_with_banner(tmp_path, monkeypatch):
     archive = tmp_path / "archive"
     archive.mkdir()
+    # 2026-08-24: run_passport() теперь жёстко требует реальный маркер архива (живая просьба
+    # пользователя, "если паспорт пытаются сделать на что угодно, кроме архива, не стартовать")
+    # -- голая папка с фото больше не проходит гейт, тест не про это, просто отмечаем её.
+    (archive / "__служебные_файлы").mkdir()
     _make_jpeg(archive / "a.jpg")
     _make_jpeg(archive / "b.jpg")
 

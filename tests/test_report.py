@@ -1959,6 +1959,7 @@ class _FakeAnalyzeStats:
         self.total_files = self.n_images + self.n_raw + self.n_videos
         self.n_signature_mismatch = 0
         self.n_dump_items = 0
+        self.dump_item_paths = []
         self.n_albums_detected = 1
         # SESSION-HANDOFF.txt, 2026-08-07 (группировка альбом/дата) -- YY/ZZ/QQ, см.
         # AnalyzeStats.n_media_in_albums/bydate_media_by_folder/n_media_by_date.
@@ -2706,6 +2707,38 @@ def test_passport_dup_count_subtracts_group_count_not_total_files(tmp_path):
     html_out = r._render_passport_integrity(stats)
     assert "2 дубля внутри архива" in html_out
     assert "3 дубля" not in html_out
+
+
+def test_exact_dup_note_explains_undated_promotion_when_applicable(tmp_path):
+    """Живая находка пользователя, 2026-08-24: текст дублей молча наводил на мысль о ручном
+    вмешательстве -- реальная (частая) законная причина другая: недатированный файл
+    (0000-undated) на более позднем прогоне "повысился" до датированного места, старая копия
+    осталась (append-only). Пояснение показывается, ТОЛЬКО когда хотя бы один файл найденного
+    кластера физически лежит в 0000-undated."""
+    stats = _FakeAnalyzeStats()
+    stats.exact_dup_edges = [
+        {"dest": "ByDate/0000-undated/Users/a/hero.png", "matched_dest": "ByDate/2026/2026-07/hero.png"},
+    ]
+    stats.tier_counts = Counter()
+    stats.n_tier_cd_bydate = 0
+    html_out = r._render_passport_integrity(stats)
+    assert "недатированный файл" in html_out
+    assert "0000-undated" in html_out
+
+
+def test_exact_dup_note_omits_undated_explanation_when_not_applicable():
+    """Регрессия по значению: обычный дубль, не связанный с 0000-undated (например, ручная
+    копия внутри одного альбома) -- пояснение про "повышение" даты НЕ должно появляться, чтобы
+    не наводить на ложный след там, где он неприменим."""
+    stats = _FakeAnalyzeStats()
+    stats.exact_dup_edges = [
+        {"dest": "Albums/A/orig.jpg", "matched_dest": "Albums/A/copy.jpg"},
+    ]
+    stats.tier_counts = Counter()
+    stats.n_tier_cd_bydate = 0
+    html_out = r._render_passport_integrity(stats)
+    assert "недатированный файл" not in html_out
+    assert "0000-undated" not in html_out
 
 
 def test_deep_nested_albums_finds_max_depth_per_album_above_threshold():

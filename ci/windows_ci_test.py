@@ -1921,7 +1921,7 @@ def test_ctrl_c_no_traceback():
     # default console codepage isn't guaranteed to encode Cyrillic) -- this test calls
     # main() directly, bypassing that guard, so it must redo the same setup itself or the
     # Russian "Прервано..." message below throws UnicodeEncodeError before ever reaching
-    # sys.exit(130), which looks like this test failing for an unrelated reason.
+    # sys.exit(0), which looks like this test failing for an unrelated reason.
     code = (
         "import sys; sys.path.insert(0, %r)\n"
         "for s in (sys.stdout, sys.stderr):\n"
@@ -1933,7 +1933,11 @@ def test_ctrl_c_no_traceback():
     ) % ROOT
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                         encoding="utf-8", errors="replace")
-    check(r.returncode == 130, f"5.1: Ctrl-C exits with code 130 (got {r.returncode})")
+    # 2026-08-24, живая просьба пользователя: голый запуск (sys.argv here is just ['-c'],
+    # same bare_launch=True path as a real double-click) now exits 0, not 130 -- Windows
+    # Terminal's default "close on exit: graceful" only auto-closes the tab on a zero exit
+    # code, see main()'s except KeyboardInterrupt docstring-comment in photosort_win.py.
+    check(r.returncode == 0, f"5.1: Ctrl-C exits with code 0 (got {r.returncode})")
     check("Traceback" not in r.stdout and "Traceback" not in r.stderr,
           "5.1: Ctrl-C produces no traceback")
     check("Прервано" in r.stdout, "5.1: Ctrl-C prints a short Russian message")
@@ -1989,7 +1993,8 @@ def test_ctrl_c_during_build_still_offers_the_report():
         "try:\n"
         "    m.main()\n"
         "except SystemExit as se:\n"
-        # main() calls sys.exit(130) internally -- print the 'opened' evidence before
+        # main() calls sys.exit(0) internally for this bare_launch case (2026-08-24, see
+        # test_ctrl_c_no_traceback above for why) -- print the 'opened' evidence before
         # re-raising the SAME exit code, so subprocess.run()'s returncode still reflects it
         # (this test is the first one needing output AFTER m.main() returns/exits).
         "    print('opened:', opened)\n"
@@ -1997,7 +2002,7 @@ def test_ctrl_c_during_build_still_offers_the_report():
     ) % ROOT
     r = subprocess.run([sys.executable, "-c", code_main], capture_output=True, text=True,
                         encoding="utf-8", errors="replace")
-    check(r.returncode == 130, f"ctrl_c_report: exits with code 130 (got {r.returncode})")
+    check(r.returncode == 0, f"ctrl_c_report: exits with code 0 (got {r.returncode})")
     check("Traceback" not in r.stdout and "Traceback" not in r.stderr,
           "ctrl_c_report: produces no traceback")
     check("Прервано" in r.stdout, "ctrl_c_report: prints the short interrupted message")

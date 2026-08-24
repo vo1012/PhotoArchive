@@ -238,6 +238,222 @@ class TestCapAndShow:
         assert render_calls == ["first", "rebuilt-1", "rebuilt-2"]
         assert wiz.build_shell_calls == 2
 
+    def test_shows_window_only_once_after_content_and_geometry_are_final(self, monkeypatch):
+        """Живая находка пользователя, 2026-08-24: маленькое окно мелькало в левом верхнем углу
+        экрана при каждом запуске мастера, потом "исчезало" (на самом деле пересобиралось до
+        нормального центрированного вида). Причина -- _ensure_new_wizard_window_normal()
+        (deiconify()/SetForegroundWindow()) звалась из build_shell(), ДО того как содержимое
+        экрана и центрирование вообще существуют. Теперь зовётся отсюда (_cap_and_show()),
+        ПОСЛЕ render_fn() и DPI-cap-цикла -- ровно один раз, с уже финальным root (после
+        возможных пересборок), не с промежуточным."""
+        results = iter([True, False])
+        monkeypatch.setattr(g, "_cap_dpi_scale_to_fit", lambda root, w, h: next(results))
+        shown = []
+        monkeypatch.setattr(g, "_ensure_new_wizard_window_normal", lambda root: shown.append(root))
+        wiz = self._FakeWiz()
+        g._cap_and_show(wiz, lambda: None)
+        assert shown == [wiz.root]  # финальный (пересобранный) root, и только один раз
+        assert shown[0].name == "rebuilt-1"
+
+    def test_does_not_show_window_before_render_fn_runs(self, monkeypatch):
+        """Регрессия по порядку: показ окна не должен случиться ДО render_fn() (иначе content
+        всё ещё заглушка) -- проверяем порядок вызовов, не только сам факт вызова."""
+        monkeypatch.setattr(g, "_cap_dpi_scale_to_fit", lambda root, w, h: False)
+        order = []
+        monkeypatch.setattr(g, "_ensure_new_wizard_window_normal",
+                              lambda root: order.append("show"))
+        wiz = self._FakeWiz()
+        g._cap_and_show(wiz, lambda: order.append("render"))
+        assert order == ["render", "show"]
+
+
+class TestSamePathError:
+    """Живая находка пользователя, 2026-08-24: Шаг 2 разрешал нажать "Далее", даже когда
+    SOURCE и TARGET указывают на один и тот же путь -- реальный запуск тут же падал с "ОШИБКОЙ
+    КОНФИГУРАЦИИ" (Config.__post_init__(), photosort_win.py:2100-2106) уже при исполнении, не
+    раньше. По аналогии с отсутствием архива для паспорта (_describe_passport_target()) --
+    отловить это уже на Шаге 2, тем же приёмом (tone="error"/ok=False блокирует "Далее" через
+    _paths_valid())."""
+
+    def test_identical_paths_block(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(g.m, "_is_bare_drive_root", lambda t: False)
+        calls = []
+        monkeypatch.setattr(g.m, "_target_has_existing_archive",
+                              lambda t: calls.append("archive") or False)
+        monkeypatch.setattr(g.m, "_target_needs_confirmation",
+                              lambda t: calls.append("confirm") or False)
+        p = str(tmp_path)
+        info = g._describe_target("build", p, p)
+        assert info["ok"] is False
+        assert info["tone"] == "error"
+        assert "один и тот же путь" in info["message"]
+        # Проверка same-path -- ПЕРВАЯ (приоритет ТЗ), остальные состояния не должны даже
+        # проверяться, если конфликт уже найден.
+        assert calls == []
+
+    def test_same_path_different_case_blocks_on_windows(self, monkeypatch, tmp_path):
+        """Раунд 139 ревью (замечание): реальный Windows -- os.path.normcase() приводит
+        регистр (NTFS регистронезависима), но на POSIX (эта dev-машина, unit-tests-джоб CI)
+        os.path.normcase() -- no-op, ".upper()"/".lower()" остаются разными строками, гейт не
+        срабатывает независимо от платформы, для которой написан продакшн-код. Форсируем
+        os.path.normcase() на g.os (тот же модуль, что реально зовёт _same_path_error()) в
+        предсказуемую регистронезависимую реализацию -- тестируем, что вызывающий код
+        ПРАВИЛЬНО ИСПОЛЬЗУЕТ normcase(), не полагаемся на регистронезависимость хост-ОС."""
+        monkeypatch.setattr(g.m, "_is_bare_drive_root", lambda t: False)
+        monkeypatch.setattr(g.os.path, "normcase", str.lower)
+        p = str(tmp_path)
+        info = g._describe_target("dry_run", p.upper(), p.lower())
+        assert info["ok"] is False
+
+    def test_different_paths_unaffected(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(g.m, "_is_bare_drive_root", lambda t: False)
+        monkeypatch.setattr(g.m, "_target_has_existing_archive", lambda t: False)
+        monkeypatch.setattr(g.m, "_target_needs_confirmation", lambda t: False)
+        source = tmp_path / "source"
+        target = tmp_path / "target"
+        source.mkdir()
+        target.mkdir()
+        info = g._describe_target("build", str(target), str(source))
+        assert info["ok"] is True
+
+    def test_no_source_is_not_applicable(self, monkeypatch, tmp_path):
+        """view-режиму TARGET не нужен вовсе -- source=None не должен считаться "тем же
+        путём"."""
+        assert g._same_path_error(str(tmp_path), None) is None
+
+    def test_bare_drive_root_resolved_path_equal_to_source_blocks(self, monkeypatch, tmp_path):
+        """SOURCE указывает ПРЯМО на {диск}:\\__PhotoArchive__, TARGET -- голый корень того же
+        диска -- после резолва (_describe_target()) они совпадают, хотя сырые строки разные."""
+        monkeypatch.setattr(g.m, "_is_bare_drive_root", lambda t: True)
+        resolved = g.os.path.join(str(tmp_path), "__PhotoArchive__")
+        info = g._describe_target("build", str(tmp_path), resolved)
+        assert info["ok"] is False
+        assert info["resolved"] == resolved
+
+    def test_bare_drive_root_nested_target_not_flagged(self, monkeypatch, tmp_path):
+        """Поддерживаемый сценарий (TARGET подпапкой внутри SOURCE, см. photosort_win.py'с
+        комментарий у Config.__post_init__()) -- SOURCE сам корень диска, TARGET -- тот же
+        корень (резолвится в подпапку __PhotoArchive__) -- НЕ конфликт."""
+        monkeypatch.setattr(g.m, "_is_bare_drive_root", lambda t: True)
+        monkeypatch.setattr(g.m, "_target_has_existing_archive", lambda t: False)
+        info = g._describe_target("build", str(tmp_path), str(tmp_path))
+        assert info["ok"] is True
+
+
+class TestConfigGuardsError:
+    """Найдено ревизором вне раунда, 2026-08-24 (по прямому вопросу пользователя): три
+    соседних жёстких `ValueError` из `Config.__post_init__()` (`photosort_win.py`) -- SOURCE
+    внутри TARGET, TARGET == рабочая папка программы, рабочая папка внутри TARGET -- ничем не
+    предвосхищались в GUI Шага 2 (в отличие от буквального равенства путей, см.
+    TestSamePathError выше), хотя реальный запуск с ними падает так же жёстко. Пользователь
+    попросил закрыть находку -- та же схема (`os.path.normcase(os.path.realpath(...))`+
+    `startswith`), что и сам `Config.__post_init__()`."""
+
+    def test_source_inside_target_blocks(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(g.m, "_is_bare_drive_root", lambda t: False)
+        monkeypatch.setattr(g.m, "WORKDIR", str(tmp_path / "elsewhere"))
+        target = tmp_path / "Архив"
+        source = target / "Старое"
+        source.mkdir(parents=True)
+        info = g._describe_target("build", str(target), str(source))
+        assert info["ok"] is False
+        assert info["tone"] == "error"
+        assert "внутри архива" in info["message"]
+
+    def test_target_equals_workdir_blocks(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(g.m, "_is_bare_drive_root", lambda t: False)
+        workdir = tmp_path / "app"
+        workdir.mkdir()
+        monkeypatch.setattr(g.m, "WORKDIR", str(workdir))
+        info = g._describe_target("build", str(workdir), None)
+        assert info["ok"] is False
+        assert info["tone"] == "error"
+        assert "рабочей папкой программы" in info["message"]
+
+    def test_workdir_inside_target_blocks(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(g.m, "_is_bare_drive_root", lambda t: False)
+        target = tmp_path / "Архив"
+        workdir = target / "app"
+        workdir.mkdir(parents=True)
+        monkeypatch.setattr(g.m, "WORKDIR", str(workdir))
+        info = g._describe_target("build", str(target), None)
+        assert info["ok"] is False
+        assert info["tone"] == "error"
+        assert "Рабочая папка программы находится внутри" in info["message"]
+
+    def test_target_inside_source_is_supported_not_flagged(self, monkeypatch, tmp_path):
+        """Обратный случай (TARGET подпапкой внутри SOURCE) -- намеренно ПОДДЕРЖИВАЕМЫЙ
+        сценарий (см. комментарий в Config.__post_init__()), не должен блокироваться этой
+        проверкой -- та же семантика, что уже проверяет test_bare_drive_root_nested_target_
+        not_flagged для голого корня диска, здесь для обычной вложенной папки."""
+        monkeypatch.setattr(g.m, "_is_bare_drive_root", lambda t: False)
+        monkeypatch.setattr(g.m, "WORKDIR", str(tmp_path / "elsewhere"))
+        monkeypatch.setattr(g.m, "_target_has_existing_archive", lambda t: False)
+        monkeypatch.setattr(g.m, "_target_needs_confirmation", lambda t: False)
+        source = tmp_path / "Фото"
+        target = source / "Архив"
+        source.mkdir()
+        target.mkdir()
+        info = g._describe_target("build", str(target), str(source))
+        assert info["ok"] is True
+
+    def test_unrelated_paths_unaffected(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(g.m, "_is_bare_drive_root", lambda t: False)
+        monkeypatch.setattr(g.m, "WORKDIR", str(tmp_path / "app"))
+        monkeypatch.setattr(g.m, "_target_has_existing_archive", lambda t: False)
+        monkeypatch.setattr(g.m, "_target_needs_confirmation", lambda t: False)
+        source = tmp_path / "source"
+        target = tmp_path / "target"
+        source.mkdir()
+        target.mkdir()
+        info = g._describe_target("build", str(target), str(source))
+        assert info["ok"] is True
+
+    def test_no_source_skips_source_containment_check_without_erroring(self, monkeypatch, tmp_path):
+        """source=None (режимам, которым он не нужен) -- SOURCE-containment неприменима и не
+        должна падать на None; TARGET==WORKDIR/workdir-внутри-TARGET по-прежнему проверяются
+        независимо от source (см. соседние тесты выше с явным source=None)."""
+        monkeypatch.setattr(g.m, "WORKDIR", str(tmp_path / "elsewhere"))
+        assert g._config_guards_error(str(tmp_path / "Архив"), None) is None
+
+
+class TestPathsValidBlocksSamePathCollision:
+    """_paths_valid() -- гейт кнопки "Далее" на Шаге 2 -- должен учитывать ok=False из
+    _describe_target(), не только "оба пути выбраны" (до этой находки проверял только
+    присутствие, не содержание)."""
+
+    def test_build_mode_blocks_next_on_identical_paths(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(g.m, "_is_bare_drive_root", lambda t: False)
+        wiz = g._Wizard()
+        p = str(tmp_path)
+        wiz.state["mode"] = "build"
+        wiz.state["source"] = p
+        wiz.state["target"] = p
+        assert wiz._paths_valid() is False
+
+    def test_dry_run_mode_blocks_next_on_identical_paths(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(g.m, "_is_bare_drive_root", lambda t: False)
+        wiz = g._Wizard()
+        p = str(tmp_path)
+        wiz.state["mode"] = "dry_run"
+        wiz.state["source"] = p
+        wiz.state["target"] = p
+        assert wiz._paths_valid() is False
+
+    def test_build_mode_allows_next_on_different_paths(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(g.m, "_is_bare_drive_root", lambda t: False)
+        monkeypatch.setattr(g.m, "_target_has_existing_archive", lambda t: False)
+        monkeypatch.setattr(g.m, "_target_needs_confirmation", lambda t: False)
+        source = tmp_path / "source"
+        target = tmp_path / "target"
+        source.mkdir()
+        target.mkdir()
+        wiz = g._Wizard()
+        wiz.state["mode"] = "build"
+        wiz.state["source"] = str(source)
+        wiz.state["target"] = str(target)
+        assert wiz._paths_valid() is True
+
 
 class TestDescribePassportTarget:
     """Раунд 115 ревью (придирка, закрыта раунд 116-раунд ответа): для голого корня диска
@@ -285,8 +501,125 @@ class TestMakeOkInputFn:
         fn = g._make_ok_input_fn("C:\\archive\\report.html")
         assert fn("Работа окончена. Нажмите Enter...") == ""
         (message,), kwargs = calls[0]
-        assert "C:\\archive\\report.html" in message
+        # 2026-08-23, живая находка пользователя ("задвоение"): путь раньше повторялся и в
+        # message, и в отдельной ссылке -- теперь ТОЛЬКО в link_text (см. тест ниже), не в
+        # message вовсе.
+        assert "C:\\archive\\report.html" not in message
+        assert "C:\\archive\\report.html" in kwargs["link_text"]
         assert kwargs["show_exit"] is True
+
+    def test_message_does_not_reuse_cli_enter_wording(self, monkeypatch):
+        """2026-08-23, живая находка пользователя ("нажмите Enter -- и две кнопки, нет логики"):
+        раньше текст нотиса был просто CLI-`prompt`, переданный `_pause_for_report()` для
+        консольного `input()` -- в GUI с двумя настоящими кнопками "нажмите Enter" не имело
+        смысла. Сообщение теперь строится САМО, не из `prompt` -- проверяем, что старой
+        формулировки больше нет, и что осталось объяснение поведения кнопок (сворачивание в
+        трей/панель задач при "В главное меню", "Выход" отдельно).
+
+        2026-08-23, второй заход (по прямой просьбе пользователя): открытие браузера убрано из
+        побочных эффектов кнопки "В главное меню" -- стало отдельной кликабельной ссылкой
+        (link_text/link_command), см. _notice_window()/_make_ok_input_fn()'s докстринги за
+        обоснованием (устраняет саму причину гонки "окно мастера позади браузера").
+
+        2026-08-23, третий заход (живая находка пользователя, "задвоение"): путь к отчёту
+        сначала показывался И в message ("Отчёт сохранён здесь: ..."), И отдельной ссылкой с
+        текстом-заглушкой "Открыть отчёт в браузере" -- два упоминания одного и того же файла.
+        Путь теперь ТОЛЬКО в link_text (сам путь и есть текст ссылки), message его не
+        повторяет вовсе.
+
+        2026-08-23, четвёртый заход (по прямой просьбе пользователя, явный порядок блоков):
+        описание кнопок ("сворачивание в трей", "Выход") переехало из message в footer_text --
+        message теперь несёт только заголовок + "Найдено/Обработано объектов: X" (см. отдельные
+        тесты про count_label ниже), рисуется ДО ссылки; footer_text рисуется ПОСЛЕ ссылки."""
+        captured = {}
+
+        def _fake_notice_window(message, **kw):
+            captured["message"] = message
+            captured["kw"] = kw
+            return "continue"
+
+        monkeypatch.setattr(g, "_notice_window", _fake_notice_window)
+        fn = g._make_ok_input_fn("C:\\archive\\report.html")
+        fn("\nНажмите Enter, чтобы открыть отчёт и вернуться в главное меню: ")
+        message = captured["message"]
+        footer_text = captured["kw"]["footer_text"]
+        assert "Нажмите Enter" not in message
+        assert "C:\\archive\\report.html" not in message  # путь -- только в link_text, не тут
+        assert "трей" not in message and "панель задач" not in message  # теперь в footer_text
+        assert "трей" in footer_text or "панель задач" in footer_text
+        assert "Выход" in footer_text
+        assert "C:\\archive\\report.html" in captured["kw"]["link_text"]
+        assert callable(captured["kw"]["link_command"])
+
+    def test_link_command_opens_the_actual_report_path(self, monkeypatch):
+        """link_command -- замыкание над report_path, не над каким-то другим путём (см. Раунд
+        про открытие браузера убранное из кнопки выше) -- проверяем, что реально зовёт
+        _open_report_link() с ТЕМ ЖЕ путём, что был передан в _make_ok_input_fn().
+
+        2026-08-24, живая находка пользователя: link_command больше не зовёт
+        m._open_report_in_browser() (та несёт унаследованную попытку вернуть фокус консоли) --
+        только голый webbrowser.open() через _open_report_link(), см. её докстринг."""
+        opened = []
+        monkeypatch.setattr(g.m.webbrowser, "open", lambda p: opened.append(p))
+        captured = {}
+
+        def _fake_notice_window(message, **kw):
+            captured["kw"] = kw
+            return "continue"
+
+        monkeypatch.setattr(g, "_notice_window", _fake_notice_window)
+        fn = g._make_ok_input_fn("C:\\archive\\report.html")
+        fn("prompt text irrelevant now")
+        captured["kw"]["link_command"]()
+        # Раунд 139 ревью (замечание): _open_report_link() зовёт os.path.abspath() -- на
+        # реальном Windows это не меняет уже-абсолютный "C:\\..."-путь, но на POSIX (эта
+        # dev-машина, unit-tests-джоб CI) abspath() считает такую строку ОТНОСИТЕЛЬНОЙ и клеит
+        # cwd спереди. Сравниваем с g.os.path.abspath(...) с ОБЕИХ сторон (тот же приём, что уже
+        # использует TestOpenReportLink::test_opens_the_report_path, тот же коммит) -- не
+        # платформо-зависимая голая строка.
+        assert opened == [g.os.path.abspath("C:\\archive\\report.html")]
+
+    def test_message_shows_object_count_with_given_label(self, monkeypatch):
+        """2026-08-23, по прямой просьбе пользователя: "Найдено объектов: X"/"Обработано
+        объектов: X" (X -- m._last_bare_launch_object_count, та же переменная, что читает
+        статус-строка терминала) -- ДО ссылки на отчёт (см. тест выше про порядок: message
+        рисуется первой, до link_text)."""
+        monkeypatch.setattr(g.m, "_last_bare_launch_object_count", 42)
+        captured = {}
+        monkeypatch.setattr(g, "_notice_window",
+                              lambda message, **kw: captured.setdefault("message", message) or "continue")
+        fn = g._make_ok_input_fn("C:\\archive\\report.html", count_label="Найдено объектов")
+        fn("irrelevant")
+        assert "Найдено объектов: 42" in captured["message"]
+
+    def test_count_label_defaults_to_processed(self, monkeypatch):
+        # dry_run/build не передают count_label явно (см. run_bare_launch()) -- дефолт должен
+        # быть "Обработано объектов", не "Найдено".
+        monkeypatch.setattr(g.m, "_last_bare_launch_object_count", 7)
+        captured = {}
+        monkeypatch.setattr(g, "_notice_window",
+                              lambda message, **kw: captured.setdefault("message", message) or "continue")
+        fn = g._make_ok_input_fn("C:\\archive\\report.html")
+        fn("irrelevant")
+        assert "Обработано объектов: 7" in captured["message"]
+
+    def test_view_and_passport_call_sites_use_found_label(self):
+        """view/passport -- read-only режимы (см. run_bare_launch()) -- "Найдено объектов", не
+        "Обработано" (там ничего не обрабатывается/не копируется)."""
+        import inspect
+        src = inspect.getsource(g.run_bare_launch)
+        assert src.count('count_label="Найдено объектов"') == 2
+
+    def test_auto_open_browser_disabled_at_all_four_call_sites(self):
+        """2026-08-23, по прямой просьбе пользователя: браузер должен открываться только по
+        клику на ссылку в нотисе (см. тесты выше), не автоматически при "В главное меню" --
+        m._pause_for_report()'s auto_open_browser=False должно стоять на ВСЕХ GUI-путях
+        (view/passport/dry_run/build), не на части их. Регрессия в любом из четырёх мест
+        молча вернула бы старое "клик открывает браузер" поведение только для этого режима."""
+        import inspect
+        src = inspect.getsource(g.run_bare_launch)
+        assert src.count("m._pause_for_report(") == 4
+        assert src.count("auto_open_browser=False") == 4
 
     def test_exit_choice_raises_gui_explicit_exit(self, monkeypatch):
         """2026-08-22, Раунд 123 ревью (замечание): раньше поднимался голый KeyboardInterrupt,
@@ -299,6 +632,122 @@ class TestMakeOkInputFn:
         import pytest
         with pytest.raises(g.m._GuiExplicitExit):
             fn("Работа окончена. Нажмите Enter...")
+
+
+class TestOpenSiteLink:
+    """2026-08-23, по прямой просьбе пользователя: футер экрана 1 (версия/автор/ссылка на
+    лендинг) -- _open_site_link() сама (клик по ссылке в render_mode_screen()) требует реального
+    tkinter для рендера виджета, но её тело -- чистый вызов webbrowser.open(), тестируется без
+    единого окна (тот же принцип, что и у остального модуля, реальный tk.Tk() недоступен на
+    Linux dev-сессии, см. докстринг файла)."""
+
+    def test_opens_the_project_site_url(self, monkeypatch):
+        opened = []
+        monkeypatch.setattr(g.m.webbrowser, "open", lambda url: opened.append(url))
+        g._open_site_link()
+        assert opened == [g.m.SITE_URL]
+
+    def test_best_effort_swallows_webbrowser_failure(self, monkeypatch):
+        # Тот же принцип, что и у photosort_win._open_report_in_browser() -- сбой браузера не
+        # должен мочь сломать сам мастер.
+        def _raise(url):
+            raise OSError("no browser registered")
+
+        monkeypatch.setattr(g.m.webbrowser, "open", _raise)
+        g._open_site_link()  # не должно поднять исключение
+
+
+class TestOpenReportLink:
+    """Живая находка пользователя, 2026-08-24: клик по ссылке отчёта в нотисе "Работа
+    окончена" сворачивал/перефокусировал окно консоли -- ненужный побочный эффект
+    (m._open_report_in_browser() несёт унаследованную _reclaim_console_focus()). Пользователь
+    явно попросил "просто запустить браузер" -- _open_report_link() зовёт голый
+    webbrowser.open(), тот же паттерн, что и _open_site_link() (см. её тесты выше)."""
+
+    def test_opens_the_report_path(self, monkeypatch):
+        opened = []
+        monkeypatch.setattr(g.m.webbrowser, "open", lambda p: opened.append(p))
+        g._open_report_link("C:\\archive\\report.html")
+        assert opened == [g.os.path.abspath("C:\\archive\\report.html")]
+
+    def test_does_not_touch_console_focus_helper(self, monkeypatch):
+        """Регрессия именно этой находки: _open_report_link() не должна звать
+        m._open_report_in_browser()/m._reclaim_console_focus() вовсе, даже гейтованно."""
+        monkeypatch.setattr(g.m.webbrowser, "open", lambda p: None)
+        calls = []
+        monkeypatch.setattr(g.m, "_open_report_in_browser",
+                              lambda p: calls.append(p))
+        monkeypatch.setattr(g.m, "_reclaim_console_focus", lambda: calls.append("reclaim"))
+        g._open_report_link("C:\\archive\\report.html")
+        assert calls == []
+
+    def test_best_effort_swallows_webbrowser_failure(self, monkeypatch):
+        def _raise(url):
+            raise OSError("no browser registered")
+
+        monkeypatch.setattr(g.m.webbrowser, "open", _raise)
+        g._open_report_link("C:\\archive\\report.html")  # не должно поднять исключение
+
+
+class TestEnsureNewWizardWindowNormal:
+    """2026-08-23, живая находка пользователя (ручное тестирование): новое окно мастера после
+    нотиса "Работа окончена" иногда оказывалось свёрнутым. Тестируется только Tk-независимая
+    часть (root.deiconify()/root.state("normal")) через duck-typed fake root -- ctypes/
+    SetForegroundWindow-часть недостижима без реальной Windows-машины (тот же класс разрыва,
+    что и у _set_crisp_taskbar_icon(), см. Раунд 134 ревью, придирка)."""
+
+    class _FakeRoot:
+        def __init__(self):
+            self.calls = []
+
+        def deiconify(self):
+            self.calls.append("deiconify")
+
+        def state(self, value):
+            self.calls.append(("state", value))
+
+        def winfo_id(self):
+            return 12345
+
+    def test_deiconifies_and_sets_normal_state(self, monkeypatch):
+        monkeypatch.setattr(g.os, "name", "posix")  # ctypes.windll недоступен вне Windows --
+        # ранний return после deiconify/state, та же граница, что и у os.name != "nt" в файле.
+        root = self._FakeRoot()
+        g._ensure_new_wizard_window_normal(root)
+        assert root.calls == ["deiconify", ("state", "normal")]
+
+    def test_best_effort_swallows_tk_failure(self, monkeypatch):
+        monkeypatch.setattr(g.os, "name", "posix")
+
+        class _RaisingRoot:
+            def deiconify(self):
+                raise RuntimeError("no display")
+
+        g._ensure_new_wizard_window_normal(_RaisingRoot())  # не должно поднять исключение
+
+
+class TestBuildShellWithdrawsBeforePacking:
+    """Живая находка пользователя, 2026-08-24, второй заход (первая попытка -- перенос
+    _ensure_new_wizard_window_normal() из build_shell() в _cap_and_show() -- не помогла).
+    Диагностика по кадрам (EnumWindows-полинг через реальный собранный .exe) показала: окно
+    становится visible=True размером ~79x101 (крошечное) ЗАДОЛГО до готовых content/геометрии,
+    потому что Tk-окно видимо по умолчанию сразу после tk.Tk() -- откладывать МОМЕНТ явного
+    deiconify() бесполезно, если само окно ни разу не было спрятано. Реальный tk.Tk() тут
+    недостижим (см. остальной класс), но порядок вызовов -- строковый факт исходника, тот же
+    приём, что уже применяют test_view_and_passport_call_sites_use_found_label()/test_auto_
+    open_browser_disabled_at_all_four_call_sites() выше."""
+
+    def test_withdraw_called_immediately_after_tk_creation(self):
+        import inspect
+        import re
+        src = inspect.getsource(g._Wizard.build_shell)
+        m_tk = re.search(r"root\s*=\s*tk\.Tk\(\)", src)
+        m_withdraw = re.search(r"root\.withdraw\(\)", src)
+        m_pack = re.search(r"\.pack\(", src)
+        assert m_tk and m_withdraw and m_pack
+        # withdraw() -- сразу после создания root, до ПЕРВОГО .pack() любого виджета (иначе
+        # окно успевает замапиться с уже частично упакованным содержимым до withdraw()).
+        assert m_tk.start() < m_withdraw.start() < m_pack.start()
 
 
 class TestResetPaths:
@@ -381,91 +830,3 @@ class TestFixedScreenSizes:
         assert g._MODE_SCREEN_HEIGHT > 0
         assert g._PATHS_SCREEN_HEIGHT > 0
         assert g._CONFIRM_SCREEN_HEIGHT > 0
-
-
-class _FakeRootForReclaim:
-    """Duck-typed root -- никакого реального tkinter, тот же приём, что и
-    TestCapAndShow._FakeRoot выше. update() просто считает вызовы (имитирует прокачку
-    Tcl-event-loop без реального окна); winfo_id() -- фиктивный hwnd."""
-
-    def __init__(self, hwnd=777):
-        self._hwnd = hwnd
-        self.update_calls = 0
-
-    def winfo_id(self):
-        return self._hwnd
-
-    def update(self):
-        self.update_calls += 1
-
-
-class _FakeUser32ForReclaim:
-    """Функция-замыкание, назначенная атрибутом экземпляра, а не обычный метод -- реальный код
-    ставит .restype/.argtypes на ctypes.windll.user32.SetForegroundWindow, обычный bound method
-    Python этого не умеет (нет __dict__ у него), только у настоящих function-объектов, тот же
-    приём, что и у _FakeConsoleWindll в test_main_bare_launch_gui_branch.py."""
-
-    def __init__(self, raise_on_call=False):
-        self.calls = []
-
-        def SetForegroundWindow(hwnd):
-            self.calls.append(hwnd)
-            if raise_on_call:
-                raise OSError("simulated SetForegroundWindow failure")
-            return 1
-        self.SetForegroundWindow = SetForegroundWindow
-
-
-class TestReclaimWizardFocus:
-    """2026-08-23, по прямой просьбе пользователя -- перенос доказанно рабочей синхронной схемы
-    photosort_win._reclaim_console_focus() (SetForegroundWindow() дважды, с нарастающей паузой)
-    на окно мастера. Тестируется как отдельная функция (духом TestCapAndShow выше) -- не через
-    реальный tk.Tk()/build_shell(), время (time.sleep/time.time) замокано, чтобы тест не занимал
-    реальную секунду."""
-
-    def _patch_time(self, monkeypatch):
-        """time.time() тикает маленькими шагами (0.1) на каждый вызов вместо реального времени
-        -- внутренний while-цикл _reclaim_wizard_focus() (`while time.time() < end`) успевает
-        прокрутиться пару раз за задержку 0.3/0.7 (значит root.update() реально вызывается), но
-        тест не занимает реальную секунду."""
-        import time as time_module
-        state = {"t": 0.0}
-
-        def fake_time():
-            state["t"] += 0.1
-            return state["t"]
-
-        monkeypatch.setattr(time_module, "time", fake_time)
-        monkeypatch.setattr(time_module, "sleep", lambda s: None)
-
-    def test_calls_set_foreground_window_twice(self, monkeypatch):
-        self._patch_time(monkeypatch)
-        import ctypes
-        fake_user32 = _FakeUser32ForReclaim()
-        fake_windll = type("W", (), {"user32": fake_user32})()
-        monkeypatch.setattr(ctypes, "windll", fake_windll, raising=False)
-        root = _FakeRootForReclaim(hwnd=42)
-        g._reclaim_wizard_focus(root)
-        assert fake_user32.calls == [42, 42]  # ровно два раза, по одному на каждую задержку
-        assert root.update_calls >= 1  # окно успело прокачаться хотя бы раз
-
-    def test_swallows_ctypes_failure(self, monkeypatch):
-        self._patch_time(monkeypatch)
-        import ctypes
-        fake_user32 = _FakeUser32ForReclaim(raise_on_call=True)
-        fake_windll = type("W", (), {"user32": fake_user32})()
-        monkeypatch.setattr(ctypes, "windll", fake_windll, raising=False)
-        root = _FakeRootForReclaim()
-        g._reclaim_wizard_focus(root)  # must not raise
-        assert fake_user32.calls == [777]  # первая попытка упала -- второй итерации не было
-
-    def test_swallows_missing_winfo_id(self, monkeypatch):
-        """root без winfo_id() (совсем сломанный duck-typed объект) -- не должно падать наружу,
-        как и любой другой сбой в этой best-effort функции."""
-        self._patch_time(monkeypatch)
-
-        class _BrokenRoot:
-            def update(self):
-                pass
-
-        g._reclaim_wizard_focus(_BrokenRoot())  # must not raise

@@ -883,6 +883,43 @@ class TestAlbumDateGroupingStats:
         assert stats.n_dump_items == 0
         assert stats.n_media_in_albums == 1
 
+    def test_self_scan_recognizes_dvd_unit_inside_real_album_not_as_dump_item(
+            self, tmp_path, monkeypatch):
+        """Живая находка пользователя, 2026-08-24 (Паспорт архива на реальном архиве, боевой
+        прогон): DVD/VIDEO_TS-юнит, реально лежащий внутри настоящего альбома, ложно попадал в
+        "N файлов лежат не внутри альбома/даты" -- тот же класс регрессии, что и тест выше
+        (test_self_scan_recognizes_real_album_content_not_as_dump_item), но специфичный для
+        DVD-юнитов: is_dvd_unit_item безусловно ставил album=None (см. её докстринг в
+        photosort_win.py -- верно для ПРЕДСКАЗАНИЯ будущего места на обычном SOURCE), даже на
+        self_scan, где юнит уже физически лежит внутри альбома -- item.rel_path для DVD-юнита
+        синтетический ("VIDEO_TS/VIDEO_TS/..."), не несёт реального места."""
+        monkeypatch.setattr(m, "exiftool_batch", lambda paths, **kw: {})
+        source = tmp_path / "source"
+        target = tmp_path / "target"
+        workdir = tmp_path / "workdir"
+        source.mkdir()
+        target.mkdir()
+        workdir.mkdir()
+        video_ts = source / "Отпуск" / "VIDEO_TS"
+        video_ts.mkdir(parents=True)
+        (video_ts / "VTS_01_0.VOB").write_bytes(b"x" * 100)
+        (video_ts / "VIDEO_TS.IFO").write_bytes(b"not a real video stream" * 5)
+        (video_ts / "VIDEO_TS.BUP").write_bytes(b"not a real video stream" * 5)
+
+        cfg = m.Config(source=str(source), target=str(target), sample_limit=0, workdir=str(workdir))
+        m.ensure_target_layout(cfg)
+        m._run_impl(cfg, log=lambda *a, **k: None, print_summary=False)
+        dvd_dest = target / "Albums" / "Отпуск" / "VIDEO_TS"
+        assert dvd_dest.is_dir()  # precondition -- юнит реально попал внутрь альбома "Отпуск"
+
+        cfg2 = m.Config(source=str(target), target=m._NO_TARGET_PLACEHOLDER, sample_limit=0,
+                         workdir=str(workdir))
+        stats = m.run_analyze(cfg2, "analyze", log=lambda *a, **k: None, self_scan=True)
+
+        assert stats.n_dump_items == 0
+        assert stats.dump_item_paths == []
+        assert stats.n_media_in_albums == 3
+
 
 class TestDisputedAndUnreadablePaths:
     """SESSION-HANDOFF.txt, задачи 4/6 (2026-08-09, боевой прогон): analyze-уровень раньше
