@@ -26,14 +26,25 @@
   // Bot-safe email: address is assembled at runtime, never in the HTML source
   var user = 'photoarchive2000', domain = 'mail.ru';
   var addr = user + '@' + domain;
+
+  // Prefilled body: a few blank lines to write in, then an opt-in P.S. for testimonials.
+  // Whoever writes about a bug/question just deletes the last paragraph; whoever leaves it
+  // in is consenting to have that text published on the site under the given signature.
+  var mailBody =
+    'Здравствуйте!\r\n\r\n\r\n\r\n' +
+    'P.S. Если это отзыв о программе — не возражаю против публикации его текста на сайте ' +
+    'PhotoArchive. Подпись: имя или ник и город (например: «Анна, Казань»). Публикация ' +
+    'не нужна — просто удалите этот абзац.';
+  var mailHref = 'mailto:' + addr + '?subject=PhotoArchive&body=' + encodeURIComponent(mailBody);
   document.querySelectorAll('[data-mail]').forEach(function (a) {
-    a.href = 'mailto:' + addr + '?subject=PhotoArchive';
+    a.href = mailHref;
   });
 
   // Fallback for "Написать автору" when the OS has no default mail client: mailto: then
   // silently does nothing, with no error the page can detect directly. Heuristic: if the
   // page hasn't lost focus shortly after the click (a real mail client would switch away),
-  // show the address as plain copyable text instead of leaving the click looking like a dead end.
+  // show the address AND the prefilled template as plain copyable text instead of leaving
+  // the click looking like a dead end (the template is lost when mailto: doesn't fire).
   document.querySelectorAll('[data-mail]').forEach(function (a) {
     a.addEventListener('click', function () {
       var blurred = false;
@@ -47,26 +58,38 @@
         box.className = 'mail-fallback';
         var text = document.createElement('span');
         text.className = 'mail-fallback-addr';
-        text.textContent = 'Почтовая программа не открылась: ' + addr;
-        var btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'mail-fallback-copy';
-        btn.textContent = 'Скопировать адрес';
-        btn.addEventListener('click', function () {
+        text.textContent = 'Почтовая программа не открылась. Адрес: ' + addr;
+
+        var copyAddr = document.createElement('button');
+        copyAddr.type = 'button';
+        copyAddr.className = 'mail-fallback-copy';
+        copyAddr.textContent = 'Скопировать адрес';
+        copyAddr.addEventListener('click', function () {
           navigator.clipboard.writeText(addr).then(function () {
-            btn.textContent = 'Скопировано';
-            // job done -- fade the whole box out shortly after a successful copy
-            setTimeout(function () { box.remove(); }, 2200);
+            copyAddr.textContent = 'Скопировано';
           });
         });
+
+        var copyBody = document.createElement('button');
+        copyBody.type = 'button';
+        copyBody.className = 'mail-fallback-copy';
+        copyBody.textContent = 'Скопировать шаблон';
+        copyBody.addEventListener('click', function () {
+          navigator.clipboard.writeText(mailBody).then(function () {
+            copyBody.textContent = 'Шаблон скопирован';
+          });
+        });
+
         var close = document.createElement('button');
         close.type = 'button';
         close.className = 'mail-fallback-close';
         close.setAttribute('aria-label', 'Закрыть');
         close.textContent = '×';
         close.addEventListener('click', function () { box.remove(); });
+
         box.appendChild(text);
-        box.appendChild(btn);
+        box.appendChild(copyAddr);
+        box.appendChild(copyBody);
         box.appendChild(close);
         a.insertAdjacentElement('afterend', box);
       }, 900);
