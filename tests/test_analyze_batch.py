@@ -746,7 +746,7 @@ class TestAnalyzeShowsObjectEta:
         # ещё не при делах) и основной бар (must be two_line=True с реальным total_estimate).
         assert len(constructed) == 2, constructed
         estimate_kw, main_kw = constructed
-        assert estimate_kw.get("desc") == "Оцениваю объём работы"
+        assert estimate_kw.get("desc") == " Оцениваю объём работы"  # ведущий пробел, как у Фазы 2
         assert main_kw.get("two_line") is True
         assert main_kw.get("total_estimate") == 5  # 5 файлов реально лежат в source
 

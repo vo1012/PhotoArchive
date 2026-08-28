@@ -542,7 +542,8 @@ def test_log_own_line_uses_heavy_notice_cb_without_leading_newline(tmp_path):
 
     cfg = _make_cfg(tmp_path)
     notices = []
-    walker = m.SourceWalker(cfg, log=lambda *a, **k: None, heavy_notice_cb=notices.append)
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None,
+                             heavy_notice_cb=lambda line, wrap=True: notices.append(line))
     list(walker.walk())
 
     assert notices  # at least the extraction notice fired
@@ -1661,7 +1662,7 @@ class _FakeTqdmBar:
 
 
 def _single_line_bar_with_fake_tqdm(**overrides):
-    bar = m.ProgressReporter(total=10, desc="Просматриваю уже собранный архив", unit="файл",
+    bar = m.ProgressReporter(total=10, desc=" Просматриваю уже собранный архив", unit="файл",
                               **overrides)
     bar._bar = _FakeTqdmBar()
     return bar
@@ -1691,7 +1692,7 @@ def test_note_width_none_keeps_old_variable_length_behavior():
 def test_note_width_pads_note_shorter_than_reserved_width():
     bar = _single_line_bar_with_fake_tqdm(note_width=20)
     bar.update(1, note="повтор")
-    assert bar._bar.descriptions[0] == "Просматриваю уже собранный архив — повтор              "
+    assert bar._bar.descriptions[0] == " Просматриваю уже собранный архив — повтор              "
     bar.close()
 
 
@@ -1811,6 +1812,85 @@ def test_log_archive_truncates_long_path_same_as_object_line(tmp_path, monkeypat
     assert line.startswith("  [archive] …")
     assert line.endswith(": найдено медиафайлов 0")
     assert len(line) <= 80
+
+
+# ---------------------------------------------------------------------------
+# Живой боевой прогон, 2026-08-28 (пополнение архива на D:): часть [archive]-строк выводилась
+# БЕЗ буквы A/D после "]" (только объект-строка write_object_line() её несла), и та же строка
+# переносилась там, где место ещё оставалось -- путь обрезан под полную ширину терминала, а
+# write_heavy_notice() переносил по порогу 2/3.
+# ---------------------------------------------------------------------------
+
+def test_log_archive_renders_placement_letter_right_after_bracket(tmp_path, monkeypatch):
+    cfg = _make_cfg(tmp_path)
+    lines = []
+    walker = m.SourceWalker(cfg, log=lines.append)
+    monkeypatch.setattr(m.sys.stderr, "isatty", lambda: True)
+    monkeypatch.setattr(m, "_console_columns", lambda fallback=80: 120)
+    walker._log_archive("D:\\Архив\\www.zip", "archive_extracted", "5 медиафайлов",
+                         count=5, letter="A")
+    assert lines[0].lstrip("\n").startswith(
+        "  [archive]A D:\\Архив\\www.zip: распаковано, найдено медиафайлов 5")
+    lines.clear()
+    walker._log_archive("D:\\Архив\\www.zip", "archive_no_media")  # letter="" по умолчанию
+    line = lines[0].lstrip("\n")
+    assert line.startswith("  [archive] D:\\Архив\\www.zip: найдено медиафайлов 0")
+    assert "[archive]A" not in line and "[archive]D" not in line
+
+
+def test_log_archive_fitted_line_is_not_rewrapped_by_heavy_notice(tmp_path, monkeypatch):
+    cfg = _make_cfg(tmp_path)
+    monkeypatch.setattr(m.sys.stderr, "isatty", lambda: True)
+    monkeypatch.setattr(m, "_console_columns", lambda fallback=80: 120)
+    monkeypatch.setattr(m, "_terminal_wrap_width", lambda *a, **k: 80)
+    captured = []
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None,
+                             heavy_notice_cb=lambda line, wrap=True: captured.append((line, wrap)))
+    # ~85 символов: влезает в терминал 120, но длиннее 2/3 (80) -- под старым кодом перенеслось
+    # бы на "...распаковано, найдено" \n "медиафайлов 1577".
+    walker._log_archive("D:\\Архив Е\\E\\OLD\\YandexDisk\\www.zip", "archive_extracted",
+                         "1577 медиафайлов", count=1577)
+    assert len(captured) == 1
+    line, wrap = captured[0]
+    assert wrap is False
+    assert "\n" not in line
+    assert line == ("  [archive] D:\\Архив Е\\E\\OLD\\YandexDisk\\www.zip: "
+                    "распаковано, найдено медиафайлов 1577")
+
+
+def test_log_archive_long_free_form_note_still_wraps(tmp_path, monkeypatch):
+    cfg = _make_cfg(tmp_path)
+    monkeypatch.setattr(m.sys.stderr, "isatty", lambda: True)
+    monkeypatch.setattr(m, "_console_columns", lambda fallback=80: 120)
+    captured = []
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None,
+                             heavy_notice_cb=lambda line, wrap=True: captured.append((line, wrap)))
+    walker._log_archive("D:\\x\\big.7z", "archive_path_traversal_suspected",
+                         "после распаковки найдено 17 файлов, в листинге архива было 19 -- "
+                         "похоже, часть содержимого вышла за пределы extract_dir")
+    line, wrap = captured[0]
+    assert wrap is True  # длинный свободный note не влезает в терминал -- перенос оправдан
+
+
+def test_handle_archive_status_lines_carry_placement_letter_when_enabled(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    nested_zip = tmp_path / "nested.zip"
+    with zipfile.ZipFile(nested_zip, "w") as zf:
+        zf.writestr("b.jpg", b"y" * 10)
+    with zipfile.ZipFile(source / "MyAlbum.zip", "w") as zf:
+        zf.writestr("a.jpg", b"x" * 10)
+        zf.write(nested_zip, arcname="nested.zip")
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)
+    lines = []
+    walker = m.SourceWalker(cfg, log=lines.append, show_placement_letter=True)
+    list(walker.walk())
+    # "MyAlbum" -- узнаваемый альбом -> "A"; строка "распаковано, найдено N" (count != листинг)
+    # печатается через _log_archive() и теперь несёт ту же букву, что и объект-строка.
+    assert any(ln.lstrip("\n").startswith("  [archive]A ")
+               and "распаковано, найдено медиафайлов 2" in ln for ln in lines), lines
 
 
 # ---------------------------------------------------------------------------

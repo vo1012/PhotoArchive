@@ -66,7 +66,7 @@ import report  # PROMPT_archive_report.md, границы: отдельный м
 # blanket ignore of all warnings, so any other future PIL/library warning still surfaces.
 warnings.filterwarnings("ignore", message="Palette images with Transparency.*", category=UserWarning)
 
-__version__ = "0.6.0"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
+__version__ = "0.6.1"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
                                  # с RULES_VERSION ниже (та про совместимость архива, а не exe)
 RULES_VERSION = "2026-08-11"   # дата последнего изменения бизнес-правил -- см. RULES.md;
                                 # менять руками при изменении логики раскладки/дедупа/дат
@@ -1642,7 +1642,7 @@ class ProgressReporter:
         else:
             print(line, file=sys.stderr)
 
-    def write_heavy_notice(self, line: str) -> None:
+    def write_heavy_notice(self, line: str, wrap: bool = True) -> None:
         """Как write_object_line(), но для уже готового текста (SourceWalker's редкие/важные
         уведомления -- "Распаковка ...", "[DVD] новый DVD-диск", "[skip_marker]", ошибки чтения
         директории -- см. SourceWalker._log_own_line()). 2026-08-24, живой репорт пользователя:
@@ -1662,8 +1662,13 @@ class ProgressReporter:
         напрямую, В ОБХОД console_log() -- вместе с координацией бара потерялся и перенос
         длинных строк (_wrap_console_text()/_terminal_wrap_width()), который раньше делал
         console_log() для этих же сообщений -- длинный путь DVD-диска пошёл ОДНОЙ строкой без
-        переноса. Тот же isatty()-гейт и тот же перенос здесь, что и в console_log()."""
-        if sys.stdout.isatty():
+        переноса. Тот же isatty()-гейт и тот же перенос здесь, что и в console_log().
+
+        wrap=False (2026-08-28, живой боевой прогон): вызывающий код уже обрезал текст под
+        ПОЛНУЮ ширину терминала (как объект-строка write_object_line(), которая не переносится
+        вовсе) -- перенос по порогу 2/3 рвал бы такую строку там, где место ещё есть. См.
+        SourceWalker._log_archive()."""
+        if wrap and sys.stdout.isatty():
             line = _wrap_console_text(line, _terminal_wrap_width())
         if self._bar is not None:
             self._bar.clear()
@@ -4186,7 +4191,7 @@ class SourceWalker:
         # время, что раньше искажало EMA.
         self._deferred_gap_open = False
 
-    def _log_own_line(self, msg: str) -> None:
+    def _log_own_line(self, msg: str, wrap: bool = True) -> None:
         """Живая находка пользователя, 2026-08-24: редкие/важные уведомления SourceWalker'а
         ("Распаковка ...", "[DVD] новый DVD-диск", "[skip_marker]", ошибки чтения директории и
         т.п.) печатались через self.log() -- ту же обёртку console_log()/log_line(), что и
@@ -4209,7 +4214,7 @@ class SourceWalker:
         без two_line-бара) -- там нет активного бара, портить нечего, но и координировать не с
         чем, а голая пустая строка перед сообщением всё равно безопаснее случайной склейки."""
         if self._heavy_notice_cb is not None:
-            self._heavy_notice_cb(msg)
+            self._heavy_notice_cb(msg, wrap=wrap)
         else:
             self.log("\n" + msg)
 
@@ -4247,7 +4252,7 @@ class SourceWalker:
         """list of (name, reason, count), one row per distinct (reason, name) pair."""
         return [(name, reason, count) for (reason, name), count in self._excluded_dir_hits.items()]
 
-    def _log_archive(self, display, status, note="", count=None, silent: bool = False):
+    def _log_archive(self, display, status, note="", count=None, silent: bool = False, letter: str = ""):
         self.archive_logs.append((display, status, note))
         # archives.log (RunLogs.archive_event(), см. вызывающий код в _run_impl()) по-прежнему
         # получает исходные display/status/note без изменений независимо от silent -- он
@@ -4281,8 +4286,25 @@ class SourceWalker:
         # write_object_line() уже решает ту же задачу приёмом "…"+хвост пути (см.
         # _console_tag_line_budget()). Хвост здесь известен ТОЧНО (не оценка, весь текст уже
         # собран выше) -- бюджет считается по его реальной длине, не запасу под неизвестное N.
-        display = _truncate_progress_note(display, maxlen=_console_tag_line_budget(len(tail)))
-        self._log_own_line(f"  [archive] {display}{tail}")
+        #
+        # letter (2026-08-28, живой боевой прогон): "A"/"D" (альбом/по дате) сразу после "]"
+        # тега -- тот же формат и та же проба (_handle_archive() зовёт _placement_letter() один
+        # раз и передаёт сюда), что и у объект-строки write_object_line() того же архива.
+        # Раньше эти статус-строки ("распаковано, найдено N", "archive_no_media",
+        # bomb/no-space/traversal и т.п.) буквы не несли вовсе, хотя соседняя объект-строка
+        # того же архива её показывала. "" (analyze/[4] Паспорт) -- буквы нет, старый формат.
+        # tag_width 11 с буквой / 10 без -- как в ProgressReporter._object_line_budget().
+        tag_width = 11 if letter else 10
+        display = _truncate_progress_note(
+            display, maxlen=_console_tag_line_budget(len(tail), tag_width=tag_width))
+        line = f"  [archive]{letter} {display}{tail}" if letter else f"  [archive] {display}{tail}"
+        # Живой боевой прогон, 2026-08-28: строка уходит в ProgressReporter.write_heavy_notice(),
+        # которая переносит текст длиннее 2/3 ширины терминала -- но путь здесь уже обрезан под
+        # ПОЛНУЮ ширину (_console_tag_line_budget()), ровно как у объект-строки
+        # write_object_line() (та не переносится вовсе). Перенос нужен лишь редкой ветке со
+        # свободным длинным note (path_traversal и т.п.), реально не влезающей в терминал --
+        # гейтим переносом только её.
+        self._log_own_line(line, wrap=len(line) > _console_columns())
 
     def walk(self):
         source = self.cfg.source
@@ -5005,8 +5027,17 @@ class SourceWalker:
             display_name = _strip_trailing_arrow(origin_prefix) if origin_prefix else os.path.basename(archive_path)
             full_display = origin_prefix if origin_prefix else os.path.basename(archive_path)
 
+        # Живой боевой прогон, 2026-08-28: та же проба размещения ("A"/"D"), что и у объект-
+        # строки этого архива ниже (:_object_line_cb) -- считаем ОДИН раз здесь, чтобы её несли
+        # ВСЕ статус-строки _log_archive() этого архива (не только "распаковано, найдено N", но
+        # и bomb/no-space/traversal/no-media), а не расходились с объект-строкой. "" если
+        # show_placement_letter выключен (analyze/[4]) -- _placement_letter() сам это гейтит,
+        # вызов дёшев (find_album() по фиктивному "x", без I/O).
+        placement_letter = self._placement_letter(rel_prefix, archive_boundary_idx)
+
         if depth > self.cfg.max_archive_depth:
-            self._log_archive(_strip_trailing_arrow(full_display), "archive_bomb_suspected", "превышена глубина вложенности")
+            self._log_archive(_strip_trailing_arrow(full_display), "archive_bomb_suspected",
+                               "превышена глубина вложенности", letter=placement_letter)
             return
 
         fmt = detect_archive_format(archive_path)
@@ -5023,9 +5054,9 @@ class SourceWalker:
             # объявления папки (_placement_letter()/find_album() с фиктивным "x" в конце) --
             # rel_prefix здесь уже включает собственное имя архива последним сегментом (см.
             # вызывающий код _walk_dir(): new_rel_prefix = f"{cur_rel_prefix}/{base_no_ext}"),
-            # тот же смысл, что cur_rel_prefix у папки.
-            letter = self._placement_letter(rel_prefix, archive_boundary_idx)
-            self._object_line_cb("archive", _strip_trailing_arrow(full_display), info.media_count, letter)
+            # тот же смысл, что cur_rel_prefix у папки. Посчитана один раз выше (placement_letter).
+            self._object_line_cb("archive", _strip_trailing_arrow(full_display), info.media_count,
+                                  placement_letter)
 
         try:
             compressed_size = os.path.getsize(winlong(archive_path))
@@ -5040,7 +5071,8 @@ class SourceWalker:
             # KeyboardInterrupt/EOFError -- crashing the entire run with a raw traceback instead
             # of skipping just this one archive and continuing with everything else.
             self._log_archive(_strip_trailing_arrow(full_display), "archive_read_error",
-                               f"файл исчез или недоступен во время обработки: {e}")
+                               f"файл исчез или недоступен во время обработки: {e}",
+                               letter=placement_letter)
             return
 
         if info.ok:
@@ -5073,19 +5105,22 @@ class SourceWalker:
                 # уже применяется к origin_display на level=="analyze".
                 note = archive_path if depth == 1 else _strip_trailing_arrow(full_display)
                 self._log_archive(_strip_trailing_arrow(full_display), "archive_password_protected",
-                                   note)
+                                   note, letter=placement_letter)
                 return
             if info.path_traversal:
                 self._log_archive(_strip_trailing_arrow(full_display), "archive_path_traversal_suspected",
-                                   "член архива содержит '..' или абсолютный путь -- не распаковываю")
+                                   "член архива содержит '..' или абсолютный путь -- не распаковываю",
+                                   letter=placement_letter)
                 return
             if info.total_size > 2 * 1024**3 and compressed_size > 0 and info.total_size > compressed_size * 100:
                 self._log_archive(_strip_trailing_arrow(full_display), "archive_bomb_suspected",
-                                   f"ratio={info.total_size / max(compressed_size,1):.0f}x")
+                                   f"ratio={info.total_size / max(compressed_size,1):.0f}x",
+                                   letter=placement_letter)
                 return
             if info.entries > MAX_ARCHIVE_ENTRIES:
                 self._log_archive(_strip_trailing_arrow(full_display), "archive_bomb_suspected",
-                                   f"entries={info.entries} (лимит {MAX_ARCHIVE_ENTRIES})")
+                                   f"entries={info.entries} (лимит {MAX_ARCHIVE_ENTRIES})",
+                                   letter=placement_letter)
                 return
             required = info.total_size + int(self.cfg.free_space_margin_gb * 1024**3)
         else:
@@ -5096,13 +5131,15 @@ class SourceWalker:
             # (мимо этой предполётной проверки). Раз надёжной оценки места нет -- считаем
             # такой архив подозрительным и не распаковываем, а не гадаем с потолка.
             self._log_archive(_strip_trailing_arrow(full_display), "archive_bomb_suspected",
-                               "листинг архива не читается, распакованный размер неизвестен")
+                               "листинг архива не читается, распакованный размер неизвестен",
+                               letter=placement_letter)
             return
 
         free = free_space_bytes(self.cfg.tmp_extract if os.path.isdir(winlong(self.cfg.tmp_extract)) else self.cfg.target)
         if required > free:
             self._log_archive(_strip_trailing_arrow(full_display), "archive_skipped_no_space",
-                               f"нужно ~{required/1024**3:.1f}ГБ, свободно {free/1024**3:.1f}ГБ")
+                               f"нужно ~{required/1024**3:.1f}ГБ, свободно {free/1024**3:.1f}ГБ",
+                               letter=placement_letter)
             return
 
         # 2026-07-11 finding (live production run): a whole-disk scan runs into plenty of
@@ -5121,7 +5158,8 @@ class SourceWalker:
         # (для archives.log/n_archives_found) по-прежнему пишется -- silent тушит только
         # консоль, см. докстринг _log_archive().
         if not info.has_media_candidate:
-            self._log_archive(_strip_trailing_arrow(full_display), "archive_no_media", silent=True)
+            self._log_archive(_strip_trailing_arrow(full_display), "archive_no_media", silent=True,
+                               letter=placement_letter)
             return
 
         try:
@@ -5132,7 +5170,8 @@ class SourceWalker:
             # window the live user report happened in: "программа его продолжала распаковывать,
             # а потом срубилась"). Same fix, same reasoning.
             self._log_archive(_strip_trailing_arrow(full_display), "archive_read_error",
-                               f"файл исчез или недоступен во время обработки: {e}")
+                               f"файл исчез или недоступен во время обработки: {e}",
+                               letter=placement_letter)
             return
         extract_dir = os.path.join(self.cfg.tmp_extract, archive_hash)
 
@@ -5166,7 +5205,8 @@ class SourceWalker:
         if not ok:
             if self._transient_op_cb is not None:
                 self._transient_op_cb(None)
-            self._log_archive(_strip_trailing_arrow(full_display), "archive_extract_failed")
+            self._log_archive(_strip_trailing_arrow(full_display), "archive_extract_failed",
+                               letter=placement_letter)
             cleanup_dir(extract_dir)
             return
 
@@ -5196,7 +5236,7 @@ class SourceWalker:
                 if reparse:
                     self._log_archive(_strip_trailing_arrow(full_display), "archive_symlink_suspected",
                                        f"извлечённое дерево содержит symlink/junction ({reparse}) -- "
-                                       f"содержимое архива не читаю")
+                                       f"содержимое архива не читаю", letter=placement_letter)
                     cleanup_dir(extract_dir)
                     return
 
@@ -5208,7 +5248,7 @@ class SourceWalker:
                     self._log_archive(_strip_trailing_arrow(full_display), "archive_path_traversal_suspected",
                                        f"после распаковки найдено {extracted_count} файлов, "
                                        f"в листинге архива было {info.entries} -- похоже, часть "
-                                       f"содержимого вышла за пределы extract_dir")
+                                       f"содержимого вышла за пределы extract_dir", letter=placement_letter)
                     cleanup_dir(extract_dir)
                     return
 
@@ -5238,7 +5278,8 @@ class SourceWalker:
                     cleanup_dir(extract_dir)
 
             if media_count == 0:
-                self._log_archive(_strip_trailing_arrow(full_display), "archive_no_media")
+                self._log_archive(_strip_trailing_arrow(full_display), "archive_no_media",
+                                   letter=placement_letter)
             else:
                 # SESSION-HANDOFF.txt п.6 (2026-08-05, боевой прогон): та же симметрия, что и у
                 # archive_no_media выше (0==0 подавлен, живой репорт 2026-08-02) -- write_object_line()
@@ -5248,7 +5289,7 @@ class SourceWalker:
                 # отличается от того, что уже показано) -- иначе это новая информация, не повтор.
                 self._log_archive(_strip_trailing_arrow(full_display), "archive_extracted",
                                    f"{media_count} медиафайлов", count=media_count,
-                                   silent=media_count == info.media_count)
+                                   silent=media_count == info.media_count, letter=placement_letter)
         finally:
             self._archive_walk_depth -= 1
             if self._archive_walk_depth == 0 and self._transient_op_cb is not None:
@@ -7005,7 +7046,7 @@ def index_archive(cfg: Config, conn, log=print):
     # entries)` без `or None` -- внутри этой ветки entries гарантированно непуст, запасной
     # indeterminate-случай больше не нужен.
     if entries:
-        with ProgressReporter(total=len(entries), desc="Просматриваю уже собранный архив", unit="файл",
+        with ProgressReporter(total=len(entries), desc=" Просматриваю уже собранный архив", unit="файл",
                                note_width=len("большое видео")) as bar:
             for root, path, ftype in entries:
                 try:
@@ -7667,7 +7708,7 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
     # ДО старта основного бара, синхронно (не фоновым потоком) -- тот же довод, что и у Фазы 2:
     # один физический источник, параллельный обход того же дерева рискует замедлить оба
     # прохода на медленных/сетевых дисках.
-    with ProgressReporter(total=None, desc="Оцениваю объём работы", unit="файл") as est_bar:
+    with ProgressReporter(total=None, desc=" Оцениваю объём работы", unit="файл") as est_bar:
         total_estimate = _quick_media_count_estimate(cfg.source, cfg, on_progress=est_bar.update)
     # Без `with`/reindent остального тела: явный close() перед return ниже (см. дальше по
     # функции) -- вызывающий печатает чек-лист сразу после возврата stats.
@@ -9217,7 +9258,7 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
     # источник, параллельный обход того же дерева рискует замедлить оба прохода на медленных
     # дисках/сети). Свой простой индикатор -- переиспользует ОБЫЧНЫЙ (не two_line) режим
     # ProgressReporter, тот же принцип "не должно выглядеть зависшим", без ETA у самого себя.
-    with ProgressReporter(total=None, desc="Оцениваю объём работы", unit="файл") as est_bar:
+    with ProgressReporter(total=None, desc=" Оцениваю объём работы", unit="файл") as est_bar:
         total_estimate = _quick_media_count_estimate(cfg.source, cfg, on_progress=est_bar.update)
     with ProgressReporter(total=None, desc=_source_phase_desc, unit="файл",
                            disk_usage_path=_disk_usage_path, two_line=True,
@@ -9600,11 +9641,11 @@ DEFAULT_CONFIG_YAML_TEMPLATE = """\
                                 # пересчитывать всё заново (медленнее, но нечувствительно к
                                 # теоретической коллизии path+size+mtime при разном содержимом)
 # check_signature: false        # false (по умолчанию) = не проверять сигнатуру файла (первые
-                                # байты содержимого) против расширения в обычном анализе ([1]/CLI
-                                # analyze) -- ускоряет анализ на медленном/сетевом диске; true =
-                                # проверять. "Паспорт архива" ([4]) проверяет сигнатуру ВСЕГДА,
-                                # независимо от этого флага -- это полная проверка уже собранного
-                                # архива, там сокращать не нужно
+                                # байты содержимого) против расширения в обычном анализе
+                                # ("Сканирование источника" / CLI analyze) -- ускоряет анализ на
+                                # медленном/сетевом диске; true = проверять. "Паспорт архива"
+                                # проверяет сигнатуру ВСЕГДА, независимо от этого флага -- это
+                                # полная проверка уже собранного архива, там сокращать не нужно
 # max_archive_depth: 8          # потолок вложенности архив-в-архиве
 # max_dest_path: 240            # символов на сегмент пути (плюс жёсткий лимит 255 байт UTF-8)
 # small_image_px: 640           # граница "маленького, но не иконки" фото

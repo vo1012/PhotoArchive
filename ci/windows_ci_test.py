@@ -55,6 +55,42 @@ def check(cond, label):
         FAILURES.append(label)
 
 
+def _rmtree_iterative(path):
+    """shutil.rmtree() recurses one Python frame per directory level -- a fixture tree deeper
+    than sys.getrecursionlimit() (default 1000; see test_deep_directory_tree_does_not_raise_
+    recursion_error, which builds one 1500 levels deep on purpose) raises an unhandled
+    RecursionError straight out of rmtree's OWN cleanup, even with ignore_errors=True (that
+    flag only swallows per-file OSError, not a RecursionError from the recursive call itself).
+    An unhandled exception from any test aborts the whole windows_ci_test.py run (main() calls
+    each test bare), and the half-deleted tree then also breaks the NEXT run's startup
+    shutil.rmtree(WORK). os.walk(topdown=False) walks bottom-up with an internal list stack,
+    not Python recursion, so it stays flat regardless of depth. "\\?\" prefix on Windows so
+    os.rmdir/os.remove reach past MAX_PATH, same as everywhere else in this file. Best-effort:
+    swallows per-entry OSError like shutil.rmtree(ignore_errors=True) would."""
+    if not os.path.isdir(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return
+    walk_root = ("\\\\?\\" + os.path.abspath(path)) if os.name == "nt" else path
+    for dirpath, dirnames, filenames in os.walk(walk_root, topdown=False):
+        for name in filenames:
+            try:
+                os.remove(os.path.join(dirpath, name))
+            except OSError:
+                pass
+        for name in dirnames:
+            try:
+                os.rmdir(os.path.join(dirpath, name))
+            except OSError:
+                pass
+    try:
+        os.rmdir(walk_root)
+    except OSError:
+        pass
+
+
 def image(path, w, h, exif=False, dt="2019:07:15 12:00:00", make="Canon", model="Canon EOS 80D"):
     from PIL import Image
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -3888,9 +3924,13 @@ def test_deep_directory_tree_does_not_raise_recursion_error():
         # exact-depth Albums\ mirror, see the routing finding above) need this -- tgt is
         # defined unconditionally above the try so it's always valid here, even if an
         # exception hits before run_photosort() ever runs.
+        #
+        # _rmtree_iterative (NOT shutil.rmtree): both src and tgt are ~1500 levels deep here,
+        # and shutil.rmtree recurses one frame per level -> unhandled RecursionError out of
+        # its own cleanup, even with ignore_errors=True -- see _rmtree_iterative()'s docstring
+        # (REVIEW-HANDOFF.md Раунд 145).
         for p in (src, tgt):
-            shutil.rmtree(("\\\\?\\" + os.path.abspath(p)) if os.name == "nt" else p,
-                           ignore_errors=True)
+            _rmtree_iterative(p)
 
 
 def test_archive_entry_count_bomb():
@@ -4287,7 +4327,13 @@ def main():
         f"test function(s) defined but missing from ALL_TESTS: {sorted(_missing)}")
 
     if os.path.isdir(WORK):
-        shutil.rmtree(WORK)
+        # Fall back to the depth-safe remover if a previous run was killed mid-test and left a
+        # very deep fixture tree behind (see _rmtree_iterative() / REVIEW-HANDOFF.md Раунд 145)
+        # -- plain shutil.rmtree would then recurse itself into a RecursionError right here.
+        try:
+            shutil.rmtree(WORK)
+        except RecursionError:
+            _rmtree_iterative(WORK)
     os.makedirs(WORK, exist_ok=True)
 
     pattern = sys.argv[1] if len(sys.argv) > 1 else ""
