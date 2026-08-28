@@ -386,3 +386,9 @@ h2+.section-lede{margin-top:.25rem}
   border-left:3px solid var(--color-accent);
   border-radius:0 10px 10px 0;
 }
+
+/* ============ Recognize (the problem the visitor arrives with) ============ */
+.recognize-list{margin:1.3rem 0 1.4rem;padding-left:1.3rem}
+.recognize-list li{margin-bottom:.55rem;font-size:1.08rem}
+.recognize-punch{margin-top:1.4rem;font-weight:700;font-size:1.15rem;color:var(--color-primary)}
+.recognize-cta{margin-top:1.7rem;margin-bottom:0}
