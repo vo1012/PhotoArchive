@@ -1,7 +1,7 @@
 """Альбомный редизайн (SESSION-HANDOFF.txt, 2026-08-08): интеграционные тесты сверх
 tests/test_dump_segments.py::TestFindAlbum -- проверяют реальный физический результат полного
-прогона (не только find_album() как чистую функцию), плюс новый маркер-файл
-__ПРОПУЩЕННЫЕ_ДУБЛИ.txt (замена снесённого __ВНИМАНИЕ_объединённая_папка.txt)."""
+прогона (не только find_album() как чистую функцию), плюс поведение дедупа внутриальбомных
+дублей (маркер-файл __ПРОПУЩЕННЫЕ_ДУБЛИ.txt удалён 2026-08-29, данные -- в skipped.csv/xlsx)."""
 import photosort_win as m
 from PIL import Image
 
@@ -87,92 +87,55 @@ def test_dump_ancestor_before_real_name_falls_to_bydate_entirely(tmp_path, monke
     assert stats["appended_images"] == 2
 
 
-def test_skipped_dup_marker_written_for_within_album_duplicate(tmp_path, monkeypatch):
+def _album_files(target, *parts):
+    d = target.joinpath("Albums", *parts)
+    return sorted(p.name for p in d.iterdir()) if d.exists() else []
+
+
+def test_within_album_duplicate_is_skipped_not_double_copied(tmp_path, monkeypatch):
+    # Маркер-файл __ПРОПУЩЕННЫЕ_ДУБЛИ.txt удалён 2026-08-29 -- проверяем само поведение:
+    # байт-идентичная копия кадра под другим именем в той же ветке НЕ копируется дважды,
+    # учитывается как skipped_present, инвариант "в альбоме не больше файлов, чем в источнике".
     _stub_exiftool(monkeypatch)
     source = tmp_path / "source"
     (source / "AlbumX").mkdir(parents=True)
     _make_jpeg(source / "AlbumX" / "a.jpg", color=(1, 2, 3))
-    # Байт-идентичная копия того же кадра под другим именем -- пропущена как дубль ВНУТРИ
-    # той же ветки/альбома.
     (source / "AlbumX" / "a_copy.jpg").write_bytes((source / "AlbumX" / "a.jpg").read_bytes())
 
     stats, target = _run(tmp_path, source)
 
-    album_dir = target / "Albums" / "AlbumX"
-    marker = album_dir / m.SKIPPED_DUP_MARKER_FILENAME
     assert stats["skipped_present"] == 1
-    assert marker.exists()
-    content = marker.read_text(encoding="utf-8")
-    assert "a_copy.jpg" in content
-    assert "a.jpg" in content
+    assert _album_files(target, "AlbumX") == ["a.jpg"]  # только один из двух, никаких .txt-маркеров
 
 
-def test_skipped_dup_marker_not_written_when_no_duplicates(tmp_path, monkeypatch):
+def test_within_album_duplicate_recorded_in_skipped_csv(tmp_path, monkeypatch):
+    # Данные, которые раньше дублировались в маркер-файле, полностью остаются в skipped.csv.
     _stub_exiftool(monkeypatch)
     source = tmp_path / "source"
     (source / "AlbumX").mkdir(parents=True)
-    _make_jpeg(source / "AlbumX" / "a.jpg")
+    _make_jpeg(source / "AlbumX" / "a.jpg", color=(1, 2, 3))
+    (source / "AlbumX" / "a_copy.jpg").write_bytes((source / "AlbumX" / "a.jpg").read_bytes())
 
     _stats, target = _run(tmp_path, source)
 
-    assert not (target / "Albums" / "AlbumX" / m.SKIPPED_DUP_MARKER_FILENAME).exists()
+    skipped_csv = (target / "__служебные_файлы" / "logs" / "skipped.csv").read_text(encoding="utf-8")
+    assert "a_copy.jpg" in skipped_csv and "a.jpg" in skipped_csv
 
 
-def test_skipped_dup_marker_not_written_during_dry_run(tmp_path, monkeypatch):
-    _stub_exiftool(monkeypatch)
-    source = tmp_path / "source"
-    (source / "AlbumX").mkdir(parents=True)
-    _make_jpeg(source / "AlbumX" / "a.jpg", color=(1, 2, 3))
-    (source / "AlbumX" / "a_copy.jpg").write_bytes((source / "AlbumX" / "a.jpg").read_bytes())
-
-    stats, target = _run(tmp_path, source, dry_run=True)
-
-    assert stats["skipped_present"] == 1
-    # dry_run -- сам маркер-файл не пишется (RULES.md, "пробный прогон ничего не пишет") --
-    # resolve_dest_path() создаёт пустую папку альбома даже в dry_run (нужна для проверки
-    # занятости имени), это не связано с новым маркер-файлом, поэтому не проверяем её отсутствие.
-    assert not (target / "Albums" / "AlbumX" / m.SKIPPED_DUP_MARKER_FILENAME).exists()
-
-
-def test_skipped_dup_marker_overwritten_not_appended_on_rerun(tmp_path, monkeypatch):
-    # Новый маркер-файл, в отличие от снесённого __ВНИМАНИЕ_объединённая_папка.txt, не несёт
-    # роли "памяти между прогонами" -- перезаписывается целиком на каждом прогоне.
-    _stub_exiftool(monkeypatch)
-    source = tmp_path / "source"
-    (source / "AlbumX").mkdir(parents=True)
-    _make_jpeg(source / "AlbumX" / "a.jpg", color=(1, 2, 3))
-    (source / "AlbumX" / "a_copy.jpg").write_bytes((source / "AlbumX" / "a.jpg").read_bytes())
-
-    stats1, target = _run(tmp_path, source)
-    marker = target / "Albums" / "AlbumX" / m.SKIPPED_DUP_MARKER_FILENAME
-    lines1 = [ln for ln in marker.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    assert stats1["skipped_present"] == 1
-    assert len(lines1) == 1  # только a_copy.jpg -- дубль ВНУТРИ этого первого прогона
-
-    # Второй прогон по тому же (неизменному) SOURCE -- на этот раз ОБА файла совпадают с уже
-    # присутствующим в архиве содержимым, значит 2 события за ЭТОТ прогон. Если бы файл
-    # дозаписывался (как старый __ВНИМАНИЕ_объединённая_папка.txt), итог был бы 1+2=3 строки.
-    stats2, target = _run(tmp_path, source)
-    lines2 = [ln for ln in marker.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    assert stats2["skipped_present"] == 2
-    assert len(lines2) == 2  # перезаписан целиком, не задваивается между прогонами
-
-
-def test_cross_album_content_duplicate_does_not_write_marker(tmp_path, monkeypatch):
-    # RULES.md: глобальный SHA-256 дедуп-пул остаётся межветочным -- совпадение по контенту с
-    # файлом из ДРУГОГО альбома -- не "внутриветочный" дубль, в новый маркер-файл не попадает.
+def test_no_marker_txt_anywhere_in_archive(tmp_path, monkeypatch):
     _stub_exiftool(monkeypatch)
     source = tmp_path / "source"
     (source / "AlbumA").mkdir(parents=True)
     (source / "AlbumB").mkdir(parents=True)
     _make_jpeg(source / "AlbumA" / "a.jpg", color=(9, 9, 9))
+    (source / "AlbumA" / "a_copy.jpg").write_bytes((source / "AlbumA" / "a.jpg").read_bytes())
     (source / "AlbumB" / "a_dup.jpg").write_bytes((source / "AlbumA" / "a.jpg").read_bytes())
 
-    stats, target = _run(tmp_path, source)
+    _stats, target = _run(tmp_path, source)
 
-    assert stats["skipped_present"] == 1
-    assert not (target / "Albums" / "AlbumA" / m.SKIPPED_DUP_MARKER_FILENAME).exists()
-    assert not (target / "Albums" / "AlbumB" / m.SKIPPED_DUP_MARKER_FILENAME).exists()
+    txts = [str(p) for p in (target / "Albums").rglob("*.txt")]
+    assert txts == [], txts
+    assert not hasattr(m, "SKIPPED_DUP_MARKER_FILENAME")
 
 
 def test_albums_merged_csv_logs_append_for_each_nested_subalbum_independently(tmp_path, monkeypatch):

@@ -1075,6 +1075,48 @@ def test_object_progress_ignores_non_media_files(tmp_path):
     assert sum(ticks) == m._quick_media_count_estimate(str(source), cfg)
 
 
+def test_object_progress_bare_gz_not_counted_in_x_or_y(tmp_path):
+    """Раунд 159 ревью: фикс 0.6.4 (_walk_dir() пропускает бэйр .gz/.bz2 как "other") разъехал
+    знаменатель -- _quick_media_count_estimate() всё ещё считал их (file_type()=="archive"),
+    _walk_dir() уже не тикал. Триггер -- ровно `.sync/core-*.log.gz` YandexDisk. X и Y обязаны
+    совпасть."""
+    source = tmp_path / "source"
+    sync = source / "OLD" / ".sync"
+    sync.mkdir(parents=True)
+    (source / "photo.jpg").write_bytes(b"x")
+    for i in range(5):
+        (sync / f"core-{i}.log.gz").write_bytes(b"x")
+    (sync / "journal.sql.bz2").write_bytes(b"x")
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)
+    assert m._quick_media_count_estimate(str(source), cfg) == 1  # только photo.jpg
+
+    ticks = []
+    walker = m.SourceWalker(cfg, log=lambda *a, **k: None, object_progress_cb=ticks.append)
+    list(walker.walk())
+    assert sum(ticks) == 1
+    assert sum(ticks) == m._quick_media_count_estimate(str(source), cfg)
+
+
+def test_object_progress_real_tar_gz_still_counted(tmp_path):
+    # контроль: настоящий .tar.gz по-прежнему тикает как 1 объект и в X, и в Y
+    import io
+    import tarfile
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "photo.jpg").write_bytes(b"x")
+    with tarfile.open(source / "album.tar.gz", "w:gz") as tf:
+        data = b"\xff\xd8\xff\xe0jpegish"
+        ti = tarfile.TarInfo("inner.jpg")
+        ti.size = len(data)
+        tf.addfile(ti, io.BytesIO(data))
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)
+    assert m._quick_media_count_estimate(str(source), cfg) == 2  # photo.jpg + album.tar.gz
+
+
 def test_object_progress_junk_heavy_folder_does_not_move_percent_before_real_media_is_reached(tmp_path):
     """Живой боевой прогон, 2026-08-17: источник с папкой из тысяч мелких немедийных файлов
     (обходится/дисквалифицируется мгновенно, но реально требует времени на сам обход папки)

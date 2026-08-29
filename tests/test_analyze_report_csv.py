@@ -47,7 +47,7 @@ def test_write_dryrun_report_csv_skips_structural_fields(tmp_path):
         # Пример структурных (не скалярных) полей реального stats -- имя не важно, важно
         # что list/dict-значение пропускается писателем CSV независимо от него.
         "album_profiles": {"Album": {"n": 2, "years": {2020}}},
-        "skipped_dup_by_dest_dir": {"C:\\T\\Albums\\Album": [("a_copy.jpg", "a.jpg")]},
+        "dvd_units_skipped_duplicate": [{"name": "Disc1", "dest_path": "C:\\T\\Albums\\Disc1"}],
     }
     out_path = tmp_path / "dryrun_report.csv"
     m.write_dryrun_report_csv(str(out_path), stats)
@@ -60,4 +60,4 @@ def test_write_dryrun_report_csv_skips_structural_fields(tmp_path):
     assert rows["bytes_appended"] == "12345"
     assert rows["free_disk_bytes"] == "999"
     assert "album_profiles" not in rows
-    assert "skipped_dup_by_dest_dir" not in rows
+    assert "dvd_units_skipped_duplicate" not in rows

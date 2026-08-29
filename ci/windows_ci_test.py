@@ -190,11 +190,9 @@ def test_regression_and_zones():
     # re-run against the same target: must dedup, not duplicate
     r2 = run_photosort(src, tgt)
     check(r2.returncode == 0, "second run (dedup) exits 0")
-    # __ПРОПУЩЕННЫЕ_ДУБЛИ.txt (2026-08-08) is an EXPECTED new file, not a media duplicate --
-    # "photo1.jpg" is now a within-album identical_at_destination re-run hit, which legitimately
-    # writes this marker in Albums\Отпуск 2015\Море\ -- excluded from the media-file count here.
-    n_files = sum(1 for _, _, files in os.walk(os.path.join(tgt, "Albums"))
-                  for f in files if f != "__ПРОПУЩЕННЫЕ_ДУБЛИ.txt") + \
+    # (2026-08-29: маркер-файл __ПРОПУЩЕННЫЕ_ДУБЛИ.txt удалён -- дерево архива теперь чисто
+    # медийное, никакого исключения по имени файла в подсчёте больше не нужно.)
+    n_files = sum(len(files) for _, _, files in os.walk(os.path.join(tgt, "Albums"))) + \
               sum(len(files) for _, _, files in os.walk(os.path.join(tgt, "ByDate")))
     check(n_files == 4, f"no duplicate files after re-run (found {n_files}, expected 4)")
 

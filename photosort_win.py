@@ -66,7 +66,7 @@ import report  # PROMPT_archive_report.md, границы: отдельный м
 # blanket ignore of all warnings, so any other future PIL/library warning still surfaces.
 warnings.filterwarnings("ignore", message="Palette images with Transparency.*", category=UserWarning)
 
-__version__ = "0.6.4"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
+__version__ = "0.6.5"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
                                  # с RULES_VERSION ниже (та про совместимость архива, а не exe)
 RULES_VERSION = "2026-08-11"   # дата последнего изменения бизнес-правил -- см. RULES.md;
                                 # менять руками при изменении логики раскладки/дедупа/дат
@@ -2999,9 +2999,8 @@ def file_type(path: str) -> str:
 
 
 # "обработано объектов X/Y" (_quick_media_count_estimate()/SourceWalker._tick_object()) считает
-# только эти типы -- см. докстрины обеих функций (2026-08-17, источник с большой долей
-# немедийных файлов).
-_MEDIA_CANDIDATE_TYPES = frozenset({"image", "raw", "video", "archive"})
+# ровно то, что тикнет _walk_dir() -- см. _would_walk_tick() ниже и докстрины обеих функций
+# (2026-08-17: не считать немедийные файлы; Раунд 159: не считать бэйр .gz/.bz2).
 
 
 def classify_image(path: str, width, height, camera, size_bytes: int, small_image_px: int = 640):
@@ -3113,6 +3112,17 @@ def detect_archive_format(path: str):
     if e == "bz2" and path.lower().endswith(".tar.bz2"):
         return "tar.bz2"
     return None
+
+
+def _would_walk_tick(name: str) -> bool:
+    """True, если SourceWalker._walk_dir() тикнет этот файл в счётчик «обработано объектов X/Y»
+    -- то же решение, что _quick_media_count_estimate() обязан учитывать в знаменателе Y (иначе
+    X и Y разъезжаются, бар «залипает»). Настоящий многофайловый архив (detect_archive_format
+    truthy) тикает как ОДИН объект; image/raw/video -- каждый по объекту; всё остальное не
+    тикает вовсе -- в т.ч. бэйр `.gz`/`.bz2`, который detect_archive_format() отвергает: с 0.6.4
+    `_walk_dir()` пропускает такой одиночный сжатый файл как `"other"` (Раунд 159 ревью: до
+    этого хелпера `file_type()=="archive"` завышал Y на каждый `.sync/core-*.log.gz`)."""
+    return detect_archive_format(name) is not None or file_type(name) in ("image", "raw", "video")
 
 
 class ArchiveInfo:
@@ -3832,8 +3842,9 @@ def _strip_trailing_arrow(s: str) -> str:
 
 def _quick_media_count_estimate(source: str, cfg: Config, on_progress=None) -> int:
     """SESSION-HANDOFF.txt, редизайн живого вывода Фазы 2 -- быстрый предпересчёт SOURCE для
-    планового времени ("план" в [прошло/план]): считает media-кандидатов (image/raw/video/
-    архив, см. file_type()) -- по имени/расширению, без os.stat/хеширования/открытия файла --
+    планового времени ("план" в [прошло/план]): считает то, что реально тикнет _walk_dir()
+    (image/raw/video + настоящий многофайловый архив как 1 объект, см. _would_walk_tick())
+    -- по имени/расширению, без os.stat/хеширования/открытия файла --
     под ТЕМИ ЖЕ правилами исключения папок, что и SourceWalker._walk_dir()
     (HARD_EXCLUDE_DIRS/default_exclude_dirs/extra_exclude_dirs/системные папки) -- ссылается на
     те же общие списки/cfg-поля, не копирует их отдельным списком. Не полноценный дубль
@@ -3899,7 +3910,7 @@ def _quick_media_count_estimate(source: str, cfg: Config, on_progress=None) -> i
             if on_progress is not None:
                 on_progress(1)
             return
-        delta = sum(1 for name in file_names if file_type(name) in _MEDIA_CANDIDATE_TYPES)
+        delta = sum(1 for name in file_names if _would_walk_tick(name))
         count += delta
         if delta and on_progress is not None:
             on_progress(delta)
@@ -4150,12 +4161,12 @@ class SourceWalker:
         self._archive_walk_depth = 0
         # Живой репорт пользователя (2026-08-01): "объектов X/Y" в статус-строке -- ТРЕТИЙ,
         # отдельный от object_line_cb/self.count (медиафайлы) счётчик, той же ГРАНУЛЯРНОСТИ,
-        # что и _quick_media_count_estimate() (архив -- 1 штука, не заглядывая внутрь, media-
-        # кандидат (image/raw/video/archive/DVD-юнит) -- 1 штука). 2026-08-17: EXCLUDE/SIDECAR/
-        # тип "other" файлы НЕ считаются вовсе (ни в X, ни в Y, см. докстрин
-        # _quick_media_count_estimate()) -- источник, где такие файлы численно доминируют,
-        # раньше доводил X до Y почти сразу, задолго до реальной обработки медиафайлов в
-        # остальном дереве. object_progress_cb(1) -- вызывается РОВНО там же, где
+        # что и _quick_media_count_estimate() (настоящий многофайловый архив -- 1 штука, не
+        # заглядывая внутрь; image/raw/video/DVD-юнит -- 1 штука; см. _would_walk_tick()).
+        # 2026-08-17: EXCLUDE/SIDECAR/тип "other" НЕ считаются вовсе (ни в X, ни в Y) -- источник,
+        # где такие файлы численно доминируют, раньше доводил X до Y почти сразу. Раунд 159: бэйр
+        # `.gz`/`.bz2` (detect_archive_format отвергает) тоже НЕ считаются -- та же асимметрия
+        # в обратную сторону (Y > X, бар залипал ниже 100%). object_progress_cb(1) -- вызывается РОВНО там же, где
         # _quick_media_count_estimate() засчитывает файл, и ТОЛЬКО на depth==0 (настоящее
         # дерево SOURCE, не содержимое распакованного архива, которое
         # _quick_media_count_estimate() никогда не открывает -- см. её докстринг). Вложенный
@@ -6270,8 +6281,8 @@ def find_album(rel_path: str, archive_boundary_idx: int = None, *,
     album_name/album_prefix -- ВЕРХНИЙ сегмент (segments[0]) и его же имя (для обратной
     совместимости сигнатуры и для build_album_dest_dir()) -- subpath_segments -- всё, что
     глубже; album_prefix + subpath_segments вместе восстанавливают исходный полный путь.
-    Идентичность КАЖДОЙ отдельной папки дерева для целей счёта/маркер-файла -- ответственность
-    вызывающей стороны (см. n_albums_detected/_note_skipped_dup()), не этой функции.
+    Идентичность КАЖДОЙ отдельной папки дерева для целей счёта -- ответственность вызывающей
+    стороны (см. n_albums_detected), не этой функции.
 
     dump_names/dump_prefixes: forwarded as-is to every is_dump_segment() call below (see that
     function's docstring) -- production call sites pass cfg.dump_segment_names_lower/
@@ -6322,34 +6333,11 @@ def _is_terminal_bydate_branch(segments, archive_boundary_idx: int = None, *,
                for seg in segments)
 
 
-SKIPPED_DUP_MARKER_FILENAME = "__ПРОПУЩЕННЫЕ_ДУБЛИ.txt"
-
-
-def _note_skipped_dup(st, dest_dir, skipped_name, survivor_name):
-    """2026-08-08 (альбомный редизайн, см. RULES.md): файл, не скопированный из-за дубля
-    ВНУТРИ одной и той же физической ветки -- при полном пути (album_prefix) всегда разные
-    физические ветки больше никогда не делят один dest_dir, так что любой такой пропуск в
-    альбомном dest_dir по определению "внутриветочный" (в отличие от старого механизма
-    объединённых альбомов, который явно отличал "тот же" источник от "другого"). Копится в
-    памяти (st.skipped_dup_by_dest_dir), физически пишется один раз при финализации прогона
-    (см. _write_skipped_dup_markers()) -- не построчно во время обхода."""
-    st.skipped_dup_by_dest_dir.setdefault(dest_dir, []).append((skipped_name, survivor_name))
-
-
-def _write_skipped_dup_markers(cfg, st):
-    """Пишет по одному __ПРОПУЩЕННЫЕ_ДУБЛИ.txt на каждый dest_dir, где реально был хотя бы
-    один пропущенный внутриветочный дубль -- ПЕРЕЗАПИСЫВАЕТ файл целиком (не дозаписывает, в
-    отличие от старого маркер-файла объединённых альбомов): у нового файла нет роли "памяти
-    между прогонами", он просто отражает текущий прогон. Не при dry_run -- как и обычное
-    копирование файлов."""
-    if cfg.dry_run:
-        return
-    for dest_dir, rows in st.skipped_dup_by_dest_dir.items():
-        marker_path = os.path.join(dest_dir, SKIPPED_DUP_MARKER_FILENAME)
-        _makedirs_iterative(winlong(dest_dir))
-        with open(winlong(marker_path), "w", encoding="utf-8") as f:
-            for skipped_name, survivor_name in rows:
-                f.write(f"{skipped_name} -- совпадает по содержимому с {survivor_name}\n")
+# 2026-08-29, прямое решение пользователя: маркер-файл `__ПРОПУЩЕННЫЕ_ДУБЛИ.txt` (по одному в
+# каждой папке альбома, где был пропущен внутриветочный дубль) удалён целиком. Те же данные --
+# по каждому пропущенному файлу, с чем совпал -- полностью есть в `skipped.csv` и в детализации
+# `report_detail.xlsx` (строки "дубликат"); отдельный `.txt` в дереве архива признан лишним
+# засорением. `run_logs.skipped(...)` (CSV) и статистика `skipped_present` не затронуты.
 
 
 _place_cache: dict = {}  # (rounded_lat, rounded_lon, home_country) -> place string or None
@@ -8956,12 +8944,6 @@ class _RunState:
                                    # стоит уже готовая for-петля, тем же приёмом, что и
                                    # stopped_for_space выше (break + finalize CSV/summary
                                    # нормально, не raw traceback).
-        # 2026-08-08 (альбомный редизайн, см. RULES.md): dest_dir -> список (skipped_name,
-        # survivor_name) для файлов, не скопированных из-за дубля ВНУТРИ этой же физической
-        # ветки (см. _note_skipped_dup()) -- пишется один раз в __ПРОПУЩЕННЫЕ_ДУБЛИ.txt при
-        # финализации прогона, целиком перезаписывая файл (не дозаписывая, в отличие от старого
-        # маркер-файла объединённых альбомов -- у нового нет роли "памяти между прогонами").
-        self.skipped_dup_by_dest_dir = {}
 
 
 def _ftype_bucket(ftype: str) -> str:
@@ -9106,22 +9088,6 @@ def _process_record(rec, st: _RunState, log=print):
         # этого прогона. Near-dup (p.5.7) больше не сюда -- такие файлы теперь дописываются,
         # место для них не экономится.
         stats["bytes_saved_by_dedup"] += item.size
-        # 2026-08-08 (альбомный редизайн, см. RULES.md): decide() -- глобальный SHA-256 пул,
-        # не привязанный к альбому (см. RULES.md, дедуп по содержимому) -- matched_dest может
-        # лежать в ЛЮБОЙ другой физической ветке, не только в "своей". Новый __ПРОПУЩЕННЫЕ_
-        # ДУБЛИ.txt -- только про дубли ВНУТРИ одной и той же ветки, так что логируем это
-        # совпадение туда ТОЛЬКО если matched_dest физически лежит в ТОМ ЖЕ dest_dir, куда лёг
-        # бы этот файл сам -- иначе это межветочное совпадение по контенту (RULES.md, "дедуп по
-        # содержимому глобален"), не про эту ветку, в новый маркер-файл не попадает.
-        own_album, own_subpath, own_album_prefix = find_album(
-            item.rel_path, item.archive_boundary_idx,
-            dump_names=cfg.dump_segment_names_lower, dump_prefixes=cfg.dump_segment_prefixes_tuple,
-            bydate_only=cfg.source_bydate_only)
-        if own_album:
-            own_dest_dir = build_album_dest_dir(cfg.albums_root, own_album_prefix, own_subpath)
-            if os.path.dirname(decision.matched_dest) == own_dest_dir:
-                _note_skipped_dup(st, own_dest_dir, os.path.basename(item.rel_path),
-                                   os.path.basename(decision.matched_dest))
         return False
 
     if decision.decision == "raw_skipped":
@@ -9198,14 +9164,6 @@ def _process_record(rec, st: _RunState, log=print):
             run_logs.skipped(item.origin_display, dest_path, "identical_at_destination")
             _stats_inc_typed(stats, "skipped_present", item.ftype)
             stats["bytes_saved_by_dedup"] += item.size
-            # Новый маркер-файл (RULES.md) -- только про пропущенные внутриальбомные дубли.
-            raw_own_album, _raw_own_subpath, _raw_own_prefix = find_album(
-                item.rel_path, item.archive_boundary_idx,
-                dump_names=cfg.dump_segment_names_lower, dump_prefixes=cfg.dump_segment_prefixes_tuple,
-                bydate_only=cfg.source_bydate_only)
-            if raw_own_album:
-                _note_skipped_dup(st, dest_dir, os.path.basename(item.rel_path),
-                                   os.path.basename(dest_path))
         return False
 
     # image / video appended_*
@@ -9310,11 +9268,6 @@ def _process_record(rec, st: _RunState, log=print):
         run_logs.skipped(item.origin_display, dest_path, "identical_at_destination")
         _stats_inc_typed(stats, "skipped_present", item.ftype)
         stats["bytes_saved_by_dedup"] += item.size  # А.4
-        # Новый маркер-файл (RULES.md) -- только про пропущенные внутриальбомные дубли, не про
-        # ByDate-корзины (там нет понятия "ветки источника", вопрос не про них).
-        if album:
-            _note_skipped_dup(st, dest_dir, os.path.basename(item.rel_path),
-                               os.path.basename(dest_path))
         return False
 
     pool_ftype = "image" if item.ftype == "image" else "video"
@@ -9944,7 +9897,6 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
     summary_text = "".join(summary_lines)
     run_logs.write_summary(summary_text)
     run_logs.close()
-    _write_skipped_dup_markers(cfg, st)
 
     # Пакет п.4 (SESSION-HANDOFF.txt): print_summary=False -- ТОЛЬКО _bare_launch_run_build()
     # ([3] голого меню) передаёт его -- эта техническая сводка (тайминги/версии инструментов/
