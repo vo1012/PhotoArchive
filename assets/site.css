@@ -392,3 +392,13 @@ h2+.section-lede{margin-top:.25rem}
 .recognize-list li{margin-bottom:.55rem;font-size:1.08rem}
 .recognize-punch{margin-top:1.4rem;font-weight:700;font-size:1.15rem;color:var(--color-primary)}
 .recognize-cta{margin-top:1.7rem;margin-bottom:0}
+
+/* ============ Modes (four ways to run, not steps) ============ */
+.modes{margin-top:3rem}
+.modes-title{margin-bottom:.4rem}
+.modes-lede{color:var(--color-muted);max-width:70ch;margin:0 0 1.5rem}
+.mode-list{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:1fr 1fr;gap:1.3rem}
+.mode-list li{background:var(--color-bg);border:1px solid var(--color-border);border-radius:var(--radius);padding:1.2rem 1.4rem}
+.mode-list h4{font-family:var(--font-serif);font-size:1.15rem;color:var(--color-primary);margin:0 0 .4rem}
+.mode-list p{margin:0;font-size:1rem}
+@media (max-width:720px){ .mode-list{grid-template-columns:1fr} }
