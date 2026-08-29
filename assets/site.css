@@ -209,7 +209,8 @@ h2+.section-lede{margin-top:.25rem}
 .step-num{flex:0 0 auto;width:2.4rem;height:2.4rem;border-radius:50%;
   background:rgba(168,90,42,.12);color:var(--color-accent);font-family:var(--font-serif);
   font-weight:700;font-size:1.3rem;display:flex;align-items:center;justify-content:center}
-.step h3{margin:.1rem 0 .4rem}
+.step h3,.step h4{margin:.1rem 0 .4rem}
+.step h4{font-size:1.15rem}
 .step p{margin:0;font-size:1rem}
 
 /* ============ Author ============ */
@@ -401,4 +402,5 @@ h2+.section-lede{margin-top:.25rem}
 .mode-list li{background:var(--color-bg);border:1px solid var(--color-border);border-radius:var(--radius);padding:1.2rem 1.4rem}
 .mode-list h4{font-family:var(--font-serif);font-size:1.15rem;color:var(--color-primary);margin:0 0 .4rem}
 .mode-list p{margin:0;font-size:1rem}
+.modes .steps{margin-top:0}
 @media (max-width:720px){ .mode-list{grid-template-columns:1fr} }
