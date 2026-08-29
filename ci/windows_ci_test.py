@@ -4273,6 +4273,38 @@ def test_relative_path_rejected():
           "5.9: relative TARGET gets a clear Russian error message")
 
 
+def test_bare_gz_bz2_not_copied_as_archive():
+    print("\n=== live run 2026-08-29: a bare .gz/.bz2 (single-file compression, not .tar.gz) "
+          "must NOT be copied into Albums/ as an 'archive' ===")
+    src = os.path.join(WORK, "src_bare_gz")
+    sync_dir = os.path.join(src, "OLD", "YandexDisk", ".sync")
+    os.makedirs(sync_dir, exist_ok=True)
+    import gzip as _gz
+    import bz2 as _bz2
+    with open(os.path.join(sync_dir, "core-1.log.gz"), "wb") as f:
+        f.write(_gz.compress(b"2016-03-30 sync log\n" * 40))
+    with open(os.path.join(src, "dump.sql.bz2"), "wb") as f:
+        f.write(_bz2.compress(b"INSERT INTO t VALUES (1);\n" * 30))
+    image(os.path.join(src, "real_photo.jpg"), 800, 600, exif=True, dt="2020:05:05 10:00:00")
+    tgt = os.path.join(WORK, "target_bare_gz")
+
+    r = run_photosort(src, tgt)
+    check(r.returncode == 0, "bare-gz: run exits 0")
+    copied = []
+    for dp, _dirs, files in os.walk(tgt):
+        if "__служебные_файлы" in dp:
+            continue
+        copied += [f for f in files]
+    check(not any(f.endswith((".gz", ".bz2")) for f in copied),
+          f"bare-gz: no .gz/.bz2 file copied into the archive (got {sorted(copied)})")
+    check(any(f == "real_photo.jpg" for f in copied),
+          "bare-gz: the real photo alongside them WAS archived")
+    archives_log = os.path.join(tgt, "__служебные_файлы", "logs", "archives.log")
+    log_text = open(archives_log, encoding="utf-8").read() if os.path.exists(archives_log) else ""
+    check("core-1.log.gz" not in log_text and "dump.sql.bz2" not in log_text,
+          "bare-gz: bare .gz/.bz2 not logged as an archive at all")
+
+
 def test_third_party_licenses_content():
     # 2026-08-04: this repo's build.bat no longer packages licenses/PDF docs at all (by direct
     # user decision -- local dev build is exe-only, for a real-hardware "does it even build"
@@ -4438,6 +4470,7 @@ ALL_TESTS = [
     test_archive_entry_count_mismatch_rejected,
     test_7z_with_subfolder_not_rejected_as_traversal,
     test_relative_path_rejected,
+    test_bare_gz_bz2_not_copied_as_archive,
     test_third_party_licenses_content,
     test_requirements_txt_pinned_and_wired_up,
 ]

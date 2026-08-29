@@ -66,7 +66,7 @@ import report  # PROMPT_archive_report.md, границы: отдельный м
 # blanket ignore of all warnings, so any other future PIL/library warning still surfaces.
 warnings.filterwarnings("ignore", message="Palette images with Transparency.*", category=UserWarning)
 
-__version__ = "0.6.3"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
+__version__ = "0.6.4"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
                                  # с RULES_VERSION ниже (та про совместимость архива, а не exe)
 RULES_VERSION = "2026-08-11"   # дата последнего изменения бизнес-правил -- см. RULES.md;
                                 # менять руками при изменении логики раскладки/дедупа/дат
@@ -5110,7 +5110,16 @@ class SourceWalker:
                     continue
 
                 t = file_type(full)
-                if t == "other":
+                if t == "other" or t == "archive":
+                    # t == "archive" здесь -- ТОЛЬКО бэйр .gz/.bz2, который detect_archive_format()
+                    # выше уже отверг (одиночный сжатый файл: core.log.gz, dump.sql.gz, UTF-8.gz --
+                    # НЕ многофайловый архив; настоящие .zip/.7z/.rar/.tar/.tar.gz/.tgz/.tar.bz2 все
+                    # ушли в ветку `if fmt:` выше и сюда не доходят). Живой боевой прогон
+                    # (2026-08-29): без этой ветки такой файл получал SourceItem(ftype="archive")
+                    # и КОПИРОВАЛСЯ в Albums/ как "unknown_type" (мусор -- .sync-логи YandexDisk,
+                    # locale-файлы). Распаковать его нечем, медиа внутри почти не бывает -- пропуск,
+                    # как и "other".
+                    #
                     # Files with no plausible photo/video relevance (.exe, .docx, .pdf, ...)
                     # are silently ignored: not copied, not disputed, not logged. Only
                     # image/raw/video/archive extensions enter the pipeline at all; borderline
