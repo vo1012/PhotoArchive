@@ -269,6 +269,9 @@ h2+.section-lede{margin-top:.25rem}
 /* ============ Download ============ */
 .download .container{background:linear-gradient(180deg,rgba(36,84,74,.06),rgba(36,84,74,.03));
   border:1px solid var(--color-border);border-radius:18px;padding-block:clamp(2.5rem,5vw,3.5rem)}
+.download-version{font-size:.95rem;color:var(--color-muted);margin:.3rem 0 0}
+.download-version strong{color:var(--color-primary);font-weight:600}
+.download-version+.section-lede{margin-top:.9rem}
 .download-hint{font-size:.9rem;max-width:60ch;margin-inline:auto}
 .download-hint.simple{margin-top:1rem}
 /* exe/zip captions read as normal body copy, not a small caption -- SmartScreen note below
