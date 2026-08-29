@@ -852,20 +852,40 @@ def _check_pause_keypress(log=console_log) -> None:
     процесс".
 
     Неблокирующий опрос клавиши (msvcrt.kbhit()/getch() -- Windows-only, обычный способ читать
-    консольный ввод без реального блокирующего input()) -- вызывается на КАЖДОЙ итерации
-    основного цикла обработки файлов (_run_impl(), между файлами, не внутри одного файла -- не
-    может прервать уже начатую операцию с диском на середине). Пробел -- единственная клавиша,
+    консольный ввод без реального блокирующего input()). Пробел -- единственная клавиша,
     которая что-то делает: входим в РЕАЛЬНУЮ блокирующую паузу (это и есть цель функции --
     getch() здесь блокирует намеренно, в отличие от остального кода этой сессии, который
     убирает блокирующий ввод из рабочей консоли), печатаем подсказку, ждём следующего нажатия
-    ЛЮБОЙ клавиши, продолжаем. Любая ДРУГАЯ клавиша в основном опросе (не в самой паузе)
-    молча съедается и игнорируется -- реагируем только на пробел, не на случайные нажатия/
-    вставку из буфера обмена в окно консоли.
+    ЛЮБОЙ клавиши, продолжаем.
 
-    No-op вне Windows (msvcrt не существует, да и не нужен -- на Linux/dev-сессии эта функция
-    не вызывается вовсе, см. её единственный вызов в _run_impl()) и best-effort (проглатывает
-    любой сбой ctypes/msvcrt) -- не должна мочь сломать реальную обработку файлов, худший
-    случай -- пауза просто не сработает."""
+    A (2026-08-28, живая находка пользователя). Раньше опрос стоял ТОЛЬКО между файлами
+    верхнего цикла, а "продолжить" читалось обычным getch() из общего буфера консоли. Во
+    время долгой операции (распаковка/хеш большого файла/обход содержимого архива) опрос не
+    вызывался, пользователь не видел реакции и жал пробел несколько раз подряд -- все нажатия
+    копились в буфере, и каждая пара "пробел+пробел" проигрывалась как мгновенный вход-выход
+    из паузы, а конечное состояние зависело от чётности числа нажатий ("старт/стоп с
+    неизвестным состоянием в конце"). Теперь: при входе в паузу буфер ПОЛНОСТЬЮ осушается,
+    ждём ровно ОДНО свежее нажатие, на выходе осушаем ещё раз -- сколько бы раз ни нажали,
+    ровно одна пауза, последняя строка на экране всегда честно говорит текущее состояние.
+    Ctrl-C во время паузы (и вообще внутри опроса) завершает программу как обычно. Механизм
+    зависит от режима консоли и покрыт с обеих сторон: если ENABLE_PROCESSED_INPUT включён
+    (умолчание) -- ОС доставляет асинхронный KeyboardInterrupt в произвольной точке, его ловит
+    тот же верхний обработчик _run_impl()/run_analyze() (-> отчёт + выход 130), а ветки
+    `key == b"\\x03"` ниже просто недостижимы и безвредны; если консоль в raw-режиме -- Ctrl-C
+    приходит байтом b"\\x03" через getch(), и эти ветки поднимают KeyboardInterrupt явно, тот
+    же обработчик. (Первый путь -- недоказуем без реального Windows, REVIEW-HANDOFF.md Раунд
+    148 придирка; на живую проверку, если будет боевой прогон именно с Ctrl-C во время паузы.)
+
+    B (2026-08-28): вызывается не только между файлами верхнего цикла, но и внутри долгих
+    операций -- обход содержимого архива (SourceWalker._walk_dir(), по папке и по файлу),
+    расчёт sha256 большого файла (sha256_file(progress_cb=...), в т.ч. хеш архива перед
+    распаковкой) -- чтобы пробел реагировал без минутных "мёртвых зон", из-за которых и
+    начинался долбёж. Одиночный ffmpeg-вызов (video_phash_3frames) прервать нельзя -- там
+    опрос только до/после, как у всего остального между-файлового.
+
+    No-op вне Windows (msvcrt не существует) и best-effort (проглатывает любой сбой ctypes/
+    msvcrt, КРОМЕ намеренного KeyboardInterrupt) -- не должна мочь сломать реальную обработку
+    файлов, худший случай -- пауза просто не сработает."""
     if os.name != "nt":
         return
     try:
@@ -873,11 +893,30 @@ def _check_pause_keypress(log=console_log) -> None:
         if not msvcrt.kbhit():
             return
         key = msvcrt.getch()
+        if key == b"\x03":
+            raise KeyboardInterrupt
         if key != b" ":
+            # любая другая клавиша (в т.ч. многобайтная спец-клавиша: b"\x00"/b"\xe0" + хвост)
+            # -- осушить возможный хвост и выйти, не реагируя
+            while msvcrt.kbhit():
+                if msvcrt.getch() == b"\x03":
+                    raise KeyboardInterrupt
             return
-        log("\n[Пауза] Обработка остановлена -- нажмите любую клавишу, чтобы продолжить...")
-        msvcrt.getch()
-        log("[Продолжаю...]\n")
+        # A: выбросить всё, что пользователь успел набить, пока шла операция -- иначе следующее
+        # же буферизованное нажатие мгновенно снимет паузу
+        while msvcrt.kbhit():
+            if msvcrt.getch() == b"\x03":
+                raise KeyboardInterrupt
+        log("\n[ПАУЗА] Обработка остановлена. Нажмите любую клавишу, чтобы продолжить…")
+        if msvcrt.getch() == b"\x03":
+            raise KeyboardInterrupt
+        # съесть хвост спец-клавиши, чтобы он не сработал как пробел на следующем опросе
+        while msvcrt.kbhit():
+            if msvcrt.getch() == b"\x03":
+                raise KeyboardInterrupt
+        log("[Продолжаю]\n")
+    except KeyboardInterrupt:
+        raise
     except Exception:
         pass
 
@@ -2641,7 +2680,12 @@ def _open_archive_cache_conn(archive_root: str) -> sqlite3.Connection:
 pillow_heif.register_heif_opener()
 
 
-def sha256_file(path: str, chunk_size: int = 4 * 1024 * 1024) -> str:
+def sha256_file(path: str, chunk_size: int = 4 * 1024 * 1024, progress_cb=None) -> str:
+    """progress_cb (2026-08-28, часть B фикса паузы -- см. _check_pause_keypress()):
+    необязательный колбэк, вызывается после каждого прочитанного чанка. Нужен, чтобы пауза по
+    пробелу реагировала посреди хеширования одного большого файла (многогигабайтное видео/
+    архив), а не только между файлами. По умолчанию None -- ноль накладных расходов для всех
+    прочих вызывающих (проверка копии, dump-скан и т.п.)."""
     h = hashlib.sha256()
     with open(winlong(path), "rb") as f:
         while True:
@@ -2649,6 +2693,8 @@ def sha256_file(path: str, chunk_size: int = 4 * 1024 * 1024) -> str:
             if not chunk:
                 break
             h.update(chunk)
+            if progress_cb is not None:
+                progress_cb()
     return h.hexdigest()
 
 
@@ -3254,7 +3300,46 @@ def list_archive(path: str, fmt: str) -> ArchiveInfo:
     return ArchiveInfo(ok=False)
 
 
-def extract_archive(path: str, fmt: str, dest_dir: str, log=print) -> bool:
+@dataclass
+class ExtractOutcome:
+    """Результат extract_archive(). __bool__ == ok, чтобы существующее
+    `if not extract_archive(...)` продолжало работать без изменений. Поля skipped_meta/
+    failures наполняет только tar-ветка (A/C/D, 2026-08-28): zip/7z/rar распаковывает
+    внешний бинарник, построчной статистики по своим членам он сюда не отдаёт."""
+    ok: bool
+    skipped_meta: int = 0          # symlink/hardlink/устройство/fifo -- намеренно НЕ распакованы (A)
+    failures: list = field(default_factory=list)   # до _EXTRACT_FAILURE_SAMPLE_CAP строк "<имя>: <русская причина>" (D)
+    failure_total: int = 0         # сколько всего реальных сбоёв распаковки (failures может быть обрезан)
+
+    def __bool__(self):
+        return self.ok
+
+
+_EXTRACT_FAILURE_SAMPLE_CAP = 5
+
+
+def _short_extract_error(e: Exception) -> str:
+    """Короткая русская причина для строки о нераспаковавшемся файле (D, 2026-08-28) --
+    вместо сырого текста исключения tarfile (по-английски, часто дублирует имя файла)."""
+    if isinstance(e, OSError):
+        if e.errno == errno.ENAMETOOLONG or getattr(e, "winerror", None) in (206, 3):
+            return "слишком длинный путь"
+        if e.errno == errno.ENOSPC:
+            return "нет места на диске"
+        if e.errno in (errno.EACCES, errno.EPERM):
+            return "отказано в доступе"
+        return "ошибка записи файла"
+    name = type(e).__name__
+    if "Link" in name:
+        return "ссылка за пределы архива"
+    if "Absolute" in name:
+        return "абсолютный путь внутри архива"
+    if "SpecialFile" in name:
+        return "специальный файл (устройство/сокет)"
+    return "не удалось распаковать"
+
+
+def extract_archive(path: str, fmt: str, dest_dir: str, log=print) -> ExtractOutcome:
     _makedirs_iterative(winlong(dest_dir))
     try:
         if fmt in ("zip", "7z"):
@@ -3262,26 +3347,38 @@ def extract_archive(path: str, fmt: str, dest_dir: str, log=print) -> bool:
                 [SEVENZIP_BIN, "x", f"-o{dest_dir}", "-y", path],
                 capture_output=True, timeout=1800,
             )
-            return out.returncode == 0
+            return ExtractOutcome(ok=out.returncode == 0)
         if fmt == "rar":
             out = subprocess.run(
                 [UNRAR_BIN, "x", "-y", path, dest_dir + os.sep],
                 capture_output=True, timeout=1800,
             )
-            return out.returncode == 0
+            return ExtractOutcome(ok=out.returncode == 0)
         if fmt in TAR_MODES:
             # Member-by-member (не extractall целиком): tar может быть собран не на Windows
             # и содержать имя с символом, который NTFS не примет (':', '?', ...) -- одно
             # такое имя иначе роняло бы исключение и обрывало распаковку ВСЕГО архива.
             # Здесь -- как и для имени назначения при копировании -- сегменты санитизируются
-            # заранее, а один нераспаковавшийся файл просто логируется и пропускается.
+            # заранее, а один нераспаковавшийся файл просто копится в failures и пропускается.
             if not _TAR_EXTRACT_SUPPORTS_DATA_FILTER:
                 log("  ВНИМАНИЕ: интерпретатор Python, которым собран .exe, слишком старый для "
                     "filter=\"data\" (защита от path traversal при распаковке tar) -- "
                     "распаковка продолжится БЕЗ этой защиты. Пересоберите на Python >=3.11.4/3.12.")
             extract_kwargs = {"filter": "data"} if _TAR_EXTRACT_SUPPORTS_DATA_FILTER else {}
+            skipped_meta = 0
+            failures = []
+            failure_total = 0
             with tarfile.open(winlong(path), TAR_MODES[fmt]) as tf:
                 for member in tf.getmembers():
+                    # A (2026-08-28): символьные/жёсткие ссылки, блочные/символьные устройства
+                    # и FIFO -- не файлы с данными, фотоархиву не нужны, а безопасный
+                    # распаковщик (filter="data") всё равно отверг бы ссылку на абсолютный путь
+                    # исключением на КАЖДУЮ (реальный боевой прогон: 178 таких строк подряд от
+                    # backup-архива прошивки роутера). Не пытаемся распаковывать вовсе -- только
+                    # считаем, наверх уходит одно число (см. ExtractOutcome / _handle_archive()).
+                    if member.issym() or member.islnk() or member.isdev() or member.isfifo():
+                        skipped_meta += 1
+                        continue
                     safe_name = "/".join(
                         sanitize_windows_component(p) for p in member.name.split("/") if p
                     )
@@ -3291,12 +3388,15 @@ def extract_archive(path: str, fmt: str, dest_dir: str, log=print) -> bool:
                     try:
                         tf.extract(member, winlong(dest_dir), **extract_kwargs)
                     except Exception as e:
-                        log(f"  пропущен файл в архиве (не удалось распаковать) {member.name}: {e}")
-            return True
+                        failure_total += 1
+                        if len(failures) < _EXTRACT_FAILURE_SAMPLE_CAP:
+                            failures.append(f"{member.name}: {_short_extract_error(e)}")
+            return ExtractOutcome(ok=True, skipped_meta=skipped_meta,
+                                   failures=failures, failure_total=failure_total)
     except Exception as e:
         log(f"  ОШИБКА распаковки {path}: {e}")
-        return False
-    return False
+        return ExtractOutcome(ok=False)
+    return ExtractOutcome(ok=False)
 
 
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
@@ -3356,9 +3456,9 @@ def find_reparse_point_in_tree(root: str):
     symlink (S_IFLNK external_attr, same shape as ci/windows_ci_test.py's
     test_archive_symlink_rejected) makes bin/7z.exe fail extraction OUTRIGHT on a normal,
     non-elevated Windows account without Developer Mode -- "Cannot create symbolic link: client
-    does not have the required privilege" -- so `extract_archive()` already returns False and
-    the whole archive is rejected via `archive_extract_failed`, this function is never even
-    reached. That is itself a real, confirmed safety net for the overwhelming majority of
+    does not have the required privilege" -- so `extract_archive()` already returns a falsy
+    ExtractOutcome and the whole archive is rejected via `archive_extract_failed`, this
+    function is never even reached. That is itself a real, confirmed safety net for the overwhelming majority of
     PhotoArchive's target users (regular Windows accounts). Whether 7z.exe/UnRAR.exe can still
     materialize a reparse point when the *extracting* process DOES hold
     SeCreateSymbolicLinkPrivilege (Developer Mode enabled, or elevated/admin) remains
@@ -3867,7 +3967,7 @@ def _source_tree_parent_key(item) -> str:
     return "/".join(item.source_tree_path.split("/")[:-1])
 
 
-def _dvd_unit_file_records(video_ts_dirpath: str) -> list:
+def _dvd_unit_file_records(video_ts_dirpath: str, progress_cb=None) -> list:
     """Рекурсивный список ВСЕХ файлов внутри VIDEO_TS -- (relpath, size, mtime, full_path,
     sha256). relpath с прямыми слэшами, регистр ИМЕНИ СОХРАНЁН как на диске (нужен для
     реального имени файла в месте назначения -- "копировать как есть" включает регистр,
@@ -3883,13 +3983,18 @@ def _dvd_unit_file_records(video_ts_dirpath: str) -> list:
     for dirpath, _dirnames, filenames in os.walk(winlong(video_ts_dirpath)):
         plain_dirpath = dirpath[4:] if dirpath.startswith("\\\\?\\") else dirpath
         for name in filenames:
+            # B (REVIEW-HANDOFF.md Раунд 148, замечание 2): фингерпринт юнита хеширует ВСЕ VOB
+            # подряд (гигабайты); опрос паузы снаружи (_walk_dir()) сюда не дотягивается.
+            if progress_cb is not None:
+                progress_cb()
             plain_full = os.path.join(plain_dirpath, name)
             rel = os.path.relpath(plain_full, video_ts_dirpath).replace("\\", "/")
             try:
                 st = os.stat(winlong(plain_full))
             except OSError:
                 continue
-            records.append((rel, st.st_size, st.st_mtime, plain_full, sha256_file(plain_full)))
+            records.append((rel, st.st_size, st.st_mtime, plain_full,
+                            sha256_file(plain_full, progress_cb=progress_cb)))
     records.sort(key=lambda r: r[0].lower())
     return records
 
@@ -4069,6 +4174,11 @@ class SourceWalker:
         # bar at all) working exactly as before.
         self._progress_cb = progress_cb
         self.archive_logs = []   # list of (archive_display, status, note)
+        # Вспомогательные строки для archives.log (пропущенные служебные записи / частичные
+        # сбои распаковки, 2026-08-28) -- отдельно от archive_logs НАМЕРЕННО: тег не с
+        # префиксом "archive_", их НЕ должны считать счётчики n_archives_found/archives_seen
+        # (одна запись на архив там, здесь -- дополнительная к ней). list of (display, tag, text).
+        self.archive_notes = []
         self.sidecar_logs = []   # list of (display_path,)
         self.skipped_marker_logs = []  # list of (display_path,)
         # 2026-08-07: DVD-Video (VIDEO_TS) теперь копируется целиком как один юнит (см.
@@ -4453,7 +4563,9 @@ class SourceWalker:
            разным датным корзинам, что и есть "рассыпаться", которого просил избежать
            пользователь), низкий tier точности (как у любого видео без EXIF-даты съёмки, тот
            же класс, что .mod/.tod)."""
-        records = _dvd_unit_file_records(video_ts_dirpath)
+        records = _dvd_unit_file_records(
+            video_ts_dirpath,
+            progress_cb=(lambda: _check_pause_keypress(log=self.log)) if os.name == "nt" else None)
         if not records:
             return
         fingerprint = _dvd_unit_fingerprint(records)
@@ -4504,8 +4616,20 @@ class SourceWalker:
         if self._show_placement_letter:
             letter = "A" if (volume_label or album is not None) else "D"
         letter_part = f"{letter} " if letter else " "
-        self._log_own_line(f"  [DVD]{letter_part}новый DVD-диск -> {dest_dir} "
-                 f"({len(records)} файлов, {disp_base})")
+        # Живой боевой прогон 2026-08-28: та же проблема, что чинил _log_archive() (86f2b2f) --
+        # строка уходит в write_heavy_notice() (перенос по 2/3 ширины терминала), а тут ДВА
+        # длинных пути (dest_dir + disp_base) и ничего не обрезано под ширину, поэтому реальный
+        # DVD-путь рвался посреди слова. Тот же приём: disp_base (исходный путь -- контекст,
+        # полный вариант всё равно уходит в actions.log per-file через run_logs.appended())
+        # под фикс-кап, dest_dir -- под остаток ширины, wrap только если всё равно не влезло.
+        dvd_tag = f"[DVD]{letter_part}новый DVD-диск -> "
+        disp_short = _truncate_progress_note(disp_base, maxlen=48) if disp_base else ""
+        dvd_tail = (f" ({len(records)} файлов, {disp_short})" if disp_short
+                    else f" ({len(records)} файлов)")
+        dest_shown = _truncate_progress_note(
+            dest_dir, maxlen=_console_tag_line_budget(len(dvd_tail), tag_width=len(dvd_tag)))
+        dvd_line = f"  {dvd_tag}{dest_shown}{dvd_tail}"
+        self._log_own_line(dvd_line, wrap=len(dvd_line) > _console_columns())
         for rel, size, mtime, full_path, sha in records:
             dest_path = os.path.join(dest_dir, *rel.split("/"))
             yield SourceItem(
@@ -4580,6 +4704,11 @@ class SourceWalker:
         stack = [(dirpath, rel_prefix, is_root, ancestors)]
         while stack:
             cur_dirpath, cur_rel_prefix, cur_is_root, cur_ancestors = stack.pop()
+
+            # B (2026-08-28, см. _check_pause_keypress()): обход содержимого распакованного
+            # архива (тот же _walk_dir(), рекурсивно) на источнике с гигантским деревом --
+            # час-два без единого выхода в верхний цикл, где стоит основной опрос паузы.
+            _check_pause_keypress(log=self.log)
 
             if not cur_is_root:
                 if os.path.realpath(cur_dirpath) == self._target_real:
@@ -4854,6 +4983,9 @@ class SourceWalker:
             files.sort(key=_defer_raw_with_sibling)
 
             for name in files:
+                # B (2026-08-28, см. _check_pause_keypress()): большая плоская папка внутри
+                # архива -- десятки тысяч файлов без выхода в верхний цикл с опросом паузы.
+                _check_pause_keypress(log=self.log)
                 full = os.path.join(cur_dirpath, name)
                 if _matches_any(name, EXCLUDE_FILES_PATTERNS) or name == SKIP_MARKER:
                     # "объектов X/Y" больше не считает non-media файлы вовсе (см. докстрин
@@ -5163,7 +5295,11 @@ class SourceWalker:
             return
 
         try:
-            archive_hash = sha256_file(archive_path)
+            # B (2026-08-28, см. _check_pause_keypress()): хеш многогигабайтного архива --
+            # такая же "мёртвая зона" для паузы по пробелу, как и хеш большого видео.
+            archive_hash = sha256_file(
+                archive_path,
+                progress_cb=(lambda: _check_pause_keypress(log=self.log)) if os.name == "nt" else None)
         except OSError as e:
             # Same race as the os.path.getsize() guard above, just later -- this reads the
             # WHOLE archive to hash it (real wall-clock time on a multi-GB file, exactly the
@@ -5201,14 +5337,38 @@ class SourceWalker:
         # НЕЗАВИСИМЫЙ канал именно в бар, раньше распаковка была видна ТОЛЬКО в логе.
         if self._transient_op_cb is not None:
             self._transient_op_cb(f" Извлекаю ({_fmt_size_gb(compressed_size)})")
-        ok = extract_archive(archive_path, fmt, extract_dir, log=self.log)
-        if not ok:
+        outcome = extract_archive(archive_path, fmt, extract_dir, log=self.log)
+        if not outcome:
             if self._transient_op_cb is not None:
                 self._transient_op_cb(None)
             self._log_archive(_strip_trailing_arrow(full_display), "archive_extract_failed",
                                letter=placement_letter)
             cleanup_dir(extract_dir)
             return
+
+        # C/D/E (2026-08-28): раньше tar-ветка extract_archive() печатала СЫРОЙ текст
+        # исключения (по-английски) отдельной строкой на КАЖДЫЙ пропущенный член -- боевой
+        # прогон дал 178 таких строк подряд от backup-архива прошивки роутера. Теперь одна
+        # спокойная русская строка на архив в консоль (_log_own_line) + запись в archives.log
+        # через archive_notes (отдельно от archive_logs -- не путать счётчики архивов, см.
+        # __init__()). Настоящие сбои распаковки -- тем же способом, тоже по-русски, с кэпом.
+        arch_disp = _strip_trailing_arrow(full_display)
+        if outcome.skipped_meta:
+            n = outcome.skipped_meta
+            self._log_own_line(f"  в архиве пропущено служебных записей: {n} "
+                               f"(ссылки и устройства — не файлы с данными)")
+            self.archive_notes.append(
+                (arch_disp, "meta_entries_skipped",
+                 f"{n} служебных записей (ссылки/устройства) не распакованы"))
+        if outcome.failure_total:
+            shown = "; ".join(outcome.failures)
+            more = outcome.failure_total - len(outcome.failures)
+            tail = f"; и ещё {more}" if more > 0 else ""
+            self._log_own_line(f"  не удалось распаковать файлов из архива: "
+                               f"{outcome.failure_total} ({shown}{tail})")
+            self.archive_notes.append(
+                (arch_disp, "extract_partial_failure",
+                 f"{outcome.failure_total} файлов не распаковано: {shown}{tail}"))
 
         # Живая находка пользователя, 2026-08-19: с этой точки и до конца функции (обход
         # распакованного содержимого -- на источнике с гигантским количеством вложенных
@@ -5371,11 +5531,13 @@ def _volume_likely_gone(path: str) -> bool:
         return True
 
 
-def sha256_file_with_retry(path: str, retries: int, delay: float) -> str:
+def sha256_file_with_retry(path: str, retries: int, delay: float, progress_cb=None) -> str:
     last_err = None
     for attempt in range(retries):
         try:
-            return sha256_file(path)
+            # progress_cb передаём только когда он реально есть -- иначе зовём в один
+            # позиционный аргумент, как раньше (тесты монкейпатчат sha256_file lambda p: ...)
+            return sha256_file(path, progress_cb=progress_cb) if progress_cb else sha256_file(path)
         except OSError as e:
             last_err = e
             if attempt < retries - 1:
@@ -5441,8 +5603,13 @@ def analyze_batch(items: list, retries: int = 3, retry_delay: float = 5.0,
         image_video_paths = [it.read_path for it in items if it.ftype in ("image", "raw", "video")]
         tags_by_path = exiftool_batch(image_video_paths, log=log) if image_video_paths else {}
 
+    # B (2026-08-28, см. _check_pause_keypress()): опрос паузы по пробелу посреди хеширования
+    # большого файла, а не только между файлами верхнего цикла.
+    _pause_cb = (lambda: _check_pause_keypress(log=log)) if os.name == "nt" else None
+
     records = []
     for it in items:
+        _check_pause_keypress(log=log)
         rec = SourceRecord(item=it)
         rec.is_hidden = is_hidden_path(it.read_path)
 
@@ -5468,7 +5635,8 @@ def analyze_batch(items: list, retries: int = 3, retry_delay: float = 5.0,
                 rec.sha256 = cached[2]
             else:
                 try:
-                    rec.sha256 = sha256_file_with_retry(it.read_path, retries, retry_delay)
+                    rec.sha256 = sha256_file_with_retry(it.read_path, retries, retry_delay,
+                                                        progress_cb=_pause_cb)
                 except ReadError as e:
                     rec.read_error = True
                     rec.read_error_msg = str(e)
@@ -6489,7 +6657,11 @@ def atomic_copy(src_path: str, dest_path: str, expected_sha256: str, margin_byte
     os.close(fd)
     try:
         shutil.copy2(winlong(src_path), tmp_path)
-        actual_sha = sha256_file(tmp_path)
+        # B (REVIEW-HANDOFF.md Раунд 148, замечание 2): пост-копи верификация хеша на КАЖДОЕ
+        # размещение файла -- для одного гигантского видео та же «мёртвая зона» для паузы по
+        # пробелу, что и уже покрытый хеш архива. progress_cb -- то же, что в analyze_batch().
+        actual_sha = sha256_file(
+            tmp_path, progress_cb=(_check_pause_keypress if os.name == "nt" else None))
         if actual_sha != expected_sha256:
             raise IOError(f"hash mismatch after copy: {src_path} -> {tmp_path} "
                            f"(expected {expected_sha256}, got {actual_sha})")
@@ -7048,7 +7220,14 @@ def index_archive(cfg: Config, conn, log=print):
     if entries:
         with ProgressReporter(total=len(entries), desc=" Просматриваю уже собранный архив", unit="файл",
                                note_width=len("большое видео")) as bar:
+            # B (REVIEW-HANDOFF.md Раунд 148 замечание 2 / Раунд 149 придирка): Фаза 1 --
+            # самая первая фаза ЛЮБОГО прогона; без опроса паузу нельзя поставить, даже не
+            # дойдя до копирования. Одна замкнутая на реальный log= вида (как analyze_batch()
+            # и _handle_dvd_unit()) -- и на поштучный опрос, и внутрь самого хеша.
+            _pause_cb = (lambda: _check_pause_keypress(log=log)) if os.name == "nt" else None
             for root, path, ftype in entries:
+                if _pause_cb is not None:
+                    _pause_cb()
                 try:
                     st = os.stat(winlong(path))
                 except OSError:
@@ -7067,7 +7246,7 @@ def index_archive(cfg: Config, conn, log=print):
                     bar.update(0, note=note)
                     width = height = bitrate = None
                     try:
-                        sha = sha256_file(path)
+                        sha = sha256_file(path, progress_cb=_pause_cb)
                     except OSError:
                         # Same class of race as the archive-scan guards in _handle_archive()
                         # (2026-07-11, live user report) -- this indexes the user's OWN existing
@@ -9392,6 +9571,11 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
         # archives.log (иначе файл существовал бы, но всегда оставался пустым).
         for display, status, note in walker.archive_logs:
             run_logs.archive_event(display, status, note)
+        # E (2026-08-28): пропущенные служебные записи / частичные сбои распаковки tar --
+        # отдельный список (см. SourceWalker.__init__()), в консоль уже ушли одной строкой
+        # через _log_own_line(), здесь persist'им в archives.log тем же каналом.
+        for display, tag, text in walker.archive_notes:
+            run_logs.archive_event(display, tag, text)
         # ТЗ-меню 2026-07-10, раздел 5: "Загляну внутрь: N сжатых файлов" в человеческой
         # сводке пробного прогона -- чистая инструментация поверх уже собранного списка,
         # никакой новой бизнес-логики.
@@ -10343,8 +10527,25 @@ def _finalize_target_report(target: str, level: str, any_succeeded: bool, total_
         # приём, что уже использует _bare_launch_run_dryrun()) и передаёт их сюда готовыми.
         # data=None (level=="target", реальная сборка -- suppress_logs там всегда False) --
         # старое поведение, читаем настоящие CSV с диска.
+        # Живой боевой прогон 2026-08-28: прогон к этому моменту уже закрыл прогресс-бар (он
+        # застыл на 100%), а parse_target_logs() + HTML + report_detail.xlsx ещё считаются --
+        # консоль стоит без единой строки, окно GUI "Работа окончена" физически ждёт возврата
+        # отсюда, пользователь решает, что программа зависла. write_only-режим xlsx срезал это
+        # с минут до секунд (см. report_detail_xlsx._write_flat_xlsx()), но и на секундах
+        # застывшие 100% без ориентира читаются как зависание. Печатаем ЭТАПЫ с номером
+        # X/Y (по предложению пользователя) -- честный "сколько ещё": Y = ровно то, что
+        # видит эта функция (чтение логов + сборка отчёта; для CLI --dry-run логи уже
+        # переданы готовыми, шаг один). Глубже (HTML vs xlsx отдельными шагами) -- отдельного
+        # прогресса report.py наружу не отдаёт, дробить callback'ом ради ~5-секундной операции
+        # несоразмерно. Масштаб ("N записей") -- чтобы пауза была объяснима.
+        _total_steps = 2 if data is None else 1
+        log("Формирую итоговый отчёт…")
         if data is None:
+            log(f"  [1/{_total_steps}] читаю логи прогона…")
             data = report.parse_target_logs(os.path.join(photosort_dir, "logs"))
+        _n_events = sum(len(data.get(k, ())) for k in ("appended", "skipped", "disputes", "unreadable"))
+        _scale = f" ({_n_events} записей)" if _n_events > 3000 else ""
+        log(f"  [{_total_steps}/{_total_steps}] собираю страницу и детализированную таблицу{_scale}…")
         report.generate_report(data, out_path, level=level, run_stats=run_stats,
                                 run_start=run_start, target_path=target, interrupted=interrupted,
                                 app_version=__version__, source_paths=source_paths)
@@ -10392,6 +10593,19 @@ def _finalize_analyze_report(stats, open_browser: bool, log=print, source_path: 
         # всё равно рендерится обычным путём, не placeholder'ом "источник пуст" -- это неверно
         # (источник не обязательно пуст, просто не успели дойти до первого файла), баннер
         # прерывания сам объясняет пустоту честнее, чем текст про "недоступен или пуст".
+        #
+        # REVIEW-HANDOFF.md Раунд 151, замечание 2: тот же класс симптома "застывшие 100%
+        # без ориентира", что закрыт для _finalize_target_report() -- generate_report_from_
+        # analyze_stats() (HTML + passport_detail.xlsx тем же _write_flat_xlsx()) молчит
+        # секунды-десятки секунд на большом Паспорте. Тот же приём -- один этап с явным
+        # "сколько": для Паспорта чтения логов нет (stats уже в памяти), шаг всегда один.
+        _n_detail = (len(stats.encrypted_archive_paths) + len(stats.failed_archive_paths)
+                     + len(stats.disputed_records) + len(stats.unreadable_records)
+                     + len(stats.exact_dup_edges) + len(stats.near_dup_edges)
+                     + len(stats.dump_item_paths))
+        _scale = f" ({_n_detail} записей)" if _n_detail > 3000 else ""
+        log("Формирую итоговый отчёт…")
+        log(f"  [1/1] собираю страницу и детализированную таблицу{_scale}…")
         report.generate_report_from_analyze_stats(stats, out_path, level="analyze",
                                                     interrupted=stats.interrupted,
                                                     app_version=__version__,

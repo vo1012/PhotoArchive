@@ -278,6 +278,36 @@ def test_dvd_unit_log_line_shows_placement_letter_when_enabled(tmp_path):
     assert not any("[DVD]A" in ln or "[DVD]D" in ln for ln in lines_off)
 
 
+def test_dvd_unit_log_line_truncates_long_paths_instead_of_wrapping(tmp_path, monkeypatch):
+    """Живой боевой прогон 2026-08-28: строка «[DVD]D новый DVD-диск -> <dest> (N файлов,
+    <src>)» уходит в write_heavy_notice() (перенос по 2/3 ширины) с ДВУМЯ длинными путями и
+    без обрезки под ширину -- реальный DVD-путь рвался посреди слова. Фикс (как у _log_archive
+    в 86f2b2f): disp_base под фикс-кап, dest_dir под остаток ширины, wrap только если всё равно
+    не влезло."""
+    # Узкий «терминал» + маленький бюджет пути (в pytest sys.stderr.isatty() == False, поэтому
+    # _console_tag_line_budget() иначе всегда вернул бы 80 -- подменяем оба).
+    monkeypatch.setattr(m, "_console_columns", lambda fallback=80: 60)
+    monkeypatch.setattr(m, "_console_tag_line_budget", lambda tail_len, **kw: 20)
+
+    source = tmp_path / "source"
+    disc = source / "a_very_deeply_nested_folder_name" / "and_another_one_here" / "downloads" / "VIDEO_TS"
+    disc.mkdir(parents=True)
+    (disc / "VTS_01_0.VOB").write_bytes(b"x" * 10)
+    (tmp_path / "target").mkdir()
+
+    cfg = _make_cfg(tmp_path)
+    lines = []
+    walker = m.SourceWalker(cfg, log=lines.append, show_placement_letter=True)
+    list(walker.walk())
+
+    dvd_lines = [ln for ln in lines if "новый DVD-диск ->" in ln]
+    assert len(dvd_lines) == 1
+    ln = dvd_lines[0].lstrip("\n")
+    assert "\n" not in ln                    # одна физическая строка, не перенос
+    assert "…" in ln                         # длинные пути реально обрезаны
+    assert ln.startswith("  [DVD]D новый DVD-диск -> ")
+
+
 def test_dvd_unit_log_line_letter_is_date_when_no_album_found(tmp_path):
     source = tmp_path / "source"
     disc = source / "downloads"  # известное dump-имя -- find_album() не найдёт альбом
@@ -382,6 +412,22 @@ def test_dvd_unit_duplicate_is_skipped_not_reyielded(tmp_path):
     assert walker.dvd_units_copied == []
     assert walker.dvd_units_skipped_duplicate == [
         {"name": "Disc1", "dest_path": r"D:\Target\Albums\Disc1\VIDEO_TS"}]
+
+
+def test_dvd_unit_file_records_calls_progress_cb_per_file(tmp_path):
+    """REVIEW-HANDOFF.md Раунд 148, замечание 2: фингерпринт DVD-юнита хеширует все VOB подряд
+    (гигабайты) без опроса паузы по пробелу -- progress_cb пробрасывается в _dvd_unit_file_records()
+    и дальше в sha256_file(), вызывается хотя бы раз на файл."""
+    vts = tmp_path / "VIDEO_TS"
+    vts.mkdir()
+    for n in ("VTS_01_0.VOB", "VTS_01_1.VOB", "VIDEO_TS.IFO"):
+        (vts / n).write_bytes(b"x" * 32)
+
+    calls = []
+    records = m._dvd_unit_file_records(str(vts), progress_cb=lambda: calls.append(1))
+
+    assert len(records) == 3
+    assert len(calls) >= 3  # >= (по разу на файл + по чанку внутри sha256_file крупного файла)
 
 
 def test_dvd_unit_name_collision_with_existing_target_content_gets_suffixed(tmp_path):

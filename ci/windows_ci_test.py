@@ -728,6 +728,48 @@ def test_tar_source_never_uses_unverified_rename():
           "tar-integrity: summary.txt counts the file as a verified (not rename-shortcut) copy")
 
 
+def test_tar_absolute_symlink_members_summarized_not_spammed():
+    print("\n=== боевой прогон 2026-08-28: tar со ссылками на абсолютные пути (backup "
+          "прошивки роутера: opt/bin/* -> /opt/bin/busybox) больше НЕ печатает сырой "
+          "английский текст исключения строкой на КАЖДУЮ ссылку -- одна русская сводка в "
+          "консоль + запись meta_entries_skipped в archives.log (A/C/D/E) ===")
+    import tarfile as _tarfile
+    src = os.path.join(WORK, "src_tar_abs_symlink")
+    tgt = os.path.join(WORK, "target_tar_abs_symlink")
+    os.makedirs(src, exist_ok=True)
+    tmp_jpg = os.path.join(WORK, "_tmp_for_symlink_tar.jpg")
+    image(tmp_jpg, 1200, 900, exif=True, dt="2021:05:01 09:00:00")
+    tpath = os.path.join(src, "backup-2024-09-18.tar")
+    tools = ["cat", "chmod", "mount", "ssh", "echo", "df", "expr", "seq", "tee", "nc",
+             "su", "sync", "uname", "more", "ar"]
+    with _tarfile.open(tpath, "w") as tf:
+        tf.add(tmp_jpg, arcname="Album/photo.jpg")
+        for tool in tools:
+            ti = _tarfile.TarInfo("opt/bin/" + tool)
+            ti.type = _tarfile.SYMTYPE
+            ti.linkname = "/opt/bin/busybox"
+            tf.addfile(ti)
+
+    r = run_photosort(src, tgt)
+    check(r.returncode == 0, "tar-abs-symlink: run exits 0")
+    placed = [os.path.join(dp, fn) for dp, _dn, fns in os.walk(tgt) for fn in fns
+              if fn == "photo.jpg"]
+    check(len(placed) == 1, "tar-abs-symlink: the one real photo from the tar is archived")
+
+    combined = r.stdout + r.stderr
+    check("is a link to an absolute path" not in combined,
+          "tar-abs-symlink: no raw English tarfile exception text on the console")
+    check("пропущен файл в архиве" not in combined,
+          "tar-abs-symlink: no per-member skip lines on the console")
+    check(combined.count("служебных записей") <= 1,
+          "tar-abs-symlink: at most one human-readable summary line for all skipped links")
+
+    archives_log = os.path.join(tgt, "__служебные_файлы", "logs", "archives.log")
+    log_text = open(archives_log, encoding="utf-8").read() if os.path.exists(archives_log) else ""
+    check("meta_entries_skipped" in log_text and "15" in log_text,
+          "tar-abs-symlink: archives.log records the skipped-entries summary (E)")
+
+
 def test_place_file_archive_no_crc_forces_hash_verify():
     print("\n=== data-integrity audit (2026-07-10 Phase 2): place_file() unit test -- "
           "archive_no_crc=True must always hash-verify (raise on mismatch, never place a "
@@ -4240,6 +4282,7 @@ ALL_TESTS = [
     test_archive_unlistable_treated_as_bomb,
     test_archive_rename_finalization,
     test_tar_source_never_uses_unverified_rename,
+    test_tar_absolute_symlink_members_summarized_not_spammed,
     test_place_file_archive_no_crc_forces_hash_verify,
     test_analyze_modes,
     test_analyze_target_cli,

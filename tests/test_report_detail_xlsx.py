@@ -262,26 +262,42 @@ class TestGenerateDetailXlsx:
         assert ws.auto_filter.ref == f"A1:I{ws.max_row}"
         assert ws.freeze_panes == "A2"
 
-    def test_outline_level_zero_on_first_row_of_each_folder_one_after(self, tmp_path):
+    def test_many_same_color_rows_all_get_the_color(self, tmp_path):
+        """Живой боевой прогон 2026-08-28: _write_flat_xlsx() кэширует объекты Font по цвету и
+        переиспределяет один инстанс на все ячейки одного цвета (было -- новый Font на каждую
+        ячейку, сотни тысяч на большом архиве). Проверяем, что цвет от этого не теряется:
+        несколько строк одного цвета -- все реально окрашены."""
+        data = {"skipped": [
+            _skipped(rf"D:\SOURCE\dup{i}.jpg", rf"D:\TARGET\a{i}.jpg", "already_present")
+            for i in range(5)
+        ]}
+        rx.generate_detail_xlsx(data, str(tmp_path / "report.html"))
+        wb = load_workbook(str(tmp_path / rx.DETAIL_XLSX_FILENAME))
+        ws = wb.active
+        expected = "FF" + rx._COLOR_DUPLICATE.lstrip("#")
+        for row_i in range(2, 7):  # 5 строк данных
+            assert ws.cell(row=row_i, column=1).font.color.rgb == expected
+
+    def test_rows_grouped_by_folder_in_output_order(self, tmp_path):
+        """2026-08-28 (write_only-режим, "вариант 1"): Excel-outline (сворачиваемые +/- по
+        папке) убран ради ×40 скорости на большом архиве -- но строки по-прежнему
+        отсортированы по папке (файлы одной папки идут подряд), навигация через автофильтр/
+        сортировку. Проверяем именно порядок (не outline_level, которого больше нет)."""
         out_path = tmp_path / "report.html"
         data = {"appended": [
-            _appended(r"D:\SOURCE\A\a.jpg", r"D:\TARGET\a.jpg"),
-            _appended(r"D:\SOURCE\A\b.jpg", r"D:\TARGET\b.jpg"),
             _appended(r"D:\SOURCE\B\a.jpg", r"D:\TARGET\c.jpg"),
+            _appended(r"D:\SOURCE\A\b.jpg", r"D:\TARGET\b.jpg"),
+            _appended(r"D:\SOURCE\A\a.jpg", r"D:\TARGET\a.jpg"),
         ]}
         rx.generate_detail_xlsx(data, str(out_path))
         wb = load_workbook(str(tmp_path / rx.DETAIL_XLSX_FILENAME))
         ws = wb.active
-        # Строка 2/3 -- папка A (a.jpg, b.jpg), строка 4 -- новая папка B.
-        assert ws.row_dimensions[2].outline_level == 0
-        assert ws.row_dimensions[3].outline_level == 1
-        assert ws.row_dimensions[4].outline_level == 0
-        # Якорь папки (outline_level=0) виден сразу, строки детализации (outline_level=1)
-        # скрыты -- иначе группа открывается в Excel развёрнутой (значок "-"), не свёрнутой
-        # (значок "+"), как того требует спека (найдено на боевом прогоне пользователя).
-        assert ws.row_dimensions[2].hidden is False
-        assert ws.row_dimensions[3].hidden is True
-        assert ws.row_dimensions[4].hidden is False
+        folders = [ws.cell(row=i, column=1).value for i in (2, 3, 4)]
+        names = [ws.cell(row=i, column=2).value for i in (2, 3, 4)]
+        assert folders == [r"D:\SOURCE\A", r"D:\SOURCE\A", r"D:\SOURCE\B"]  # папка A подряд
+        assert names == ["a.jpg", "b.jpg", "a.jpg"]  # внутри папки -- по имени
+        # write_only больше не пишет row_dimensions -- их нет/дефолтны, это ожидаемо
+        assert ws.row_dimensions[3].outline_level == 0
 
     def test_duplicate_and_problem_rows_get_distinct_visible_font_colors(self, tmp_path):
         out_path = tmp_path / "report.html"

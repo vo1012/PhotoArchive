@@ -116,6 +116,35 @@ def test_index_archive_empty_target_does_not_create_progress_bar(tmp_path, monke
     assert not any("Фаза 1" in ln for ln in lines)  # ни бара, ни итоговой строки про 0 файлов
 
 
+def test_index_archive_pause_poll_is_bound_to_the_passed_log(tmp_path, monkeypatch):
+    """REVIEW-HANDOFF.md Раунд 149 (придирка): опрос паузы по пробелу в index_archive() (Фаза 1)
+    должен быть замкнут на реальный log= функции — и поштучный между файлами, и progress_cb
+    внутри sha256_file() — а не звать _check_pause_keypress() с дефолтным console_log мимо
+    вызывающего кода (единообразие с analyze_batch()/_handle_dvd_unit(); нужно для тестов
+    вида «пауза поймана во время индексации»)."""
+    # _pause_cb внутри index_archive() строится только при os.name == "nt" -- фейкаем его.
+    # m.os -- это буквально модуль os целиком, так что фейк глобален на время теста, а
+    # winlong() при os.name == "nt" безусловно лепит "\\?\"-префикс, реальный только на
+    # настоящем Windows -- на POSIX это ломает реальные файловые операции ensure_target_layout()/
+    # db_reset() (создаётся мусорное дерево в cwd, REVIEW-HANDOFF.md Раунд 150). Нейтрализуем
+    # winlong() тем же заходом -- os.name == "nt"-гейт внутри index_archive() всё равно видит
+    # нужное значение, а файловые вызовы идут по настоящим путям.
+    monkeypatch.setattr(m.os, "name", "nt")
+    monkeypatch.setattr(m, "winlong", lambda p: p)
+    seen = []
+    monkeypatch.setattr(m, "_check_pause_keypress", lambda log=None: seen.append(log))
+
+    cfg = _make_archive_with_images(tmp_path, 2)
+    conn = m.db_reset(cfg.index_db)
+    lines = []
+    log_fn = lines.append  # стабильная ссылка (lines.append каждый раз новый bound-method)
+    m.index_archive(cfg, conn, log=log_fn)
+    conn.close()
+
+    assert seen, "опрос паузы ни разу не вызван во время индексации Фазы 1"
+    assert all(cb is log_fn for cb in seen)  # все вызовы — с тем самым log, что передали
+
+
 def test_index_archive_nonempty_target_still_creates_progress_bar_and_summary(tmp_path):
     # Контрольный случай -- на непустом TARGET (обычное пополнение архива) поведение не
     # изменилось: бар создаётся, итоговая строка печатается как раньше.

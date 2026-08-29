@@ -1,8 +1,10 @@
 """Детализация прогонного отчёта — единый xlsx (PROMPT_report_detail_xlsx.md, Фаза 0/1,
 реализация начата 2026-08-16). Заменяет собой план трёх HTML companion-страниц из
 PROMPT_report_run_redesign.md -- одна плоская таблица (одна строка = одно событие source ->
-dest/дуп/не прочитано), группировка/фильтрация средствами самого Excel (outline, автофильтр),
-не жёстко закодированная HTML-структура.
+dest/дуп/не прочитано), фильтрация/сортировка средствами самого Excel (автофильтр, сортировка
+по колонке), не жёстко закодированная HTML-структура. (До 2026-08-28 поверх был ещё Excel-
+outline — сворачиваемые группы по папке; убран вместе с переходом на write_only-режим openpyxl,
+см. _write_flat_xlsx().)
 
 Отдельный модуль (не report.py) -- по решению пользователя 2026-08-16 ("сам" реши, разбивать
 ли исходники): report.py уже перевалил за 5000 строк, этот файл -- отдельная, самодостаточная
@@ -27,6 +29,7 @@ import os
 import re
 
 from openpyxl import Workbook
+from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
@@ -268,10 +271,12 @@ def generate_detail_xlsx(data: dict, report_out_path: str) -> str:
       конкретного файла), "Итоговое имя файла" -- basename dest-папки, ЕСЛИ отличается от
       "VIDEO_TS" (коллизия дала "VIDEO_TS (2)" и т.п., _unique_dvd_dest_name()) -- та же
       идея "переименовано", что и у обычного файла, просто на уровне папки-юнита.
-    - Группировка через Excel outline: первая строка каждой папки (после сортировки) --
-      уровень 0 (видимый "якорь" группы), остальные строки той же папки -- уровень 1
-      (сворачиваемые) -- даёт реальные раздельные +/- по каждой папке в Excel без отдельных
-      строк-разделителей и без второй колонки (см. спеку, "Строки"/"Колонки")."""
+    - Строки отсортированы по папке, затем по имени файла (_build_detail_rows()) -- так все
+      файлы одной папки идут подряд. Раньше поверх этого был Excel-outline (сворачиваемые
+      +/- по папке); убран 2026-08-28 вместе с переходом на write_only-режим openpyxl (см.
+      _write_flat_xlsx()) -- на большом архиве обычный режим уходил в минуты, а outline для
+      прогонов с тысячами папок всё равно бесполезен. Навигация по папке -- автофильтр +
+      сортировка по первой колонке."""
     rows = _build_detail_rows(data)
     if not rows:
         return None
@@ -283,59 +288,62 @@ def generate_detail_xlsx(data: dict, report_out_path: str) -> str:
     ]
     out_path = os.path.join(os.path.dirname(report_out_path), DETAIL_XLSX_FILENAME)
     _write_flat_xlsx(_COLUMN_HEADERS, _COLUMN_WIDTHS, values,
-                      folders=[row["folder"] for row in rows],
                       colors=[row["color"] for row in rows], out_path=out_path)
     return DETAIL_XLSX_FILENAME
 
 
-def _write_flat_xlsx(headers: list, widths: list, values: list, folders: list, colors: list,
+def _write_flat_xlsx(headers: list, widths: list, values: list, colors: list,
                       out_path: str) -> None:
-    """Общая механика записи (заголовок жирным, freeze panes, группировка по папке через
-    outline -- первая строка каждой папки видима как "якорь", остальные строки той же папки
-    сворачиваемые, автофильтр, ширины колонок, `\\?\\`-безопасное сохранение) -- переиспользуется
-    generate_detail_xlsx() (прогон) и generate_passport_detail_xlsx() (Паспорт архива), у
-    которых разная ФОРМА строк (9 колонок vs 5), но одинаковая механика листа целиком. `values`
-    -- уже полностью отформатированные для отображения списки (никаких bool/Counter/сырых
-    кодов, преобразование в human-readable текст -- ответственность вызывающего builder'а)."""
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Детализация"
-    ws.append(headers)
-    for cell in ws[1]:
-        cell.font = Font(bold=True)
+    """Общая механика записи листа (заголовок жирным, freeze panes, автофильтр, ширины
+    колонок, `\\?\\`-безопасное сохранение) -- переиспользуется generate_detail_xlsx() (прогон)
+    и generate_passport_detail_xlsx() (Паспорт архива), у которых разная ФОРМА строк
+    (9 колонок vs 5), но одинаковая механика листа. `values` -- уже полностью отформатированные
+    для отображения списки (никаких bool/Counter/сырых кодов -- ответственность вызывающего
+    builder'а). `colors` -- цвет шрифта строки ("#rrggbb") или None; уникальных значений
+    единицы, объекты Font кэшируются и один инстанс переиспользуется на все ячейки.
+
+    write_only-режим openpyxl (2026-08-28, живой боевой прогон + прямое решение пользователя,
+    «вариант 1»): на большом архиве (десятки тысяч спорных/дублей) обычный режим openpyxl
+    уходил в 2-3 минуты и сотни МБ RSS на записи ЭТОГО одного файла (создаётся объект Cell на
+    каждую ячейку + RowDimension на строку), а окно GUI «Работа окончена» физически ждёт
+    возврата -- пользователь решил, что программа зависла. write_only -- ~×35 (170 с -> 4,8 с
+    на 40k строк, боевой замер; на другом железе множитель меньше, порядок тот же -- секунды).
+    Цена: посгруппная сворачиваемость по папке (Excel outline, `row_dimensions`) в write_only
+    не поддерживается и убрана -- для прогонов с тысячами папок она бесполезна, для остальных
+    маргинальна; строки по-прежнему отсортированы по папке (файлы одной папки идут подряд),
+    навигация -- автофильтр + сортировка по первой колонке."""
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet("Детализация")
     ws.freeze_panes = "A2"
-    ws.sheet_properties.outlinePr.summaryBelow = False
-
-    prev_folder = None
-    for i, (row_values, folder, color) in enumerate(zip(values, folders, colors, strict=True)):
-        r = 2 + i
-        ws.append(row_values)
-        is_detail_row = folder == prev_folder
-        ws.row_dimensions[r].outline_level = 1 if is_detail_row else 0
-        # outline_level сам по себе только создаёт группу -- Excel показывает её развёрнутой
-        # (значок "-") пока строки явно не скрыты. hidden=True на строках детализации -- то,
-        # что реально даёт свёрнутый по умолчанию вид (значок "+"), проверено исполнением
-        # (round-trip через openpyxl.load_workbook() не показывает разницы в файле, разница
-        # видна только при открытии в реальном Excel -- находка боевого прогона пользователя).
-        if is_detail_row:
-            ws.row_dimensions[r].hidden = True
-        prev_folder = folder
-        if color:
-            font_color = _argb(color)
-            for cell in ws[r]:
-                cell.font = Font(color=font_color)
-
-    last_col = get_column_letter(len(headers))
-    ws.auto_filter.ref = f"A1:{last_col}{ws.max_row}"
     for idx, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(idx)].width = width
+
+    bold_font = Font(bold=True)
+    header_cells = [WriteOnlyCell(ws, value=h) for h in headers]
+    for cell in header_cells:
+        cell.font = bold_font
+    ws.append(header_cells)
+
+    font_by_color = {}
+    for row_values, color in zip(values, colors, strict=True):
+        if not color:
+            ws.append(row_values)
+            continue
+        font = font_by_color.get(color)
+        if font is None:
+            font = font_by_color[color] = Font(color=_argb(color))
+        cells = [WriteOnlyCell(ws, value=v) for v in row_values]
+        for cell in cells:
+            cell.font = font
+        ws.append(cells)
+
+    last_col = get_column_letter(len(headers))
+    ws.auto_filter.ref = f"A1:{last_col}{len(values) + 1}"
 
     # Живая находка (боевой прогон ci/windows_ci_test.py::test_long_path, 2026-08-16):
     # openpyxl.Workbook.save() открывает файл сам (zipfile.ZipFile), без "\\?\"-префикса
     # падает FileNotFoundError на TARGET глубже 260 символов -- тот же случай, что уже
-    # решён для report.html в report.py:_write() (_winlong()), просто не унаследован сюда
-    # автоматически, т.к. запись идёт через openpyxl, не через открытый report.py вручную
-    # дескриптор файла.
+    # решён для report.html в report.py:_write() (_winlong()).
     wb.save(_winlong(out_path))
 
 
@@ -452,6 +460,5 @@ def generate_passport_detail_xlsx(stats, report_out_path: str, target_path: str 
               for row in rows]
     out_path = os.path.join(os.path.dirname(report_out_path), PASSPORT_DETAIL_XLSX_FILENAME)
     _write_flat_xlsx(_PASSPORT_COLUMN_HEADERS, _PASSPORT_COLUMN_WIDTHS, values,
-                      folders=[row["folder"] for row in rows],
                       colors=[row["color"] for row in rows], out_path=out_path)
     return PASSPORT_DETAIL_XLSX_FILENAME
