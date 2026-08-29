@@ -66,7 +66,7 @@ import report  # PROMPT_archive_report.md, границы: отдельный м
 # blanket ignore of all warnings, so any other future PIL/library warning still surfaces.
 warnings.filterwarnings("ignore", message="Palette images with Transparency.*", category=UserWarning)
 
-__version__ = "0.6.2"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
+__version__ = "0.6.3"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
                                  # с RULES_VERSION ниже (та про совместимость архива, а не exe)
 RULES_VERSION = "2026-08-11"   # дата последнего изменения бизнес-правил -- см. RULES.md;
                                 # менять руками при изменении логики раскладки/дедупа/дат
@@ -923,20 +923,20 @@ def _check_pause_keypress(log=console_log) -> None:
 
 def _extraction_log_name_budget(min_width: int = 15) -> int:
     """Живой репорт пользователя (редизайн живого вывода Фазы 2, 2026-08-01): SourceWalker.
-    _handle_archive()'s "  Распаковка <имя> (<X> ГБ)…" идёт через self.log() (=console_log()
-    в реальном прогоне) -- та переносит строки длиннее 2/3 реальной ширины терминала
-    (_wrap_console_text()/_terminal_wrap_width()), и длинное имя архива легко выталкивает эту
-    строку за порог, реально перенося её на вторую физическую строку. tqdm-бар (см. log_line())
-    не знает об этом переносе -- его собственный clear()/refresh() рассчитан ровно на одну
-    строку, путается на следующем цикле, и "хвост" перенесённой строки остаётся видимым как
-    визуальный дубль (новый объект-строка/transient-op механизм сделал такие циклы намного
-    чаще -- раньше редкая возможность стала заметной на практике). Бюджет — под тот же порог
-    переноса, что и console_log(), минус фиксированный текст-обвязка этой конкретной строки
-    (щедрый запас на трёхзначный ГБ-размер)."""
+    _handle_archive()'s "  Распаковка <имя> (<X> ГБ)…" уходит в ProgressReporter.
+    write_heavy_notice(), которая переносит строки, не влезающие в окно целиком, и длинное имя
+    архива легко выталкивало эту строку за порог, реально перенося её на вторую физическую
+    строку. tqdm-бар (см. log_line()) не знает об этом переносе -- его собственный clear()/
+    refresh() рассчитан ровно на одну строку. Обрезаем имя так, чтобы строка гарантированно
+    влезла в окно целиком.
+
+    2026-08-29: бюджет от ПОЛНОЙ ширины окна (_console_columns()), не 2/3 -- согласовано с
+    write_heavy_notice() и _console_tag_line_budget(), обе тоже считают от полной ширины.
+    Минус фиксированная текст-обвязка строки (щедрый запас на трёхзначный ГБ-размер)."""
     if not sys.stdout.isatty():
-        return 200  # нет реального терминала -- console_log() не переносит строки вовсе
+        return 200  # нет реального терминала -- write_heavy_notice() не переносит строки вовсе
     reserve = len("  Распаковка ") + len(" (000.0 ГБ)…")
-    return max(min_width, _terminal_wrap_width() - reserve)
+    return max(min_width, _console_columns() - reserve)
 
 
 class _RussianRateStream:
@@ -1699,16 +1699,22 @@ class ProgressReporter:
 
         2026-08-24, живой репорт пользователя (та же сессия, следующий заход): print() здесь
         напрямую, В ОБХОД console_log() -- вместе с координацией бара потерялся и перенос
-        длинных строк (_wrap_console_text()/_terminal_wrap_width()), который раньше делал
-        console_log() для этих же сообщений -- длинный путь DVD-диска пошёл ОДНОЙ строкой без
-        переноса. Тот же isatty()-гейт и тот же перенос здесь, что и в console_log().
+        длинных строк (_wrap_console_text()), который раньше делал console_log() для этих же
+        сообщений -- длинный путь DVD-диска пошёл ОДНОЙ строкой без переноса. Тот же
+        isatty()-гейт здесь, что и в console_log().
 
         wrap=False (2026-08-28, живой боевой прогон): вызывающий код уже обрезал текст под
         ПОЛНУЮ ширину терминала (как объект-строка write_object_line(), которая не переносится
-        вовсе) -- перенос по порогу 2/3 рвал бы такую строку там, где место ещё есть. См.
-        SourceWalker._log_archive()."""
+        вовсе) -- перенос рвал бы такую строку там, где место ещё есть. См.
+        SourceWalker._log_archive().
+
+        Порог переноса -- ПОЛНАЯ ширина окна (_console_columns()), не 2/3
+        (_terminal_wrap_width()). 2026-08-29, два живых репорта "необоснованный перенос": это
+        однострочные статус-уведомления SourceWalker'а, а не проза меню -- перенос по 2/3 рвал
+        их посреди фразы, оставляя треть окна пустой. 2/3 остаётся только для console_log()
+        (читаемость абзацев меню/справки)."""
         if wrap and sys.stdout.isatty():
-            line = _wrap_console_text(line, _terminal_wrap_width())
+            line = _wrap_console_text(line, _console_columns())
         if self._bar is not None:
             self._bar.clear()
             print(line, file=sys.stderr)
@@ -3209,6 +3215,18 @@ def _list_7z(path: str) -> ArchiveInfo:
                 member_path = line.split("=", 1)[1].strip()
             elif line.startswith("Folder ="):
                 is_folder = line.split("=", 1)[1].strip() == "+"
+            elif line.startswith("Attributes ="):
+                # 7-Zip 26.02, живой боевой прогон 2026-08-29: `l -slt` для .7z-архивов
+                # больше НЕ печатает строку "Folder = +/-" -- каталог виден только по
+                # DOS-атрибуту D ("Attributes = D"). Без этой ветки каждая папка внутри .7z
+                # считалась файловой записью, entries завышался на число папок, и проверка
+                # archive_path_traversal_suspected (extracted_count < entries, см.
+                # _handle_dvd_unit()/count_extracted_files()) выбрасывала ВЕСЬ архив целиком.
+                # .zip 26.02 по-прежнему печатает "Folder =" -- эта ветка ей не мешает
+                # (Attributes у файла .zip никогда не начинается с D).
+                attr_first = line.split("=", 1)[1].strip().split()
+                if attr_first and attr_first[0].startswith("D"):
+                    is_folder = True
             elif line.startswith("Size ="):
                 try:
                     size = int(line.split("=", 1)[1].strip())
@@ -4281,6 +4299,13 @@ class SourceWalker:
         # воспроизводимая, ПОЛНАЯ потеря содержимого архива с dump-веткой внутри). См.
         # _handle_archive()/_drain_deferred_phases().
         self._pending_cleanup_dirs = []
+        # REVIEW-HANDOFF.md, Раунд 155 [замечание]: архив, чьё медиа целиком ушло в отложенный
+        # Проход 2/3 (голая дата/дамп-ветка внутри, _is_terminal_bydate_branch()), логировался
+        # как archive_no_media и не попадал в archives_extracted, хотя фото реально
+        # распаковано и лежит в ByDate -- нарушение RULES.md:449. _handle_archive() кладёт
+        # сюда отложенный статус (со срезами по трём _deferred_*-спискам), а
+        # _drain_deferred_phases() дописывает его настоящим, когда содержимое реально прочитано.
+        self._pending_archive_status = []
         # REVIEW-HANDOFF.md, Раунд 58 [ЗАМЕЧАНИЕ]: любое из трёх откладываний Фазы 1 (dump-
         # ветка/тильда-архив/файл-лист без альбома) означает, что _walk_dir() потратило
         # реальное, не мгновенное время (os.listdir()/сниффинг типа каждого файла, см.
@@ -4408,12 +4433,12 @@ class SourceWalker:
         display = _truncate_progress_note(
             display, maxlen=_console_tag_line_budget(len(tail), tag_width=tag_width))
         line = f"  [archive]{letter} {display}{tail}" if letter else f"  [archive] {display}{tail}"
-        # Живой боевой прогон, 2026-08-28: строка уходит в ProgressReporter.write_heavy_notice(),
-        # которая переносит текст длиннее 2/3 ширины терминала -- но путь здесь уже обрезан под
-        # ПОЛНУЮ ширину (_console_tag_line_budget()), ровно как у объект-строки
-        # write_object_line() (та не переносится вовсе). Перенос нужен лишь редкой ветке со
-        # свободным длинным note (path_traversal и т.п.), реально не влезающей в терминал --
-        # гейтим переносом только её.
+        # Живой боевой прогон, 2026-08-28: строка уходит в ProgressReporter.write_heavy_notice().
+        # Путь здесь уже обрезан под ПОЛНУЮ ширину терминала (_console_tag_line_budget()), ровно
+        # как у объект-строки write_object_line() (та не переносится вовсе). Перенос нужен лишь
+        # редкой ветке со свободным длинным note (path_traversal и т.п.), реально не влезающей в
+        # окно целиком -- гейтим переносом только её; сам перенос идёт по краю окна, не по 2/3
+        # (write_heavy_notice(), 2026-08-29).
         self._log_own_line(line, wrap=len(line) > _console_columns())
 
     def walk(self):
@@ -4468,12 +4493,21 @@ class SourceWalker:
         # прохода Фазы 1. _handle_archive() -- тот же метод, что и в Фазе 1, self._phase уже не
         # 1, так что новых откладываний внутри не происходит (см. _walk_dir() ниже) -- всё
         # найденное внутри такого архива обрабатывается безусловно.
+        # Раунд 155: media_count каждой отложенной записи -- чтобы _pending_archive_status
+        # (архивы, чьё содержимое ушло сюда целиком) досчитать по своим срезам ниже.
+        _tilde_media = [0] * len(self._deferred_tilde_archives)
+        _bydate_media = [0] * len(self._deferred_bydate_roots)
+        _stray_media = [0] * len(self._deferred_stray_files)
+
         self._phase = 2
-        for (archive_path, rel_prefix, origin_prefix, depth, boundary,
-             tree_rel_prefix) in self._deferred_tilde_archives:
-            yield from self._handle_archive(archive_path, rel_prefix, origin_prefix, depth,
-                                             archive_boundary_idx=boundary,
-                                             tree_rel_prefix=tree_rel_prefix)
+        for _i, (archive_path, rel_prefix, origin_prefix, depth, boundary,
+                 tree_rel_prefix) in enumerate(self._deferred_tilde_archives):
+            for item in self._handle_archive(archive_path, rel_prefix, origin_prefix, depth,
+                                              archive_boundary_idx=boundary,
+                                              tree_rel_prefix=tree_rel_prefix):
+                if item.ftype in ("image", "raw", "video"):
+                    _tilde_media[_i] += 1
+                yield item
             # "объектов X/Y" (см. _walk_dir()'s _tick_object()): архив тикает здесь, а не в
             # момент, когда Фаза 1 впервые увидела его имя -- отложенный архив реально
             # обрабатывается только сейчас. depth здесь -- уже depth+1 (то, что уйдёт ВНУТРЬ
@@ -4489,18 +4523,21 @@ class SourceWalker:
         # is_dump_segment()-проверок, всё внутри безусловно ByDate, включая любые архивы любых
         # имён, найденные там -- см. find_album()'s "отравление ветки").
         self._phase = 3
-        for (dirpath, rel_prefix, origin_prefix, ancestors, boundary, archive_no_crc,
-             depth, tree_rel_prefix) in self._deferred_bydate_roots:
-            yield from self._walk_dir(dirpath, rel_prefix, origin_prefix, depth, is_root=False,
-                                       ancestors=ancestors, archive_no_crc=archive_no_crc,
-                                       archive_boundary_idx=boundary,
-                                       tree_rel_prefix=tree_rel_prefix)
+        for _i, (dirpath, rel_prefix, origin_prefix, ancestors, boundary, archive_no_crc,
+                 depth, tree_rel_prefix) in enumerate(self._deferred_bydate_roots):
+            for item in self._walk_dir(dirpath, rel_prefix, origin_prefix, depth, is_root=False,
+                                        ancestors=ancestors, archive_no_crc=archive_no_crc,
+                                        archive_boundary_idx=boundary,
+                                        tree_rel_prefix=tree_rel_prefix):
+                if item.ftype in ("image", "raw", "video"):
+                    _bydate_media[_i] += 1
+                yield item
 
         # Файлы-листья без альбома (см. __init__()) -- уже полностью готовые SourceItem, ничего
         # разворачивать не нужно, просто yield'им их следом -- _close_deferred_gap() перед
         # первым же из них (см. её докстринг) закрывает сегмент, открытый ещё в Фазе 1 в
         # момент первого же добавления в этот список.
-        for item in self._deferred_stray_files:
+        for _i, item in enumerate(self._deferred_stray_files):
             # "[папка] ... найдено медиафайлов N" (см. __init__()'s _pending_folder_
             # announcements) -- печатается здесь, на первом же файле этой папки, а не когда
             # Фаза 1 её увидела -- pop(), не get(), чтобы напечатать РОВНО один раз на папку,
@@ -4510,6 +4547,8 @@ class SourceWalker:
             if pending is not None and self._object_line_cb is not None:
                 self._object_line_cb("folder", *pending)
             self._close_deferred_gap()
+            if item.ftype in ("image", "raw", "video"):
+                _stray_media[_i] += 1
             yield item
             # "объектов X/Y" -- тикает здесь (реальная обработка), не в момент, когда Фаза 1
             # впервые увидела файл. archive_boundary_idx is None -- файл найден НЕ внутри
@@ -4521,6 +4560,23 @@ class SourceWalker:
             if (item.archive_boundary_idx is None and self._object_progress_cb is not None
                     and not self._defer_media_object_tick):
                 self._object_progress_cb(1)
+
+        # Раунд 155 [замечание]: архивы, чьё медиа целиком ушло в отложенный проход выше --
+        # теперь оно реально прочитано, досчитываем media_count по срезам и дописываем
+        # настоящий статус (archive_no_media только если рекурсивно НИЧЕГО не нашлось,
+        # RULES.md:449; иначе archive_extracted -> попадает в archives_extracted).
+        for st in self._pending_archive_status:
+            total = (st["media_now"]
+                     + sum(_bydate_media[st["bydate"][0]:st["bydate"][1]])
+                     + sum(_tilde_media[st["tilde"][0]:st["tilde"][1]])
+                     + sum(_stray_media[st["stray"][0]:st["stray"][1]]))
+            if total == 0:
+                self._log_archive(st["display"], "archive_no_media", letter=st["letter"])
+            else:
+                self._log_archive(st["display"], "archive_extracted",
+                                   f"{total} медиафайлов", count=total,
+                                   silent=total == st["listing_media"], letter=st["letter"])
+        self._pending_archive_status = []
 
         # REVIEW-HANDOFF.md, Раунд 58 [БЛОКЕР]: временные распакованные папки архивов,
         # отложенная очистка которых копилась в _handle_archive() (см. self._pending_
@@ -4576,7 +4632,15 @@ class SourceWalker:
                 "name": display_name,
                 "dest_path": known_dest,
             })
-            self._log_own_line(f"  [DVD] дубль уже архивированного диска, пропущен: {disp_base}")
+            # Тот же приём против переноса, что у "[DVD] новый DVD-диск ->" ниже и у
+            # _log_archive(): путь под бюджет полной ширины окна, wrap только если всё равно
+            # не влез (2026-08-29, живой репорт -- эта строка единственная из [DVD]/[archive]/
+            # [папка], оставшаяся без обрезки). Полный путь всё равно в actions.log.
+            dup_tag = "[DVD] дубль уже архивированного диска, пропущен: "
+            dup_path = _truncate_progress_note(
+                disp_base, maxlen=_console_tag_line_budget(0, tag_width=len(dup_tag)))
+            dup_line = f"  {dup_tag}{dup_path}"
+            self._log_own_line(dup_line, wrap=len(dup_line) > _console_columns())
             return
 
         volume_label = _dvd_unit_volume_label_if_live_disc(video_ts_dirpath, check_volume_label)
@@ -4617,11 +4681,11 @@ class SourceWalker:
             letter = "A" if (volume_label or album is not None) else "D"
         letter_part = f"{letter} " if letter else " "
         # Живой боевой прогон 2026-08-28: та же проблема, что чинил _log_archive() (86f2b2f) --
-        # строка уходит в write_heavy_notice() (перенос по 2/3 ширины терминала), а тут ДВА
-        # длинных пути (dest_dir + disp_base) и ничего не обрезано под ширину, поэтому реальный
-        # DVD-путь рвался посреди слова. Тот же приём: disp_base (исходный путь -- контекст,
-        # полный вариант всё равно уходит в actions.log per-file через run_logs.appended())
-        # под фикс-кап, dest_dir -- под остаток ширины, wrap только если всё равно не влезло.
+        # строка уходит в write_heavy_notice(), а тут ДВА длинных пути (dest_dir + disp_base) и
+        # ничего не обрезано под ширину, поэтому реальный DVD-путь рвался посреди слова. Тот же
+        # приём: disp_base (исходный путь -- контекст, полный вариант всё равно уходит в
+        # actions.log per-file через run_logs.appended()) под фикс-кап, dest_dir -- под остаток
+        # ширины, wrap только если всё равно не влезло в окно целиком.
         dvd_tag = f"[DVD]{letter_part}новый DVD-диск -> "
         disp_short = _truncate_progress_note(disp_base, maxlen=48) if disp_base else ""
         dvd_tail = (f" ({len(records)} файлов, {disp_short})" if disp_short
@@ -5313,11 +5377,10 @@ class SourceWalker:
 
         # Задача 4: распаковка может занять минуты на большом архиве без собственного
         # прогресса (7z/unrar/tarfile не отдают построчный процент сюда) -- явная строка
-        # "текущее действие", чтобы легитимная пауза не читалась как зависание. Через self.log
-        # (= console_log/log_line, если вызывающий передал его) -- не рвёт строку активного
-        # бара НАПРЯМУЮ, но живой репорт пользователя (редизайн живого вывода Фазы 2, 2026-08-01)
-        # поймал смежную проблему: console_log() переносит строки длиннее 2/3 реальной ширины
-        # терминала (_wrap_console_text()/_terminal_wrap_width()) -- длинное имя архива легко
+        # "текущее действие", чтобы легитимная пауза не читалась как зависание. Идёт через
+        # _log_own_line() -> write_heavy_notice() -- живой репорт пользователя (редизайн живого
+        # вывода Фазы 2, 2026-08-01) поймал смежную проблему: write_heavy_notice() переносит
+        # строки, не влезающие в окно целиком (_wrap_console_text()) -- длинное имя архива легко
         # выталкивает эту строку за порог, реально перенося её на вторую физическую строку.
         # tqdm-бар (см. log_line()) не знает об этом переносе -- его собственный clear()/
         # refresh() рассчитан ровно на одну строку, путается, и "хвост" перенесённой строки
@@ -5406,9 +5469,9 @@ class SourceWalker:
                 extracted_count = count_extracted_files(extract_dir)
                 if extracted_count < info.entries:
                     self._log_archive(_strip_trailing_arrow(full_display), "archive_path_traversal_suspected",
-                                       f"после распаковки найдено {extracted_count} файлов, "
-                                       f"в листинге архива было {info.entries} -- похоже, часть "
-                                       f"содержимого вышла за пределы extract_dir", letter=placement_letter)
+                                       f"распаковано {extracted_count} файлов из {info.entries} по листингу "
+                                       f"-- похоже, часть содержимого вышла за пределы папки распаковки",
+                                       letter=placement_letter)
                     cleanup_dir(extract_dir)
                     return
 
@@ -5421,7 +5484,14 @@ class SourceWalker:
             # посещено"). Если отложилось -- extract_dir остаётся на диске, реальная очистка
             # переносится в самый конец walk() (_drain_deferred_phases()), уже после того как
             # Фазы 2/3 прочитают из него всё, что им нужно.
-            _deferred_before = len(self._deferred_bydate_roots) + len(self._deferred_tilde_archives)
+            # Раунд 155 ревью: три append-only списка отложенного -- срез [before:after] по
+            # каждому даёт РОВНО те записи, что этот архив (рекурсивно, включая вложенные
+            # архивы, чьи _handle_archive() уже отработали и добавили СВОИ записи) отложил на
+            # Фазы 2/3. Нужно и для решения про cleanup (было), и чтобы досчитать media_count
+            # архива после дренажа (см. блок ниже + _drain_deferred_phases()).
+            _bydate_before = len(self._deferred_bydate_roots)
+            _tilde_before = len(self._deferred_tilde_archives)
+            _stray_before = len(self._deferred_stray_files)
             try:
                 for item in self._walk_dir(extract_dir, rel_prefix, origin_prefix, depth, is_root=True,
                                             ancestors=(extract_dir_real,), archive_no_crc=(fmt in TAR_MODES),
@@ -5431,13 +5501,34 @@ class SourceWalker:
                         media_count += 1
                     yield item
             finally:
-                _deferred_after = len(self._deferred_bydate_roots) + len(self._deferred_tilde_archives)
-                if _deferred_after > _deferred_before:
+                _bydate_slice = (_bydate_before, len(self._deferred_bydate_roots))
+                _tilde_slice = (_tilde_before, len(self._deferred_tilde_archives))
+                _stray_slice = (_stray_before, len(self._deferred_stray_files))
+                _anything_deferred = (_bydate_slice[1] > _bydate_slice[0]
+                                      or _tilde_slice[1] > _tilde_slice[0]
+                                      or _stray_slice[1] > _stray_slice[0])
+                if _anything_deferred:
                     self._pending_cleanup_dirs.append(extract_dir)
                 else:
                     cleanup_dir(extract_dir)
 
-            if media_count == 0:
+            if _anything_deferred:
+                # Раунд 155 ревью [замечание]: медиасодержимое этого архива целиком (или
+                # частично) ушло в отложенный проход -- media_count здесь ещё НЕ финальный
+                # (голая дата/дамп-ветка внутри архива → _is_terminal_bydate_branch() → Фаза 3).
+                # Логировать сейчас archive_no_media (RULES.md:449 -- «рекурсивно нет медиа»)
+                # было бы ложью: рекурсия ещё не пройдена. Откладываем и сам статус --
+                # _drain_deferred_phases() допишет его, досчитав медиа из отложенных срезов.
+                self._pending_archive_status.append({
+                    "display": _strip_trailing_arrow(full_display),
+                    "letter": placement_letter,
+                    "media_now": media_count,
+                    "listing_media": info.media_count,
+                    "bydate": _bydate_slice,
+                    "tilde": _tilde_slice,
+                    "stray": _stray_slice,
+                })
+            elif media_count == 0:
                 self._log_archive(_strip_trailing_arrow(full_display), "archive_no_media",
                                    letter=placement_letter)
             else:
@@ -6555,6 +6646,20 @@ class _InterruptedRunReport(KeyboardInterrupt):
 LOCK_STALE_SECONDS = 12 * 3600
 
 
+def _target_lock_path(target: str) -> str:
+    return os.path.join(target, "__служебные_файлы", "LOCK")
+
+
+def _read_lock_pid(lock_path: str):
+    """PID процесса-владельца из LOCK-файла (TargetLock.__enter__ пишет туда str(os.getpid())).
+    None -- файл пуст/нечитаем/содержит не число (старый формат до этой записи, повреждение)."""
+    try:
+        with open(winlong(lock_path), "r", encoding="ascii", errors="ignore") as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
 class TargetLock:
     """p.5.4б: защита от ДВУХ ОДНОВРЕМЕННЫХ прогонов archive на один TARGET -- аудитом кода
     найдена единственная реальная дыра в гарантии "чужое содержимое не затирается":
@@ -6563,14 +6668,19 @@ class TargetLock:
     параллельных прогона (двойной клик мимо, забыли про уже работающий) могут независимо
     счесть один и тот же dest_path свободным.
 
-    Простой exclusive-create lock-файл, НЕ полноценный распределённый лок: детект "устарел"
-    -- по времени (mtime > 12ч), а не по реальной проверке "жив ли процесс с этим PID"
-    (ненадёжно кроссплатформенно без доп. зависимостей вроде psutil). Этого достаточно для
-    реалистичного сценария ("забыл, что прогон уже идёт"), не для состязания с кем-то, кто
-    специально хочет обойти защиту -- как и остальная "защита от дурака" в этом файле."""
+    Простой exclusive-create lock-файл, НЕ полноценный распределённый лок. Детект "устарел"
+    (Раунд 156 ревью: докстринг синхронизирован с кодом d98b0ed): в первую очередь -- по
+    реальной проверке "жив ли процесс-владелец" (_pid_is_alive() над PID, который __enter__
+    сам пишет в файл; без сторонних зависимостей -- ctypes/OpenProcess() на Windows,
+    os.kill(pid, 0) на POSIX). Прерванный по Ctrl-C/крахом прогон (его __exit__ снять LOCK не
+    успел) распознаётся сразу, не за 12 часов. Порог по времени (mtime > 12ч) остался -- но
+    теперь как ЗАПАСНОЙ путь на случай, когда PID из файла прочитать не удалось (старый
+    формат до d98b0ed, повреждение). Этого достаточно для реалистичного сценария ("забыл, что
+    прогон уже идёт"), не для состязания с кем-то, кто специально хочет обойти защиту -- как и
+    остальная "защита от дурака" в этом файле."""
 
     def __init__(self, target: str, log=print, dry_run: bool = False):
-        self.lock_path = os.path.join(target, "__служебные_файлы", "LOCK")
+        self.lock_path = _target_lock_path(target)
         self.log = log
         self._acquired = False
         # PROMPT_archive_report.md, 1.1а: report.html удаляется здесь ТОЛЬКО для реального
@@ -6593,11 +6703,21 @@ class TargetLock:
         try:
             fd = os.open(real_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
+            holder_pid = _read_lock_pid(real_path)
             try:
                 age = time.time() - os.path.getmtime(real_path)
             except OSError:
                 age = LOCK_STALE_SECONDS + 1
-            if age <= LOCK_STALE_SECONDS:
+            # Владелец LOCK записан в сам файл (os.write ниже). Если этот процесс уже НЕ жив
+            # (Ctrl-C/крах/пропажа питания -- __exit__ снять LOCK не успел), файл -- заведомо
+            # мусор: снимаем сразу, не дожидаясь 12-часового mtime-порога. _pid_is_alive()
+            # консервативна ("в сомнении -- жив", как и у _sweep_stale_dry_run_pid_dirs()),
+            # поэтому holder_dead=True только когда процесс достоверно завершился. PID
+            # неизвестен (старый формат/повреждение) -> holder_dead=False -> падаем на прежнее
+            # mtime-правило. Закрывает и нестыковку, отмеченную Раундом 107 ревью
+            # (RULES.md: TargetLock оставался на mtime, пока PID-подпапки dry-run уже нет).
+            holder_dead = holder_pid is not None and not _pid_is_alive(holder_pid)
+            if not holder_dead and age <= LOCK_STALE_SECONDS:
                 remaining = LOCK_STALE_SECONDS - age
                 rem_h, rem_m = int(remaining // 3600), int((remaining % 3600) // 60)
                 raise TargetLocked(
@@ -6608,14 +6728,27 @@ class TargetLock:
                     f"снимет устаревший LOCK и позволит запуститься примерно через "
                     f"{rem_h}ч {rem_m}мин."
                 ) from None
-            self.log(f"ВНИМАНИЕ: обнаружен устаревший LOCK-файл ({age / 3600:.1f}ч) -- "
-                     f"похоже, прошлый прогон был прерван аварийно (питание/крэш). "
-                     f"Удаляю и продолжаю.")
+            if holder_dead:
+                self.log(f"ВНИМАНИЕ: LOCK-файл принадлежал процессу (PID {holder_pid}), "
+                         f"которого больше нет -- прошлый прогон был прерван (Ctrl-C/крах/"
+                         f"питание). Снимаю LOCK и продолжаю.")
+            else:
+                self.log(f"ВНИМАНИЕ: обнаружен устаревший LOCK-файл ({age / 3600:.1f}ч) -- "
+                         f"похоже, прошлый прогон был прерван аварийно (питание/крэш). "
+                         f"Удаляю и продолжаю.")
             try:
                 os.remove(real_path)
             except OSError:
                 pass
-            fd = os.open(real_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            try:
+                fd = os.open(real_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                # Другой прогон стартовал ровно в это же окно и успел пересоздать LOCK между
+                # нашими os.remove() и os.open() -- редчайшая гонка, но не отдаём сырой traceback.
+                raise TargetLocked(
+                    "не удалось снять устаревший LOCK -- похоже, одновременно стартовал "
+                    "другой прогон PhotoArchive. Попробуйте запустить ещё раз."
+                ) from None
         os.write(fd, str(os.getpid()).encode("ascii"))
         os.close(fd)
         self._acquired = True
@@ -6633,6 +6766,39 @@ class TargetLock:
                 os.remove(winlong(self.lock_path))
             except OSError:
                 pass
+        return False
+
+
+def inspect_target_lock(target: str):
+    """Состояние LOCK-файла TARGET БЕЗ изменений на диске. None -- LOCK нет (или недоступен для
+    stat). Иначе dict: pid (int|None), pid_alive (bool|None -- None когда pid неизвестен),
+    age_seconds (float). Для преполётной проверки GUI перед реальной сборкой -- см.
+    gui_menu._ensure_target_unlocked(): движок (TargetLock.__enter__) сам молча снимает LOCK
+    заведомо мёртвого процесса, а вот «PID ещё жив» / «PID неизвестен» доводит до пользователя
+    отдельным окном, а не тихим возвратом в меню."""
+    path = winlong(_target_lock_path(target))
+    try:
+        age = time.time() - os.path.getmtime(path)
+    except OSError:
+        return None
+    pid = _read_lock_pid(path)
+    return {
+        "pid": pid,
+        "pid_alive": (_pid_is_alive(pid) if pid is not None else None),
+        "age_seconds": age,
+    }
+
+
+def clear_target_lock(target: str, log=print) -> bool:
+    """Снять LOCK-файл TARGET вручную (пользователь в GUI подтвердил, что прошлый прогон мёртв).
+    True -- файл удалён либо его и не было; False -- удалить не удалось (залогировано)."""
+    try:
+        os.remove(winlong(_target_lock_path(target)))
+        return True
+    except FileNotFoundError:
+        return True
+    except OSError as e:
+        log(f"  Не удалось снять LOCK-файл: {e}")
         return False
 
 

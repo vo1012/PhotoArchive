@@ -12,7 +12,6 @@
 терминала (is_tty=False по умолчанию под pytest, тот же принцип, что и у остальных тестов
 этого файла)."""
 import tarfile
-import textwrap
 import zipfile
 
 import pytest
@@ -68,6 +67,81 @@ def test_list_tar_media_count_excludes_nested_archive(tmp_path):
     assert info.entries == 4
     assert info.media_count == 2  # only a.jpg/b.jpg -- not nested.zip, not notes.txt
     assert info.has_media_candidate  # unaffected (still counts nested.zip as a candidate)
+
+
+# ---------------------------------------------------------------------------
+# _list_7z() -- 7-Zip 26.02, живой боевой прогон 2026-08-29: `l -slt` для .7z-архивов
+# больше не печатает "Folder = +/-", каталог виден только по "Attributes = D". Без разбора
+# этого атрибута каждая папка внутри .7z считалась файловой записью -> entries завышался ->
+# archive_path_traversal_suspected (extracted_count < entries) выбрасывал ВЕСЬ .7z с папками.
+# ---------------------------------------------------------------------------
+
+_SEVENZIP_2602_7Z_SLT = """
+7-Zip 26.02 (x64)  Copyright (c) 1999-2026 Igor Pavlov
+
+Listing archive: a.7z
+
+--
+Path = a.7z
+Type = 7z
+
+----------
+Path = DUB
+Size = 0
+Modified = 2015-09-01 15:23:37
+Attributes = D
+CRC =
+
+Path = DUB\\USBDriver
+Size = 0
+Modified = 2015-09-01 15:23:37
+Attributes = D
+CRC =
+
+Path = DUB\\photo1.jpg
+Size = 100
+Modified = 2015-09-01 15:21:28
+Attributes = A
+CRC = 3B82B2D2
+
+Path = DUB\\USBDriver\\setup.exe
+Size = 200
+Modified = 2015-09-01 15:21:28
+Attributes = A
+CRC = AABBCCDD
+"""
+
+
+def test_list_7z_does_not_count_directories_as_entries_with_new_7zip_output(monkeypatch):
+    class _FakeRun:
+        returncode = 0
+        stdout = _SEVENZIP_2602_7Z_SLT.encode("utf-8")
+    monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: _FakeRun())
+
+    info = m._list_7z("a.7z")
+    assert info.ok
+    assert info.entries == 2          # два файла, НЕ 4 -- две папки (Attributes = D) не в счёт
+    assert info.media_count == 1      # только photo.jpg
+    assert not info.path_traversal
+
+
+def test_list_7z_still_reads_folder_line_for_zip(monkeypatch):
+    # .zip у 7-Zip 26.02 по-прежнему печатает "Folder = +/-"; ветка Attributes ей не мешает.
+    zip_slt = (
+        "----------\n"
+        "Path = d\nFolder = +\nSize = 0\nAttributes = D\n\n"
+        "Path = d\\a.jpg\nFolder = -\nSize = 10\nAttributes = A\n\n"
+        "Path = d\\b.jpg\nFolder = -\nSize = 20\nAttributes = A\n"
+    )
+
+    class _FakeRun:
+        returncode = 0
+        stdout = zip_slt.encode("utf-8")
+    monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: _FakeRun())
+
+    info = m._list_7z("d.zip")
+    assert info.entries == 2
+    assert info.media_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -280,10 +354,9 @@ def test_dvd_unit_log_line_shows_placement_letter_when_enabled(tmp_path):
 
 def test_dvd_unit_log_line_truncates_long_paths_instead_of_wrapping(tmp_path, monkeypatch):
     """Живой боевой прогон 2026-08-28: строка «[DVD]D новый DVD-диск -> <dest> (N файлов,
-    <src>)» уходит в write_heavy_notice() (перенос по 2/3 ширины) с ДВУМЯ длинными путями и
-    без обрезки под ширину -- реальный DVD-путь рвался посреди слова. Фикс (как у _log_archive
-    в 86f2b2f): disp_base под фикс-кап, dest_dir под остаток ширины, wrap только если всё равно
-    не влезло."""
+    <src>)» уходит в write_heavy_notice() с ДВУМЯ длинными путями и без обрезки под ширину --
+    реальный DVD-путь рвался посреди слова. Фикс (как у _log_archive в 86f2b2f): disp_base под
+    фикс-кап, dest_dir под остаток ширины, wrap только если всё равно не влезло в окно."""
     # Узкий «терминал» + маленький бюджет пути (в pytest sys.stderr.isatty() == False, поэтому
     # _console_tag_line_budget() иначе всегда вернул бы 80 -- подменяем оба).
     monkeypatch.setattr(m, "_console_columns", lambda fallback=80: 60)
@@ -412,6 +485,35 @@ def test_dvd_unit_duplicate_is_skipped_not_reyielded(tmp_path):
     assert walker.dvd_units_copied == []
     assert walker.dvd_units_skipped_duplicate == [
         {"name": "Disc1", "dest_path": r"D:\Target\Albums\Disc1\VIDEO_TS"}]
+
+
+def test_dvd_unit_duplicate_log_line_truncates_long_path_instead_of_wrapping(tmp_path, monkeypatch):
+    """Живой репорт 2026-08-29: «[DVD] дубль уже архивированного диска, пропущен: <path>» была
+    единственной из [DVD]/[archive]/[папка]-строк без обрезки пути под ширину -- на реальном
+    DVD-пути рвалась посреди слова. Тот же приём, что у «[DVD] новый DVD-диск ->» рядом."""
+    monkeypatch.setattr(m, "_console_columns", lambda fallback=80: 60)
+    monkeypatch.setattr(m, "_console_tag_line_budget", lambda tail_len, **kw: 20)
+
+    source = tmp_path / "source"
+    disc = source / "a_very_deeply_nested_folder" / "with_a_long_name_inside" / "VIDEO_TS"
+    disc.mkdir(parents=True)
+    (disc / "VTS_01_0.VOB").write_bytes(b"x" * 10)
+    (tmp_path / "target").mkdir()
+
+    records = m._dvd_unit_file_records(str(disc))
+    fingerprint = m._dvd_unit_fingerprint(records)
+    cfg = _make_cfg(tmp_path)
+    lines = []
+    walker = m.SourceWalker(cfg, log=lines.append,
+                             dvd_unit_registry={fingerprint: r"D:\T\Albums\x\VIDEO_TS"})
+    list(walker.walk())
+
+    dup_lines = [ln for ln in lines if "дубль уже архивированного диска" in ln]
+    assert len(dup_lines) == 1
+    ln = dup_lines[0].lstrip("\n")
+    assert "\n" not in ln     # одна физическая строка
+    assert "…" in ln          # длинный путь реально обрезан
+    assert ln.startswith("  [DVD] дубль уже архивированного диска, пропущен: ")
 
 
 def test_dvd_unit_file_records_calls_progress_cb_per_file(tmp_path):
@@ -1864,7 +1966,8 @@ def test_log_archive_truncates_long_path_same_as_object_line(tmp_path, monkeypat
 # Живой боевой прогон, 2026-08-28 (пополнение архива на D:): часть [archive]-строк выводилась
 # БЕЗ буквы A/D после "]" (только объект-строка write_object_line() её несла), и та же строка
 # переносилась там, где место ещё оставалось -- путь обрезан под полную ширину терминала, а
-# write_heavy_notice() переносил по порогу 2/3.
+# write_heavy_notice() переносил по порогу 2/3. 2026-08-29 (ещё два живых репорта
+# "необоснованный перенос"): write_heavy_notice() теперь переносит по краю окна, не по 2/3.
 # ---------------------------------------------------------------------------
 
 def test_log_archive_renders_placement_letter_right_after_bracket(tmp_path, monkeypatch):
@@ -1888,12 +1991,11 @@ def test_log_archive_fitted_line_is_not_rewrapped_by_heavy_notice(tmp_path, monk
     cfg = _make_cfg(tmp_path)
     monkeypatch.setattr(m.sys.stderr, "isatty", lambda: True)
     monkeypatch.setattr(m, "_console_columns", lambda fallback=80: 120)
-    monkeypatch.setattr(m, "_terminal_wrap_width", lambda *a, **k: 80)
     captured = []
     walker = m.SourceWalker(cfg, log=lambda *a, **k: None,
                              heavy_notice_cb=lambda line, wrap=True: captured.append((line, wrap)))
-    # ~85 символов: влезает в терминал 120, но длиннее 2/3 (80) -- под старым кодом перенеслось
-    # бы на "...распаковано, найдено" \n "медиафайлов 1577".
+    # ~85 символов: влезает в терминал 120 целиком -- под старым кодом (перенос по 2/3 = 80)
+    # перенеслось бы на "...распаковано, найдено" \n "медиафайлов 1577".
     walker._log_archive("D:\\Архив Е\\E\\OLD\\YandexDisk\\www.zip", "archive_extracted",
                          "1577 медиафайлов", count=1577)
     assert len(captured) == 1
@@ -1904,18 +2006,62 @@ def test_log_archive_fitted_line_is_not_rewrapped_by_heavy_notice(tmp_path, monk
                     "распаковано, найдено медиафайлов 1577")
 
 
-def test_log_archive_long_free_form_note_still_wraps(tmp_path, monkeypatch):
+def test_log_archive_long_free_form_note_wraps_at_full_width_not_two_thirds(tmp_path, monkeypatch):
     cfg = _make_cfg(tmp_path)
     monkeypatch.setattr(m.sys.stderr, "isatty", lambda: True)
+    monkeypatch.setattr(m.sys.stdout, "isatty", lambda: True)
     monkeypatch.setattr(m, "_console_columns", lambda fallback=80: 120)
     captured = []
     walker = m.SourceWalker(cfg, log=lambda *a, **k: None,
                              heavy_notice_cb=lambda line, wrap=True: captured.append((line, wrap)))
     walker._log_archive("D:\\x\\big.7z", "archive_path_traversal_suspected",
-                         "после распаковки найдено 17 файлов, в листинге архива было 19 -- "
-                         "похоже, часть содержимого вышла за пределы extract_dir")
+                         "распаковано 17 файлов из 19 по листингу -- похоже, часть содержимого "
+                         "вышла за пределы папки распаковки")
     line, wrap = captured[0]
-    assert wrap is True  # длинный свободный note не влезает в терминал -- перенос оправдан
+    assert wrap is True  # note не влезает в окно (120) целиком -- перенос оправдан
+
+    # write_heavy_notice() переносит по краю окна (_console_columns()), НЕ по 2/3
+    # (_terminal_wrap_width()) -- 2026-08-29, два живых репорта "необоснованный перенос".
+    at_full = m._wrap_console_text(line, m._console_columns())
+    phys = at_full.split("\n")
+    assert len(phys) == 2                       # ровно один перенос, не три коротких строки
+    assert all(len(pl) <= 120 for pl in phys)
+    assert len(phys[0]) > 80                    # первая строка идёт до края окна, не до 2/3
+
+    # sanity: старое поведение (перенос по 2/3 = 80) дало бы более одной лишней строки
+    at_two_thirds = m._wrap_console_text(line, m._terminal_wrap_width())
+    assert len(at_two_thirds.split("\n")) > len(phys)
+
+
+def test_write_heavy_notice_wraps_at_full_terminal_width(monkeypatch):
+    # 2026-08-29, два живых репорта "необоснованный перенос строки": write_heavy_notice()
+    # переносит однострочные статус-уведомления SourceWalker'а по КРАЮ окна (_console_columns()),
+    # а не по 2/3 (_terminal_wrap_width()) -- последнее только для прозы меню в console_log().
+    monkeypatch.setattr(m.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(m, "_console_columns", lambda fallback=80: 120)
+    seen = []
+    real_wrap = m._wrap_console_text
+    monkeypatch.setattr(m, "_wrap_console_text",
+                         lambda text, width: (seen.append(width), real_wrap(text, width))[1])
+    bar = _two_line_bar()
+    try:
+        bar.write_heavy_notice("  " + "x" * 200)  # заведомо длиннее окна -- перенос сработает
+    finally:
+        bar.close()
+    assert seen == [120]  # полная ширина окна, не 80 (2/3)
+
+
+def test_skipped_meta_summary_line_not_wrapped_when_it_fits_window(monkeypatch):
+    # Живой репорт 2026-08-29: "в архиве пропущено служебных записей: N (...)" рвалась посреди
+    # фразы ("...не файлы с" \n "данными)") при куче места справа -- write_heavy_notice() резал
+    # по 2/3, а строка (~84 симв.) влезает в окно 120 целиком.
+    monkeypatch.setattr(m, "_console_columns", lambda fallback=80: 120)
+    msg = ("  в архиве пропущено служебных записей: 256 "
+           "(ссылки и устройства — не файлы с данными)")
+    assert len(msg) <= 120
+    assert "\n" not in m._wrap_console_text(msg, m._console_columns())
+    # репро валиден: старый порог (2/3 = 80) действительно рвал бы эту строку
+    assert "\n" in m._wrap_console_text(msg, m._terminal_wrap_width())
 
 
 def test_handle_archive_status_lines_carry_placement_letter_when_enabled(tmp_path):
@@ -1941,45 +2087,42 @@ def test_handle_archive_status_lines_carry_placement_letter_when_enabled(tmp_pat
 
 # ---------------------------------------------------------------------------
 # _extraction_log_name_budget() -- live bug found by the user, 2026-08-01: a long archive
-# name pushed "  Распаковка <имя> (X ГБ)…" past console_log()'s own line-wrap threshold
-# (_wrap_console_text()/_terminal_wrap_width(), 2/3 of real terminal width) -- the wrapped
-# second physical line then confused the tqdm bar's clear()/refresh() bookkeeping (which
-# assumes it only ever owns exactly one row), leaving a stale visual duplicate on screen.
+# name pushed "  Распаковка <имя> (X ГБ)…" past write_heavy_notice()'s line-wrap threshold --
+# the wrapped second physical line then confused the tqdm bar's clear()/refresh() bookkeeping
+# (which assumes it only ever owns exactly one row), leaving a stale visual duplicate.
+# 2026-08-29: the threshold is the FULL terminal width now, not 2/3 -- the budget follows.
 # ---------------------------------------------------------------------------
 
 def test_extraction_log_name_budget_returns_large_value_when_not_a_tty(monkeypatch):
     monkeypatch.setattr(m.sys.stdout, "isatty", lambda: False)
-    assert m._extraction_log_name_budget() >= 200  # console_log() never wraps -- no need to shrink
+    assert m._extraction_log_name_budget() >= 200  # write_heavy_notice() never wraps off-tty
 
 
-def test_extraction_log_message_no_longer_wraps_at_80_columns(monkeypatch):
+def test_extraction_log_message_fits_full_terminal_width_after_truncation(monkeypatch):
     monkeypatch.setattr(m.sys.stdout, "isatty", lambda: True)
     monkeypatch.setattr(m, "_console_columns", lambda fallback=80: 80)
-    archive_name = "archive-2026-07-09_20-14-47.zip"  # the exact name from the live bug report
+    long_name = "backup-" + "very-long-folder-name-" * 4 + "2024-09-18.tar.gz"  # ~110 символов
     budget = m._extraction_log_name_budget()
-    truncated = m._truncate_progress_note(archive_name, maxlen=budget)
+    truncated = m._truncate_progress_note(long_name, maxlen=budget)
     msg = f"  Распаковка {truncated} (6.2 ГБ)…"
 
-    # Reproduce console_log()'s own wrapping decision (_wrap_console_text()) -- before the
-    # fix, this exact message wrapped into 2 physical lines at 80 columns.
-    width = m._terminal_wrap_width()
-    wrapped = textwrap.wrap(msg.strip(), width=width, initial_indent="  ", subsequent_indent="    ",
-                             break_long_words=False, break_on_hyphens=False)
-    assert len(wrapped) == 1
-
-    # The truncated name keeps its distinguishing tail (the date), not just noise off the front.
-    assert truncated.endswith("2026-07-09_20-14-47.zip")
+    # write_heavy_notice() переносит по ПОЛНОЙ ширине окна (_console_columns()), не по 2/3
+    # -- бюджет обязан удержать строку в одной физической строке при 80 колонках.
+    assert len(msg) <= 80
+    assert "\n" not in m._wrap_console_text(msg, m._console_columns())
+    # различающий хвост (расширение + дата) сохранён, не срезан вместе с началом.
+    assert truncated.endswith("2024-09-18.tar.gz")
 
 
-def test_extraction_log_message_still_wraps_without_the_fix_at_80_columns(monkeypatch):
-    # Sanity-check the repro itself: the ORIGINAL (untruncated) message really did wrap at a
-    # plain 80-column console -- if this stops being true, the fix above is testing nothing.
+def test_extraction_log_message_would_overflow_full_width_without_truncation(monkeypatch):
+    # Sanity-check репро: неусечённое длинное имя реально выходит за полную ширину 80-колоночного
+    # окна -- иначе бюджет выше ничего не проверяет.
+    monkeypatch.setattr(m.sys.stdout, "isatty", lambda: True)
     monkeypatch.setattr(m, "_console_columns", lambda fallback=80: 80)
-    msg = "  Распаковка archive-2026-07-09_20-14-47.zip (6.2 ГБ)…"
-    width = m._terminal_wrap_width()
-    wrapped = textwrap.wrap(msg.strip(), width=width, initial_indent="  ", subsequent_indent="    ",
-                             break_long_words=False, break_on_hyphens=False)
-    assert len(wrapped) == 2
+    long_name = "backup-" + "very-long-folder-name-" * 4 + "2024-09-18.tar.gz"
+    msg = f"  Распаковка {long_name} (6.2 ГБ)…"
+    assert len(msg) > 80
+    assert "\n" in m._wrap_console_text(msg, m._console_columns())
 
 
 # ---------------------------------------------------------------------------

@@ -1809,6 +1809,59 @@ def _run_wizard() -> dict:
         wiz.destroy()
 
 
+def _confirm_clear_lock(message: str) -> bool:
+    """Да/нет-окно перед принудительным снятием LOCK-файла архива. Отдельный лёгкий диалог
+    (tkinter.messagebox), не экран мастера -- редкий путь восстановления, фиксированный
+    степ-индикатор мастера тут не нужен (тот же принцип, что и у _notice_window()).
+    default="no" -- случайный Enter не снимает блокировку."""
+    import tkinter as tk
+    from tkinter import messagebox
+    _configure_dpi_awareness()
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        root.iconbitmap(m.resource_path("assets/app.ico"))
+    except Exception:
+        pass
+    try:
+        return bool(messagebox.askyesno(
+            "PhotoArchive — архив занят", message,
+            icon="warning", default="no", parent=root))
+    finally:
+        root.destroy()
+
+
+def _ensure_target_unlocked(target: str, log=print) -> bool:
+    """Преполётная проверка перед реальной сборкой ([3]/archive-режим). LOCK заведомо мёртвого
+    процесса движок (TargetLock.__enter__) снимает сам молча -- сюда он не долетает. Долетают
+    два случая, которые движок иначе превратил бы в тихий возврат в меню: владелец LOCK ещё жив
+    (реальный параллельный прогон ИЛИ переиспользованный ОС PID) и владелец неизвестен (старый
+    формат/повреждение файла). Показываем окно и даём пользователю решить. True -- продолжать
+    сборку (LOCK не было, движок снимет сам, или пользователь снял вручную)."""
+    lock = m.inspect_target_lock(target)
+    if lock is None or lock["pid_alive"] is False:
+        return True
+    mins = int(lock["age_seconds"] // 60)
+    if lock["pid_alive"] is True:
+        head = (f"Похоже, другой прогон PhotoArchive уже работает с этим архивом "
+                f"(процесс PID {lock['pid']}).")
+    else:
+        head = "В архиве остался файл-блокировка от прошлого запуска."
+    message = (
+        f"{head}\n\n"
+        f"Файл-блокировка создан {mins} мин назад.\n\n"
+        "Снять блокировку и продолжить?\n\n"
+        "• Да — если вы уверены, что другой прогон НЕ идёт (прошлый был прерван, "
+        "компьютер перезагружался).\n"
+        "• Нет — если сборка сейчас реально идёт в другом окне; дождитесь её "
+        "завершения, иначе два прогона могут испортить архив."
+    )
+    if _confirm_clear_lock(message):
+        m.clear_target_lock(target, log=log)
+        return True
+    return False
+
+
 def run_bare_launch(log=print) -> None:
     """Публичная точка входа -- вызывается ТОЛЬКО из photosort_win._main(). Зеркалит структуру
     photosort_win.run_bare_launch() (см. её докстринг) -- тот же while True/continue-ladder
@@ -1873,6 +1926,10 @@ def run_bare_launch(log=print) -> None:
                                                       input_fn=_auto_yes_input_fn, log=log)
             m._pause_for_report(report_path, input_fn=_make_ok_input_fn(report_path), log=log,
                                  auto_open_browser=False)
+            continue
+
+        if not _ensure_target_unlocked(result["target"], log=log):
+            log("  Сборка отменена — архив занят другим прогоном PhotoArchive.")
             continue
 
         report_path = m._bare_launch_run_build([result["source"]], result["target"],

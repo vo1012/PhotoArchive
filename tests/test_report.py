@@ -567,13 +567,13 @@ def test_render_this_run_shows_encrypted_archive_even_when_source_otherwise_empt
 
 
 def test_render_this_run_shows_processed_count_as_comparison_base():
-    """Раунд 32, задача 4 (REVIEW-HANDOFF.md): "обработано на источнике" -- база для
+    """Раунд 32, задача 4 (REVIEW-HANDOFF.md): "обработано в источнике" -- база для
     сверки, что отчёт ничего не потерял молча (та же цифра, что терминал печатает как
     "Обработано: N файлов" -- речь пользователя, 2026-08-16, отличает от "найдено"
     analyze-отчёта). Тот же тайл теперь ПЕРВЫЙ в ряду (2026-08-16), не предпоследний."""
     run_stats = {"appended_images": 5, "appended_videos": 0, "processed_count": 42}
     html_out = r._render_this_run(run_stats, level="target")
-    assert "обработано на источнике" in html_out
+    assert "обработано в источнике" in html_out
     assert ">42<" in html_out
 
 
@@ -584,7 +584,7 @@ def test_render_this_run_processed_count_label_same_in_preview():
     нет)."""
     run_stats = {"appended_images": 5, "appended_videos": 0, "processed_count": 42}
     html_out = r._render_this_run(run_stats, level="workdir")
-    assert "обработано на источнике" in html_out
+    assert "обработано в источнике" in html_out
     assert "было бы обработано" not in html_out
 
 

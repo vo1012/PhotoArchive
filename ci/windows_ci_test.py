@@ -1703,7 +1703,7 @@ def test_processed_count_in_report():
     if os.path.isfile(report_path):
         with open(report_path, encoding="utf-8") as f:
             html_out = f.read()
-        check("обработано на источнике" in html_out,
+        check("обработано в источнике" in html_out,
               "processed-count: report.html renders the comparison-base stat")
         check(">2<" in html_out,
               "processed-count: value matches the 2 real files processed this run "
@@ -2893,7 +2893,11 @@ def test_target_lock_blocks_concurrent_run():
 
     lock_path = os.path.join(tgt, "__служебные_файлы", "LOCK")
     with open(lock_path, "w", encoding="utf-8") as f:
-        f.write("99999999")  # fresh mtime (just written) -- simulates a run in progress
+        # A real run-in-progress: LOCK carries the PID of a LIVE process. This harness process
+        # (os.getpid()) stays alive for the whole child run below -- so TargetLock.__enter__'s
+        # _pid_is_alive() check sees a live holder and blocks, exactly as a genuine second run
+        # would. (A dead/bogus PID is now auto-cleared -- see test_target_lock_dead_holder_*.)
+        f.write(str(os.getpid()))
 
     before = sorted(
         os.path.join(dp, f) for dp, _, files in os.walk(tgt) for f in files
@@ -2915,7 +2919,8 @@ def test_target_lock_blocks_concurrent_run():
 
 
 def test_target_lock_stale_auto_removed():
-    print("\n=== 5.4б: a stale (>12h old) LOCK file is auto-removed and the run proceeds ===")
+    print("\n=== 5.4б: a stale (>12h old) LOCK with an UNREADABLE pid is auto-removed by the "
+          "mtime fallback and the run proceeds ===")
     src = os.path.join(WORK, "src_lock_stale")
     tgt = os.path.join(WORK, "target_lock_stale")
     image(os.path.join(src, "a.jpg"), 800, 600, exif=True, dt="2022:05:05 10:00:00")
@@ -2924,7 +2929,10 @@ def test_target_lock_stale_auto_removed():
 
     lock_path = os.path.join(tgt, "__служебные_файлы", "LOCK")
     with open(lock_path, "w", encoding="utf-8") as f:
-        f.write("12345")
+        # Non-numeric contents -> _read_lock_pid() returns None -> the pid-liveness path can't
+        # decide -> TargetLock falls back to the 12h mtime rule. (The pid-liveness path itself
+        # is covered by test_target_lock_dead_holder_auto_removed below.)
+        f.write("unreadable-pid")
     old_time = time.time() - 13 * 3600  # 13h old -- past the 12h staleness threshold
     os.utime(lock_path, (old_time, old_time))
 
@@ -2933,6 +2941,32 @@ def test_target_lock_stale_auto_removed():
     check(r1.returncode == 0, "5.4б: run with a stale LOCK exits 0 (proceeds normally)")
     check("устаревший LOCK" in r1.stdout, "5.4б: stale LOCK removal is logged")
     check(os.path.isfile(os.path.join(tgt, "ByDate", "2022", "2022-05 [PhotoArchive]", "b.jpg")),
+          "5.4б: the run actually proceeded and archived the new file")
+
+
+def test_target_lock_dead_holder_auto_removed():
+    print("\n=== 5.4б: a FRESH LOCK whose holder process is gone (Ctrl-C/crash before "
+          "TargetLock.__exit__ ran) is auto-removed immediately, without the 12h wait ===")
+    src = os.path.join(WORK, "src_lock_dead_holder")
+    tgt = os.path.join(WORK, "target_lock_dead_holder")
+    image(os.path.join(src, "a.jpg"), 800, 600, exif=True, dt="2022:06:06 10:00:00")
+    r0 = run_photosort(src, tgt)
+    check(r0.returncode == 0, "5.4б: initial run exits 0")
+
+    # A real dead pid: spawn a throwaway process, let it exit, reuse its (now-free) pid.
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    lock_path = os.path.join(tgt, "__служебные_файлы", "LOCK")
+    with open(lock_path, "w", encoding="utf-8") as f:
+        f.write(str(dead.pid))  # fresh mtime, but the owner is already gone
+
+    image(os.path.join(src, "b.jpg"), 800, 600, exif=True, dt="2022:06:07 10:00:00")
+    r1 = run_photosort(src, tgt)
+    check(r1.returncode == 0,
+          f"5.4б: fresh LOCK with a dead holder -> run proceeds, exits 0 (got {r1.returncode})")
+    check("больше нет" in r1.stdout,
+          "5.4б: dead-holder LOCK removal is logged (distinct from the mtime-stale message)")
+    check(os.path.isfile(os.path.join(tgt, "ByDate", "2022", "2022-06 [PhotoArchive]", "b.jpg")),
           "5.4б: the run actually proceeded and archived the new file")
 
 
@@ -3661,7 +3695,9 @@ def test_bare_launch_menu_argv_gate_and_flow():
     image(os.path.join(src9, "i.jpg"), 800, 600, exif=True, dt="2021:01:01 10:00:00")
     os.makedirs(os.path.join(tgt9, "__служебные_файлы"), exist_ok=True)
     with open(os.path.join(tgt9, "__служебные_файлы", "LOCK"), "w", encoding="utf-8") as f:
-        f.write("999999")  # fake PID of an "other" running instance
+        # PID of a live process (this harness) -- a genuine "other run in progress". A bogus/
+        # dead PID would now be auto-cleared and the build would proceed (the 2026-08-29 fix).
+        f.write(str(os.getpid()))
     r9 = run_bare("locked target", ["3", "1", src9, "1", tgt9, "да"])
     check("похоже, другой прогон PhotoArchive уже работает" in r9.stdout,
           "locked target: TargetLocked's own error message is shown")
@@ -4164,6 +4200,55 @@ def test_archive_entry_count_mismatch_rejected():
           "finding7: the whole archive was rejected outright, nothing archived from it")
 
 
+def test_7z_with_subfolder_not_rejected_as_traversal():
+    print("\n=== 7-Zip 26.02 regression (live run 2026-08-29): a real .7z containing a "
+          "subfolder must NOT be misread as an entry-count mismatch and discarded ===")
+    # 7-Zip 26.02's `l -slt` stopped printing "Folder = +/-" for .7z archives (dirs show up
+    # only as "Attributes = D"). Before the fix, _list_7z() counted every dir as a file entry,
+    # so info.entries > count_extracted_files() for ANY .7z with subfolders, and _handle_archive
+    # rejected the whole thing as archive_path_traversal_suspected -- silently dropping real
+    # photos. This builds a genuine .7z with bin/7z.exe (whatever version CI has) and checks
+    # the archive is processed, not rejected.
+    sevenzip = shutil.which("7z") or shutil.which("7z.exe")
+    if not sevenzip:
+        print("  SKIP: 7z not on PATH")
+        return
+    src = os.path.join(WORK, "src_7z_subfolder")
+    staged = os.path.join(WORK, "stage_7z_subfolder", "2015", "summer")
+    os.makedirs(staged, exist_ok=True)
+    image(os.path.join(staged, "beach.jpg"), 800, 600, exif=True, dt="2015:07:15 12:00:00")
+    os.makedirs(src, exist_ok=True)
+    apath = os.path.join(src, "family.7z")
+    cp = subprocess.run([sevenzip, "a", apath, os.path.join(WORK, "stage_7z_subfolder", "*")],
+                        capture_output=True, text=True)
+    check(cp.returncode == 0 and os.path.exists(apath), "7z-subfolder: test .7z created")
+    tgt = os.path.join(WORK, "target_7z_subfolder")
+
+    r = run_photosort(src, tgt)
+    check(r.returncode == 0, "7z-subfolder: run exits 0")
+    archives_log_path = os.path.join(tgt, "__служебные_файлы", "logs", "archives.log")
+    log_text = open(archives_log_path, encoding="utf-8").read() if os.path.exists(archives_log_path) else ""
+    check("archive_path_traversal_suspected" not in log_text,
+          "7z-subfolder: .7z with a subfolder is NOT flagged as a traversal/count mismatch")
+    bydate = os.path.join(tgt, "ByDate")
+    found = []
+    for _root, _dirs, files in os.walk(bydate):
+        found += [f for f in files if f.lower().endswith(".jpg")]
+    check(len(found) == 1, f"7z-subfolder: the photo inside the .7z was archived (found {found})")
+    # REVIEW-HANDOFF.md Раунд 155: содержимое этого .7z -- голая дата (2015/summer/), т.е.
+    # целиком уходит в отложенный Проход 3. До фикса архив логировался archive_no_media и
+    # не попадал в "N архивов распаковано" отчёта, хотя фото реально в ByDate. Этот же
+    # живой репро покрывает и ту находку -- проверяем реальный статус, не только отсутствие
+    # traversal-флага и наличие файла.
+    check("archive_extracted" in log_text and "archive_no_media" not in log_text,
+          "7z-subfolder: archive whose media is all deferred to Pass 3 logs archive_extracted, "
+          "not archive_no_media (Раунд 155)")
+    report_path = os.path.join(tgt, "__служебные_файлы", "report.html")
+    report_html = open(report_path, encoding="utf-8").read() if os.path.exists(report_path) else ""
+    check("архивов распаковано" in report_html or "архив распакован" in report_html,
+          "7z-subfolder: report.html shows the archives-extracted tile (archives_extracted > 0)")
+
+
 def test_relative_path_rejected():
     print("\n=== 5.9: relative SOURCE/TARGET rejected with a clear error, not a traceback ===")
     src = os.path.join(WORK, "relpath_src")
@@ -4332,6 +4417,7 @@ ALL_TESTS = [
     test_exit_code_aggregation_across_sources,
     test_target_lock_blocks_concurrent_run,
     test_target_lock_stale_auto_removed,
+    test_target_lock_dead_holder_auto_removed,
     test_target_lock_released_after_run,
     test_target_confirmation_unit,
     test_drive_root_target_confirmation_unit,
@@ -4350,6 +4436,7 @@ ALL_TESTS = [
     test_archive_path_traversal_rejected,
     test_archive_symlink_rejected,
     test_archive_entry_count_mismatch_rejected,
+    test_7z_with_subfolder_not_rejected_as_traversal,
     test_relative_path_rejected,
     test_third_party_licenses_content,
     test_requirements_txt_pinned_and_wired_up,

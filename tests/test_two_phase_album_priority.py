@@ -282,6 +282,87 @@ class TestArchiveExtractDirNotCleanedBeforeDrain:
         assert not __import__("os").path.exists(walker._pending_cleanup_dirs[0])
 
 
+class TestDeferredArchiveMediaCountedInStatus:
+    """REVIEW-HANDOFF.md, Раунд 155 [замечание]: архив, чьё медиасодержимое целиком уходит в
+    отложенный Проход 2/3 (голая дата/дамп-ветка внутри -- _is_terminal_bydate_branch()),
+    логировался как `archive_no_media` и не попадал в `archives_extracted`, хотя фото реально
+    распаковано и лежит в ByDate -- нарушение RULES.md:449 ("нет медиа РЕКУРСИВНО"). Фикс:
+    _handle_archive() откладывает и сам статус, _drain_deferred_phases() дописывает его,
+    досчитав медиа по срезам трёх _deferred_*-списков."""
+
+    def _statuses(self, tmp_path, build):
+        source = tmp_path / "source"
+        source.mkdir()
+        build(source)
+        target = tmp_path / "target"
+        target.mkdir()
+        cfg = m.Config(source=str(source), target=str(target))
+        walker = m.SourceWalker(cfg, log=lambda *a, **k: None)
+        items = list(walker.walk())
+        media = sum(1 for it in items if it.ftype in ("image", "raw", "video"))
+        return media, [s for _, s, _ in walker.archive_logs]
+
+    def test_archive_all_media_deferred_logs_archive_extracted(self, tmp_path):
+        def build(source):
+            zpath = source / "myarchive.zip"
+            with zipfile.ZipFile(zpath, "w") as zf:
+                for name in ("a.jpg", "b.jpg"):
+                    img = tempfile.mktemp(suffix=".jpg")
+                    _make_jpeg(img)
+                    zf.write(img, f"DCIM/{name}")
+
+        media, statuses = self._statuses(tmp_path, build)
+        assert media == 2
+        # до фикса тут было ["archive_no_media"]
+        assert statuses == ["archive_extracted"], statuses
+
+    def test_archive_genuinely_media_free_still_archive_no_media(self, tmp_path):
+        """Негативный контроль: если рекурсивно медиа реально нет (даже в отложенной ветке) --
+        статус остаётся archive_no_media, фикс не превращает его в ложный archive_extracted."""
+        def build(source):
+            zpath = source / "myarchive.zip"
+            with zipfile.ZipFile(zpath, "w") as zf:
+                zf.writestr("DCIM/notes.txt", "hello")
+                zf.writestr("2015/readme.txt", "x")
+
+        media, statuses = self._statuses(tmp_path, build)
+        assert media == 0
+        assert statuses == ["archive_no_media"], statuses
+
+    def test_nested_archive_inner_content_deferred_both_counted(self, tmp_path):
+        """Архив-в-архиве: содержимое внутреннего архива отложено (2015/summer/…). Оба архива
+        должны попасть в archive_extracted (RULES.md:449 -- рекурсивно); срез внутреннего
+        архива вложен в срез внешнего, поэтому медиа засчитывается обоим."""
+        def build(source):
+            inner = tempfile.mktemp(suffix=".zip")
+            img = tempfile.mktemp(suffix=".jpg")
+            _make_jpeg(img)
+            with zipfile.ZipFile(inner, "w") as zf:
+                zf.write(img, "2015/summer/p.jpg")
+            with zipfile.ZipFile(source / "myarchive.zip", "w") as zf:
+                zf.write(inner, "backup.zip")
+
+        media, statuses = self._statuses(tmp_path, build)
+        assert media == 1
+        assert statuses.count("archive_extracted") == 2, statuses
+        assert "archive_no_media" not in statuses
+
+    def test_archive_with_mixed_album_and_deferred_media(self, tmp_path):
+        def build(source):
+            zpath = source / "myarchive.zip"
+            with zipfile.ZipFile(zpath, "w") as zf:
+                a = tempfile.mktemp(suffix=".jpg")
+                _make_jpeg(a, color=(200, 50, 90))
+                zf.write(a, "RealAlbum/x.jpg")
+                b = tempfile.mktemp(suffix=".jpg")
+                _make_jpeg(b)
+                zf.write(b, "DCIM/y.jpg")
+
+        media, statuses = self._statuses(tmp_path, build)
+        assert media == 2
+        assert statuses == ["archive_extracted"], statuses
+
+
 class TestDeferredRootReportsTransientOp:
     """REVIEW-HANDOFF.md, Раунд 58 [ЗАМЕЧАНИЕ]: переход в отложенное поддерево Фазы 3 не
     подавал никакого сигнала в progress-бар -- время до первого yield'а из такого поддерева

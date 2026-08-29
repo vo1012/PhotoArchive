@@ -2121,7 +2121,7 @@ def _render_this_run(run_stats: dict, level: str = "target", verify_link: str = 
     processed_total = run_stats.get("processed_count", 0)
     if processed_total:
         stats_html.append(f'<div class="stat"><div class="value">{processed_total}</div>'
-                           f'<div class="label">обработано на источнике</div></div>')
+                           f'<div class="label">обработано в источнике</div></div>')
     stats_html.append(f'<div class="stat"><div class="value">{n_new_strict}</div>'
                        f'<div class="label">{added_label}</div>{breakdown_html}{near_dup_footnote}</div>')
     # Пакет п.2 (SESSION-HANDOFF.txt): объём этого прогона -- есть в run_stats с самого
