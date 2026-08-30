@@ -76,7 +76,7 @@ warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
 # blanket ignore of all warnings, so any other future PIL/library warning still surfaces.
 warnings.filterwarnings("ignore", message="Palette images with Transparency.*", category=UserWarning)
 
-__version__ = "0.6.6"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
+__version__ = "0.6.7"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
                                  # с RULES_VERSION ниже (та про совместимость архива, а не exe)
 RULES_VERSION = "2026-08-11"   # дата последнего изменения бизнес-правил -- см. RULES.md;
                                 # менять руками при изменении логики раскладки/дедупа/дат
@@ -2936,14 +2936,22 @@ def exiftool_batch(paths, batch_size=200, log=print):
                     if sf:
                         results[sf] = entry
         except Exception as e:
-            # REVIEW-HANDOFF.md round 13, ticket 2c: a chunk-wide failure here silently
-            # loses EXIF for every file in the chunk (dates fall back to Tier B/C) -- on a
-            # 20-50k file archive that's a large, invisible quality drop if exiftool trips
-            # on one chunk (corrupt argfile, timeout). One line per failed chunk, not per
-            # file, so this can't flood the log on a genuinely bad run.
-            log_line(f"ВНИМАНИЕ: exiftool не смог обработать чанк файлов {i}-{i + len(chunk)} "
-                     f"({e!r}) -- EXIF-даты для этих {len(chunk)} файлов будут заменены менее "
-                     f"точными", log=log)
+            # REVIEW-HANDOFF.md round 13, ticket 2c + rounds 173/174: a chunk-wide failure
+            # here loses EXIF for every file in the chunk -- на 20-50k архиве это заметная
+            # просадка качества дат, если exiftool спотыкается на одном чанке (битый argfile,
+            # таймаут). Одна строка на чанк, не на файл -- лог не заливается. Build-path чанк
+            # 100 (не 200, см. _BUILD_EXIF_PREFETCH_BATCH_SIZE); полное устранение
+            # (per-file/подчанками retry здесь вместо `continue`) -- бэклог, замечание 173-2.
+            # Строка КОНТЕКСТНО-НЕЙТРАЛЬНА (Раунд 174): exiftool_batch() зовут и _run_impl()
+            # (сборка), и run_analyze() (диагностика/Паспорт, ничего не размещает) -- фраза про
+            # "уже размещены / повторный запуск не переложит" была бы бессмысленной для
+            # analyze. Без claim'а про конкретный тир: resolve_date() до mtime пробует дату из
+            # имени файла/папки/медиану соседей -- в смешанной папке большинство файлов
+            # получат ВЕРНУЮ дату; часть уйдёт в undated_media.csv, часть -- в dates_review.csv.
+            log_line(f"ВНИМАНИЕ: exiftool не смог обработать чанк из {len(chunk)} файлов "
+                     f"({i}-{i + len(chunk)}, {e!r}) -- их даты будут определены менее точно "
+                     f"(по имени файла, папке или времени файла); см. dates_review.csv и "
+                     f"undated_media.csv", log=log)
             continue
         finally:
             if argfile_path:
@@ -4194,17 +4202,17 @@ class SourceWalker:
         # архив (найден УЖЕ внутри другого архива, depth>=1) поэтому естественно не получает
         # своего тика -- он и так уже "внутри" тика внешнего архива.
         self._object_progress_cb = object_progress_cb
-        # REVIEW-HANDOFF.md, Раунд 86, замечание 2: для run_analyze()/Паспорта (батч-чтение
-        # EXIF через _walk_with_exif_prefetch(), до 200 файлов на спавн exiftool.exe) обычный
+        # REVIEW-HANDOFF.md, Раунд 86, замечание 2: при батч-чтении EXIF через
+        # _walk_with_exif_prefetch() (до 200 файлов на спавн exiftool.exe) обычный
         # тик "сразу после yield" тикает В МОМЕНТ, когда обёртка забрала имя файла в свой
         # внутренний pending -- задолго до того, как exiftool реально прочитал его метаданные
         # батчем -- числитель обгоняет знаменатель, хотя батч-спавны exiftool на самом деле
         # только начинаются -- тот же класс проблемы, что уже чинили для self.count (см.
         # ProgressReporter.__init__(), "self.count простаивал на 0 почти весь прогон"), но с
-        # противоположным симптомом. defer_media_object_tick=True (передаёт только
-        # run_analyze()) отключает ТОЛЬКО этот один тик (см. yield item ниже в files-цикле) --
-        # вместо него тикает сам run_analyze(), поштучно, после analyze_batch() для каждого
-        # media-кандидата (:7057/:7070 и далее) -- НЕ одним вызовом на весь батч на его отправку
+        # противоположным симптомом. defer_media_object_tick=True (передают run_analyze() и,
+        # с 2026-08-31, _run_impl()) отключает ТОЛЬКО этот один тик (см. yield item ниже в
+        # files-цикле) -- вместо него тикает сам вызывающий цикл, поштучно, после analyze_batch()
+        # для каждого media-кандидата -- НЕ одним вызовом на весь батч на его отправку
         # в exiftool_batch(), как было раньше (2026-08-10 -- 2026-08-17): такая батч-гранулярность
         # засчитывала видео из батча "готовыми" ДО того, как video_duration_and_resolution()/
         # ffprobe -- самая медленная часть analyze_batch() для видео -- реально их обрабатывала,
@@ -4588,7 +4596,7 @@ class SourceWalker:
             # внутри архива, оставшиеся без альбома, не тикают отдельно, архив уже тикнул
             # как единое целое (см. выше). См. defer_media_object_tick в __init__() -- тот же
             # принцип, что и в основном files-цикле _walk_dir(): вместо этого тикает сам
-            # run_analyze(), поштучно, после analyze_batch() для этого же файла (2026-08-18).
+            # вызывающий цикл (run_analyze() / _run_impl()), поштучно, после analyze_batch().
             if (item.archive_boundary_idx is None and self._object_progress_cb is not None
                     and not self._defer_media_object_tick):
                 self._object_progress_cb(1)
@@ -5199,8 +5207,8 @@ class SourceWalker:
                         continue
                 self._close_deferred_gap()
                 yield item
-                # См. defer_media_object_tick в __init__(): run_analyze() тикает эту же
-                # единицу сама, позже, поштучно, после analyze_batch() (2026-08-18).
+                # См. defer_media_object_tick в __init__(): вызывающий цикл (run_analyze() /
+                # _run_impl()) тикает эту же единицу сам, позже, поштучно, после analyze_batch().
                 if not self._defer_media_object_tick:
                     _tick_object()
 
@@ -5722,15 +5730,18 @@ def analyze_batch(items: list, retries: int = 3, retry_delay: float = 5.0,
     (run_analyze()), у analyze_batch() по архитектуре нет доступа к БД.
 
     tags_by_path (речь пользователя, "какие есть варианты сделать паспорт быстрее" --
-    2026-08-02): если передан, использовать ГОТОВЫЙ словарь тегов вместо собственного вызова
-    exiftool_batch() -- run_analyze() зовёт эту функцию с items=[один элемент] на каждой
-    итерации обхода (см. её докстринг), а exiftool_batch() ничего не знает о том, что таких
-    вызовов будет ещё тысячи -- каждый спавнит СВОЙ процесс exiftool на один файл, хотя сама
-    exiftool_batch() умеет батчить по 200 через -@argfile (REVIEW-HANDOFF-ARCHIVE.md, раунд 4:
-    ×28-36 накладных расходов на спавн против батча; раунд 19 ошибочно закрыл находку, проверив
-    только что exiftool_batch() умеет батчить, не что вызывающий код реально это делает --
-    им обоим НЕ был). None (по умолчанию) -- прежнее поведение, каждый вызов сам считает свои
-    теги, ничего не меняется для вызовов из _run_impl() (:6024/:6106), которые сюда не заходят."""
+    2026-08-02; на пути сборки _run_impl() -- с 2026-08-31, батчинг Пункта 2 разбора аудита):
+    если передан, использовать ГОТОВЫЙ словарь тегов вместо собственного вызова
+    exiftool_batch(). Оба потребителя (run_analyze() и _run_impl()) зовут эту функцию с
+    items=[один элемент] на каждой итерации обхода через _walk_with_exif_prefetch(), которая
+    накапливает батч и передаёт сюда общий tags_by_path -- без неё exiftool_batch() ничего не
+    знает о том, что таких вызовов будет ещё тысячи, и спавнит СВОЙ процесс exiftool на один
+    файл, хотя умеет батчить по 200 через -@argfile (REVIEW-HANDOFF-ARCHIVE.md, раунд 4:
+    ×28-36 накладных на спавн против батча; раунд 19 ошибочно закрыл находку, проверив только
+    что exiftool_batch() умеет батчить, не что вызывающий код реально это делает).
+    None (по умолчанию) -- каждый вызов сам считает свои теги; так по-прежнему заходят прочие
+    вызовы analyze_batch() ([item] без обёртки): end-of-run retry в _run_impl() (:9885) и
+    тесты."""
     if tags_by_path is None:
         image_video_paths = [it.read_path for it in items if it.ftype in ("image", "raw", "video")]
         tags_by_path = exiftool_batch(image_video_paths, log=log) if image_video_paths else {}
@@ -7797,10 +7808,23 @@ class AnalyzeStats:
 
 
 # Речь пользователя, "какие есть варианты сделать паспорт быстрее" (2026-08-02): вместе с
-# analyze_batch()'s новым tags_by_path= -- run_analyze()'s единственный потребитель этой пары.
-# batch_size=200 -- то же число, что и default exiftool_batch()'s собственного -@argfile-чанка,
-# так что накопленный здесь батч укладывается в ОДИН спавн exiftool, не в несколько.
-_ANALYZE_EXIF_PREFETCH_BATCH_SIZE = 200
+# analyze_batch()'s tags_by_path=. Потребители: run_analyze() (Паспорт/CLI analyze) и, с
+# 2026-08-31, _run_impl() (реальная сборка/--dry-run) -- см. _walk_with_exif_prefetch().
+# Оба <= default batch_size exiftool_batch()'s -@argfile-чанка (200), так что накопленный
+# здесь батч укладывается в ОДИН спавн exiftool, не в несколько.
+_EXIF_PREFETCH_BATCH_SIZE = 200
+# _run_impl() (сборка) -- меньше, чем Паспорт: батчинг расширяет "blast radius" одиночного
+# сбоя чанка exiftool (таймаут 120 c / битый argfile / краш) -- все файлы чанка разом падают
+# на дату по времени файла (Tier B/C), и уже размещённые копии залипают там (дедуп по SHA на
+# перезапуске видит их как skipped_present, не перекладывает -- подтверждено исполнением,
+# Раунд 173). Раунд 172 (наблюдение "вне рамок") + решение пользователя 2026-08-31: сборка
+# чаще Паспорта идёт по медленному/съёмному --source (USB/сеть), где 120-c-таймаут на 200
+# крупных файлов достижимее -> 100 вдвое сужает зону поражения. Цена: 100 НЕ на плато кривой
+# (замер Раунда 173: 100=5.75 мс/файл против 200=4.62, +24% на шаг exiftool) -- но абсолютно
+# это ~+30 c на 30k / ~+57 c на 50k медиафайлов, ничтожно против времени хеш+копия сборки
+# (десятки-сотни минут) и пола по I/O. Полное устранение класса (per-file retry чанка при
+# сбое) -- в бэклоге, Раунд 173 замечание 173-2.
+_BUILD_EXIF_PREFETCH_BATCH_SIZE = 100
 
 
 def _exif_cache_ready(cache: dict, item) -> bool:
@@ -7838,9 +7862,12 @@ def _walk_with_exif_prefetch(items_iter, tmp_extract_dir: str, batch_size: int, 
     кодом строго по одному, как и раньше (это НЕ read-ahead для хеширования/копирования,
     только для чтения EXIF-тегов).
 
+    Потребители: run_analyze() (Паспорт/CLI analyze, с 2026-08-02) и _run_impl()
+    (реальная сборка/--dry-run, с 2026-08-31) -- у обоих внешний цикл по одному item за раз.
+
     Файлы ВНУТРИ распакованного архива (item.read_path под cfg.tmp_extract) намеренно НЕ
-    накапливаются в батч -- см. предупреждение в _run_impl()'s SOURCE-цикле (:6002-6006,
-    "NB: items are analyzed and placed one at a time"): SourceWalker чистит tmp_extract
+    накапливаются в батч -- см. предупреждение "NB: items are analyzed and placed one at a
+    time" в _run_impl()'s SOURCE-цикле (у создания walker_iter): SourceWalker чистит tmp_extract
     архива в finally сразу же, как обход продвигается ЗА последний item этого архива --
     отложенная (батчем) обработка более раннего item того же архива рисковала бы читать
     уже удалённый физический файл. Здесь та же защита: как только встречен archive-item,
@@ -7869,17 +7896,28 @@ def _walk_with_exif_prefetch(items_iter, tmp_extract_dir: str, batch_size: int, 
     ОДНИМ вызовом на ОТПРАВКУ (до exiftool_batch(), см. REVIEW-HANDOFF.md, Раунд 86 follow-up)
     -- заявленная неточность "максимум один батч вперёд реального прогресса" на практике
     оказалась НЕ маленькой: если батч содержит видео, video_duration_and_resolution() (ffprobe)
-    для НИХ вызывается ПОЗЖЕ, поштучно, в run_analyze()'s основном цикле (analyze_batch()) --
+    для НИХ вызывается ПОЗЖЕ, поштучно, в основном цикле потребителя (analyze_batch()) --
     сам батч уже тикнул как "готово" за секунды до того, как эти видео реально дощупаны, и если
     это ПОСЛЕДНИЙ батч (или единственные видео источника попали именно в него), "обработано
     объектов 100%" держится клэмпом (min(X/Y*100, 100.0)) весь остаток прогона, пока ffprobe
     молча дообрабатывает эти видео -- тот же класс бага, что чинили Раунды 96-99, просто на
     уровень ниже (там весило поровну "медиа vs немедиа", здесь -- "лёгкое медиа vs дорогое
-    медиа"). Тик теперь -- в run_analyze() ПОСЛЕ analyze_batch() для каждого item (её докстринг,
-    поиск "обработано объектов" там же) -- честно отражает реальное завершение, включая ffprobe."""
+    медиа"). Тик теперь -- в самом потребителе (run_analyze() / _run_impl(), с 2026-08-31)
+    ПОСЛЕ analyze_batch() для каждого item, под гардом defer_media_object_tick=True на
+    SourceWalker -- честно отражает реальное завершение, включая ffprobe."""
     tmp_prefix = tmp_extract_dir + os.sep
     pending = []
     for item in items_iter:
+        if item.dvd_dest_path is not None:
+            # DVD-юнит-файл (VIDEO_TS): ни _run_impl() (continue до analyze_batch()), ни
+            # run_analyze() (заглушка-rec, is_dvd_unit_item) не читают его EXIF -- спавнить
+            # exiftool на .VOB/.IFO/.BUP бессмысленно. Сбрасываем накопленный батч (та же
+            # гарантия порядка, что и у tmp_extract-ветки ниже) и отдаём item с пустыми тегами.
+            if pending:
+                yield from _flush_exif_prefetch_batch(pending, cache, log, rate_hint_cb)
+                pending = []
+            yield item, {}
+            continue
         if item.read_path.startswith(tmp_prefix):
             if pending:
                 yield from _flush_exif_prefetch_batch(pending, cache, log, rate_hint_cb)
@@ -7900,7 +7938,8 @@ def _flush_exif_prefetch_batch(pending: list, cache, log, rate_hint_cb=None):
     rate_hint_cb, для батчей больше 1 файла.
 
     "объектов %" здесь больше не тикает (2026-08-18, см. докстринг _walk_with_exif_prefetch())
-    -- тикает run_analyze() сама, поштучно, после реальной обработки каждого item."""
+    -- тикает сам потребитель (run_analyze() / _run_impl()), поштучно, после реальной обработки
+    каждого item."""
     n = len(pending)
     t0 = time.time()
     try:
@@ -8083,13 +8122,13 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                            object_progress_cb=bar.add_object_progress,
                            defer_media_object_tick=True, heavy_notice_cb=bar.write_heavy_notice)
     # REVIEW-HANDOFF.md, Раунд 54, замечание 2 + Раунд 55, придирка: батч <= cfg.sample_limit,
-    # когда он задан -- без этого прогрев набирал полные _ANALYZE_EXIF_PREFETCH_BATCH_SIZE=200
+    # когда он задан -- без этого прогрев набирал полные _EXIF_PREFETCH_BATCH_SIZE=200
     # файлов ДО первой проверки sample_limit (она снаружи генератора, физически не может
     # сработать раньше) -- "--sample-limit N" (дешёвый тест на малой выборке, в т.ч. на
     # медленном сетевом источнике) реально тратил exiftool на до 200 файлов вместо N, молча.
     # sample_limit=0 -- "без лимита" (тот же falsy-смысл, что и везде в этой функции).
-    prefetch_batch_size = (min(_ANALYZE_EXIF_PREFETCH_BATCH_SIZE, cfg.sample_limit)
-                            if cfg.sample_limit else _ANALYZE_EXIF_PREFETCH_BATCH_SIZE)
+    prefetch_batch_size = (min(_EXIF_PREFETCH_BATCH_SIZE, cfg.sample_limit)
+                            if cfg.sample_limit else _EXIF_PREFETCH_BATCH_SIZE)
     walker_iter = _walk_with_exif_prefetch(
         walker.walk(), cfg.tmp_extract, prefetch_batch_size, cache=archive_cache, log=log,
         rate_hint_cb=bar.set_batch_rate_hint)
@@ -9594,15 +9633,36 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
         walker = SourceWalker(cfg, log=log, object_line_cb=bar.write_object_line,
                                transient_op_cb=bar.set_transient_op,
                                object_progress_cb=bar.add_object_progress,
+                               defer_media_object_tick=True,
                                dvd_unit_registry=dvd_unit_registry, show_placement_letter=True,
                                heavy_notice_cb=bar.write_heavy_notice)
-        # NB: items are analyzed and placed one at a time (no read-ahead batching).
-        # Files extracted from an archive live in TMP_EXTRACT only until that archive's
-        # generator scope closes (walker.py cleans up in a `finally` right after its last
-        # item is yielded) -- pulling several items ahead into a batch before processing
-        # them risks the physical file already being deleted by the time we hash/copy it.
+        # NB: items are analyzed and placed one at a time (no read-ahead batching for
+        # hashing/copying). Files extracted from an archive live in TMP_EXTRACT only until
+        # that archive's generator scope closes (walker.py cleans up in a `finally` right
+        # after its last item is yielded) -- pulling several items ahead into a batch before
+        # processing them risks the physical file already being deleted by the time we
+        # hash/copy it.
+        #
+        # 2026-08-31: _walk_with_exif_prefetch() batches ONLY the exiftool call (up to
+        # _BUILD_EXIF_PREFETCH_BATCH_SIZE plain-filesystem files per spawn instead of one spawn
+        # per file -- ~140 ms -> ~5 ms/file, Раунд 4 measurement); each item is still yielded and
+        # processed one at a time. Same wrapper run_analyze() has used since 2026-08-02: it
+        # never accumulates archive-tmp or DVD-unit items (yields them alone), so the
+        # tmp_extract lifetime guarantee above is untouched. cache=None -- the build path
+        # re-hashes every SOURCE file anyway (it copies them), no persistent per-file hash
+        # cache to consult. defer_media_object_tick=True above + the manual add_object_progress
+        # after analyze_batch() below: the "% objects" tick must fire on real completion
+        # (incl. ffprobe for video), not when the batch was merely sent to exiftool
+        # (REVIEW-HANDOFF.md, Раунд 100 -- the bug this exact split already fixed for analyze).
+        # _BUILD_EXIF_PREFETCH_BATCH_SIZE (100) < _EXIF_PREFETCH_BATCH_SIZE (200 у Паспорта) --
+        # см. константу: уже́ зона поражения при сбое чанка exiftool на медленном --source.
+        prefetch_batch_size = (min(_BUILD_EXIF_PREFETCH_BATCH_SIZE, cfg.sample_limit)
+                                if cfg.sample_limit else _BUILD_EXIF_PREFETCH_BATCH_SIZE)
+        walker_iter = _walk_with_exif_prefetch(
+            walker.walk(), cfg.tmp_extract, prefetch_batch_size, cache=None, log=log,
+            rate_hint_cb=bar.set_batch_rate_hint)
         try:
-            for item in walker.walk():
+            for item, tags_by_path in walker_iter:
                 # 2026-08-23, по прямой просьбе пользователя: пауза по пробелу, см.
                 # _check_pause_keypress()'s докстринг -- между файлами, не внутри одного.
                 _check_pause_keypress(log=log)
@@ -9670,7 +9730,17 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
                 # (тот же приём, что и self.update(0) в ProgressReporter.__init__).
                 bar.update(0, note=note)
                 records = analyze_batch([item], retries=cfg.read_retry_count, retry_delay=cfg.read_retry_delay,
-                                         small_image_px=cfg.small_image_px, log=log, pool=pool)
+                                         small_image_px=cfg.small_image_px, log=log, pool=pool,
+                                         tags_by_path=tags_by_path)
+                # "обработано объектов %" -- тикаем ЗДЕСЬ, ПОСЛЕ analyze_batch() (значит и после
+                # ffprobe/phash -- самой медленной части для видео), не когда батч был лишь
+                # ОТПРАВЛЕН в exiftool. defer_media_object_tick=True на walker'е выше отключил
+                # тик на самом обходе -- иначе счётчик убегал бы вперёд на весь prefetch-батч.
+                # Симметрично run_analyze() (:8418). archive_boundary_idx is None -- файл найден
+                # НЕ внутри архива (архив уже тикнул как единица в SourceWalker); DVD-юниты сюда
+                # не доходят (continue выше).
+                if item.archive_boundary_idx is None:
+                    bar.add_object_progress(1)
 
                 for rec in records:
                     processed_count += 1
@@ -9706,6 +9776,15 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
             # останавливает программу" не меняется, только теперь есть отчёт перед выходом.
             st.interrupted = True
             bar.mark_interrupted()  # "обработано объектов XX%" не форсирует 100% на прерванном прогоне
+        finally:
+            # 2026-08-31: walker_iter -- именованный локал (в отличие от прежнего инлайнового
+            # `for item in walker.walk()`, чью ссылку refcount ронял сразу на выходе из for) --
+            # на break (--sample-limit) / stopped_for_space / KeyboardInterrupt обёртка и
+            # SourceWalker.walk() под ней остались бы подвешены до возврата из _run_impl().
+            # Явный close() гонит в них GeneratorExit -- finally у _handle_archive() подчищает
+            # tmp_extract текущего архива ДО _cleanup_own_tmp_extract_entries() ниже, как и
+            # раньше. На исчерпанном генераторе (нормальное завершение обхода) -- no-op.
+            walker_iter.close()
 
         # Живая находка пользователя, 2026-08-09: временные распакованные папки архива
         # (__служебные_файлы\tmp_extract\<hash>\...) оставались на диске после Ctrl+C ВО ВРЕМЯ

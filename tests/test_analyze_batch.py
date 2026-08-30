@@ -595,7 +595,7 @@ class TestVideoCacheReuse:
 
 class TestAnalyzeExifPrefetchRespectsSampleLimit:
     """REVIEW-HANDOFF.md, Раунд 54, замечание 2 + Раунд 55, придирка: _walk_with_exif_prefetch()
-    (батчинг exiftool, 2026-08-02) копил батч ДО _ANALYZE_EXIF_PREFETCH_BATCH_SIZE=200 файлов
+    (батчинг exiftool, 2026-08-02) копил батч ДО _EXIF_PREFETCH_BATCH_SIZE=200 файлов
     ПЕРЕД тем, как отдать первый элемент вызывающему циклу run_analyze() -- проверка
     cfg.sample_limit стоит СНАРУЖИ генератора и физически не могла сработать раньше.
     "--sample-limit N" (дешёвый тест на малой выборке, в т.ч. на медленном сетевом источнике)
@@ -628,7 +628,7 @@ class TestAnalyzeExifPrefetchRespectsSampleLimit:
 
         assert stats.total_files == 3  # --sample-limit's own documented contract, unaffected
         # До первого фикса: один вызов на весь прогретый батч (10, весь SOURCE -- меньше чем
-        # _ANALYZE_EXIF_PREFETCH_BATCH_SIZE=200 в этом тесте, но принцип тот же: батч не
+        # _EXIF_PREFETCH_BATCH_SIZE=200 в этом тесте, но принцип тот же: батч не
         # ограничивался sample_limit вообще). После первого, но до итогового фикса: [3, 3] --
         # остаточный ×2 (см. докстринг класса). После итогового фикса -- ровно один батч ровно
         # нужного размера, ни одного лишнего файла/спавна.
