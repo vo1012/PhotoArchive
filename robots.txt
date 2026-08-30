@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://vo1012.github.io/PhotoArchive/sitemap.xml
