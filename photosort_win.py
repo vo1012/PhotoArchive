@@ -2,10 +2,9 @@
 """
 photosort_win.py -- сборка фото/видео архива (portable Windows-версия).
 
-Полная спецификация правил: RULES.md рядом с этим файлом (адаптация оригинального
-photo-archive-prompt.md для локального запуска на Windows, без SMB). Бизнес-логика
-(дедуп, тиры дат, hybrid-раскладка) идентична Linux-версии photo-sort; отличия — см.
-RULES.md, раздел "Отличия от оригинала".
+Windows-адаптация photo-sort для локального запуска (обычные локальные пути, без SMB).
+Бизнес-логика (дедуп, тиры дат, hybrid-раскладка) идентична Linux-версии photo-sort;
+полная спецификация правил ведётся в документации проекта.
 
 Запуск (portable .exe, собранный PyInstaller -- см. README-BUILD.md):
     PhotoArchive.exe --source "D:\\Фото" --target "D:\\Архив фото"
@@ -56,6 +55,17 @@ from tqdm import tqdm as _tqdm
 import report  # PROMPT_archive_report.md, границы: отдельный модуль, ничего не импортирует
                 # обратно отсюда -- см. report.py docstring
 
+# Раунды 164A/166 ревью (внешний аудит): Image.MAX_IMAGE_PIXELS оставлен на дефолте Pillow
+# (~89M пикс) -- он и так закрывает главный риск: файл >2·MAX (>179M пикс) поднимает
+# DecompressionBombError на Image.open() ДО аллокации, и это подкласс Exception, уже ловится
+# try/except вокруг всех трёх Image.open() (image_size_only()/image_phash_and_size()) -> файл
+# трактуется как нечитаемый (low_confidence_photo, kept-not-lost). Кап 300M (введён в 77b094e,
+# откачен в этом же раунде) только РАСШИРЯЛ полосу "декодируется целиком с warning'ом" -- см. Раунд 166.
+# Заглушаем сам DecompressionBombWarning (полоса 89M-179M: PIL декодирует, но печатает
+# advisory-warning, ломающий tqdm-бар -- тот же класс, что "Palette images" ниже; настоящие
+# бомбы это не затрагивает, у них Error, а не Warning).
+warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
+
 # 2026-07-11 live-run finding: Pillow prints "Palette images with Transparency expressed in
 # bytes should be converted to RGBA images" (UserWarning, via the `warnings` module -> stderr
 # by default) on ordinary real-world palette+transparency PNGs/GIFs during normal analysis --
@@ -66,7 +76,7 @@ import report  # PROMPT_archive_report.md, границы: отдельный м
 # blanket ignore of all warnings, so any other future PIL/library warning still surfaces.
 warnings.filterwarnings("ignore", message="Palette images with Transparency.*", category=UserWarning)
 
-__version__ = "0.6.5"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
+__version__ = "0.6.6"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
                                  # с RULES_VERSION ниже (та про совместимость архива, а не exe)
 RULES_VERSION = "2026-08-11"   # дата последнего изменения бизнес-правил -- см. RULES.md;
                                 # менять руками при изменении логики раскладки/дедупа/дат
@@ -158,15 +168,21 @@ def winlong(path: str) -> str:
     limit. Works unconditionally (no admin rights, no registry LongPathsEnabled policy
     needed) -- unlike the manifest-based longPathAware opt-in, which only helps if the
     machine's policy is already on and which a portable, no-install exe cannot set for the
-    user. No-op on non-Windows (dev/test on Linux) and on UNC (\\\\server\\share) paths,
-    which need a different \\\\?\\UNC\\ form not constructed here -- not needed for local
-    SOURCE/TARGET paths, which this portable version requires anyway (see RULES.md).
+    user. No-op on non-Windows (dev/test on Linux). Idempotent -- an already '\\\\?\\'-prefixed
+    path (local or UNC) is returned unchanged.
+
+    UNC (\\\\server\\share\\...) gets the '\\\\?\\UNC\\server\\share\\...' form -- lifts MAX_PATH
+    the same way '\\\\?\\' does for drive-letter paths (portable version targets local paths,
+    see RULES.md, but Config accepts a UNC SOURCE/TARGET, so a deep NAS path must not hit an
+    unhandled OSError; ntpath.abspath normalizes '..'/separators cross-platform for the test).
     Only wraps calls we make directly in Python; exiftool/ffmpeg/ffprobe/7z/unrar are
     separate subprocesses invoked with the plain path and are not covered by this."""
     if os.name != "nt":
         return path
-    if path.startswith("\\\\"):
+    if path.startswith("\\\\?\\"):
         return path
+    if path.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + ntpath.abspath(path)[2:]
     return "\\\\?\\" + os.path.abspath(path)
 
 
@@ -197,9 +213,14 @@ def _makedirs_iterative(path: str):
 
 
 def _strip_winlong(path: str) -> str:
-    """Undo winlong()'s '\\\\?\\' prefix, so paths coming out of a long-path-safe walk
-    stay canonical plain strings for DB storage / CSV logs / display -- the prefix is only
-    ever needed at the point of the actual filesystem call, re-added there via winlong()."""
+    """Undo winlong()'s prefix, so paths coming out of a long-path-safe walk stay canonical
+    plain strings for DB storage / CSV logs / display -- the prefix is only ever needed at
+    the point of the actual filesystem call, re-added there via winlong(). Must stay the exact
+    inverse of winlong() for BOTH forms: '\\\\?\\UNC\\server\\share\\...' -> '\\\\server\\share\\...',
+    '\\\\?\\C:\\...' -> 'C:\\...' (Раунд 166 ревью: UNC-ветка добавлена вслед за winlong(),
+    иначе '\\\\?\\UNC\\nas\\x' обрезалось до 'UNC\\nas\\x' -> порча путей в БД/логах на UNC-TARGET)."""
+    if path.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + path[len("\\\\?\\UNC\\"):]
     if path.startswith("\\\\?\\"):
         return path[4:]
     return path
@@ -2315,7 +2336,7 @@ class Config:
         if self.raw_layout not in ("mirror", "sibling"):
             raise ValueError(
                 f"raw_layout должен быть mirror/sibling, получено: {self.raw_layout!r} "
-                f"(flat сознательно не реализован -- см. ROADMAP.md/RULES.md)"
+                "(flat сознательно не реализован)"
             )
         # Security audit finding #7: photoarchive_config.yaml is user-editable and none of these numeric
         # fields were range-checked. free_space_margin_gb in particular is finding #2 --
