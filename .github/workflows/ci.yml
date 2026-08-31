@@ -170,12 +170,23 @@ jobs:
           name: PhotoArchive-docs-pdf
           path: dist
 
+      # SHA-256 контрольные суммы для проверки скачанного (third-review B1, Раунды 168/169):
+      # обычный пользователь их не сверяет, но релиз без опубликованных сумм не даёт СПОСОБА
+      # убедиться, что .exe/.zip не подменён при скачивании. Только .exe и .zip (исполняемый
+      # код) -- PDF-документация не в security-периметре. Файл кладётся релиз-ассетом; sha256sum
+      # без путей (working-directory) -> `sha256sum -c SHA256SUMS.txt` работает в папке загрузок.
+      - name: Generate SHA-256 checksums for release artifacts
+        shell: bash
+        working-directory: dist
+        run: sha256sum PhotoArchive.exe PhotoArchive.zip | tee SHA256SUMS.txt
+
       - name: Publish release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
         with:
           files: |
             dist/PhotoArchive.exe
             dist/PhotoArchive.zip
+            dist/SHA256SUMS.txt
             dist/*.pdf
           generate_release_notes: true
         env:
