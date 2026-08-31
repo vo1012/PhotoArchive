@@ -830,3 +830,91 @@ class TestFixedScreenSizes:
         assert g._MODE_SCREEN_HEIGHT > 0
         assert g._PATHS_SCREEN_HEIGHT > 0
         assert g._CONFIRM_SCREEN_HEIGHT > 0
+
+
+class _FakeScalingRoot:
+    """Duck-typed root для _apply_dpi_and_font_scale()/_compute_dpi_scale(): единственное, что
+    им нужно на root -- `root.tk.call("tk", "scaling"[, value])`. Читает системный масштаб,
+    записывает установленный (если был)."""
+
+    def __init__(self, system_scaling=2.0):
+        self._system_scaling = system_scaling
+        self.scaling_writes = []
+        outer = self
+
+        class _Interp:
+            def call(self, *args):
+                assert args[:2] == ("tk", "scaling")
+                if len(args) == 2:
+                    return outer._system_scaling
+                outer.scaling_writes.append(args[2])
+                return ""
+
+        self.tk = _Interp()
+
+
+class TestGetUiFontScale:
+    def test_reads_and_caches_from_photosort_win(self, monkeypatch):
+        monkeypatch.setattr(g, "_ui_font_scale", None)
+        calls = []
+
+        def _fake_scale(*a, **kw):
+            calls.append(1)
+            return 1.4
+
+        monkeypatch.setattr(g.m, "gui_font_scale", _fake_scale)
+        assert g._get_ui_font_scale() == 1.4
+        assert g._get_ui_font_scale() == 1.4  # второй вызов -- из кэша
+        assert len(calls) == 1
+
+    def test_falls_back_to_default_if_reader_raises(self, monkeypatch):
+        monkeypatch.setattr(g, "_ui_font_scale", None)
+        monkeypatch.setattr(g.m, "gui_font_scale",
+                            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert g._get_ui_font_scale() == g.m.GUI_FONT_SCALE_DEFAULT
+
+
+class TestApplyDpiAndFontScale:
+    """Крупный шрифт GUI (PROMPT_run_screen.md §7): один множитель домножает И _dpi_scale
+    (_px(), контейнеры), И реальный `tk scaling` Tk (шрифты в pt) -- «виртуальный более высокий
+    DPI», режим, который _cap_dpi_scale_to_fit() уже умеет."""
+
+    def test_first_build_multiplies_both_dpi_scale_and_tk_scaling(self, monkeypatch):
+        monkeypatch.setattr(g, "_ui_font_scale", 1.5)
+        monkeypatch.setattr(g, "_dpi_scale", 1.0)
+        root = _FakeScalingRoot(system_scaling=2.0)
+        g._apply_dpi_and_font_scale(root, _retry=False)
+        assert g._dpi_scale == 3.0            # 2.0 (система) * 1.5 (укрупнение)
+        assert root.scaling_writes == [3.0]   # тот же коэффициент ушёл и в шрифты
+
+    def test_scale_one_is_byte_identical_to_old_behaviour(self, monkeypatch):
+        """gui_font_scale == 1.0 -> только чтение системного масштаба, `tk scaling` не
+        переписывается вовсе (в т.ч. на retry) -- прежнее поведение сохранено."""
+        monkeypatch.setattr(g, "_ui_font_scale", 1.0)
+        monkeypatch.setattr(g, "_dpi_scale", 5.0)
+        root = _FakeScalingRoot(system_scaling=2.0)
+        g._apply_dpi_and_font_scale(root, _retry=False)
+        assert g._dpi_scale == 2.0
+        assert root.scaling_writes == []
+        root2 = _FakeScalingRoot(system_scaling=2.0)
+        g._apply_dpi_and_font_scale(root2, _retry=True)
+        assert root2.scaling_writes == []
+
+    def test_retry_keeps_capped_dpi_scale_and_syncs_tk_scaling_to_it(self, monkeypatch):
+        """После _cap_dpi_scale_to_fit() _dpi_scale уже уменьшен под экран -- retry его НЕ
+        пересчитывает (иначе затёр бы коррекцию), но подтягивает `tk scaling` под него, чтобы
+        шрифт не оказался крупнее ужатых padding'ов."""
+        monkeypatch.setattr(g, "_ui_font_scale", 1.5)
+        monkeypatch.setattr(g, "_dpi_scale", 2.4)  # уже скорректировано cap'ом
+        root = _FakeScalingRoot(system_scaling=2.0)
+        g._apply_dpi_and_font_scale(root, _retry=True)
+        assert g._dpi_scale == 2.4                 # не тронут
+        assert root.scaling_writes == [2.4]        # шрифты подтянуты под него
+
+    def test_all_tk_window_factories_route_through_the_single_helper(self):
+        """ось «подключено ли реально» (PROMPT_review.md): _compute_dpi_scale() больше не
+        зовётся напрямую ниоткуда, кроме самого _apply_dpi_and_font_scale()."""
+        import inspect
+        call_lines = [ln.strip() for ln in inspect.getsource(g).splitlines()
+                      if ln.strip() == "_compute_dpi_scale(root)"]
+        assert call_lines == ["_compute_dpi_scale(root)"]  # ровно один -- внутри хелпера

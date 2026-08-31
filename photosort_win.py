@@ -44,7 +44,7 @@ import warnings
 import webbrowser
 from collections import defaultdict, Counter
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from PIL import Image
 import pillow_heif
@@ -76,7 +76,7 @@ warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
 # blanket ignore of all warnings, so any other future PIL/library warning still surfaces.
 warnings.filterwarnings("ignore", message="Palette images with Transparency.*", category=UserWarning)
 
-__version__ = "0.6.7"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
+__version__ = "0.6.8"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
                                  # с RULES_VERSION ниже (та про совместимость архива, а не exe)
 RULES_VERSION = "2026-08-11"   # дата последнего изменения бизнес-правил -- см. RULES.md;
                                 # менять руками при изменении логики раскладки/дедупа/дат
@@ -2886,6 +2886,14 @@ def parse_exif_date(s):
     if not m:
         return None
     y, mo, d, h, mi, se = (int(x) for x in m.groups())
+    # Гейт года -- как у Tier B (date_from_filename/date_from_folder_name через _valid()):
+    # неправдоподобный EXIF-год (камера со сброшенными часами -> 1980/2000/2099, севшая
+    # батарейка -> 0001:01:01) НЕ становится уверенной Tier A-датой, а проваливается дальше
+    # по цепочке resolve_date() (имя файла/папки/соседи/mtime). REVIEW-HANDOFF.md Раунд 175-1:
+    # без этого год < 1900 доходил до date_value.strftime() -- Windows CRT strftime
+    # исторически отклоняет годы < 1900 (тот же класс краха, что и фикс 879929b на шаг выше).
+    if not _valid(y, mo, d):
+        return None
     try:
         return datetime(y, mo, d, h, mi, se)
     except ValueError:
@@ -4696,7 +4704,10 @@ class SourceWalker:
             dest_dir = os.path.join(album_dir, unit_name)
         else:
             earliest_mtime = min(mtime for _rel, _size, mtime, _full, _sha in records)
-            date_value = datetime.fromtimestamp(earliest_mtime)
+            # _safe_dt_from_mtime(): earliest_mtime может быть до 1970 / мусорным (SMB/NAS) --
+            # datetime.fromtimestamp() на Windows тогда бросает OSError и роняет весь прогон.
+            # У DVD-юнита без альбома должна быть ХОТЬ какая-то дата размещения -> откат на now().
+            date_value = _safe_dt_from_mtime(earliest_mtime) or datetime.now()
             date_dir = build_bydate_dest_dir(self.cfg.bydate_root, date_value, precision="day",
                                               place=None, granularity=self.cfg.bydate_granularity)
             unit_name = _unique_dvd_dest_name(date_dir, "VIDEO_TS", self._dvd_names_reserved)
@@ -6150,6 +6161,36 @@ def decide(pool: Pool, rec: SourceRecord, mirror_raw: bool = True) -> Decision:
 
 _MIN_YEAR = 1900  # семейный архив может включать оцифрованные плёночные фото старше 1990
 
+_EPOCH = datetime(1970, 1, 1)
+
+
+def _safe_dt_from_mtime(mtime):
+    """POSIX mtime -> naive datetime (локальное время), или None если mtime непригоден.
+
+    `datetime.fromtimestamp()` на Windows идёт через C-шную localtime()/mktime() и бросает
+    `OSError: [Errno 22] Invalid argument` для времён до эпохи (1970) и для абсурдно больших
+    значений -- а SMB/NAS-шары и битые файловые системы отдают mtime=0, отрицательные или
+    мусорные значения. На Linux тот же вызов молча возвращает дату (или падает на pre-1900),
+    поэтому синтетические тесты на VPS этого класса не ловят -- реальные краши пользователя
+    2026-08-31 (сканирование замапленного сетевого диска: и `folder_cluster_median`, и эта
+    mtime-ветка `resolve_date`).
+
+    Для до-эпошного mtime пробуем восстановить дату через фиксированную эпоху (файл с mtime
+    ~1965 -- осмысленная, пусть и слабая, Tier C-подсказка; уходить в undated необязательно).
+    Результат гейтится `_valid()` (`_MIN_YEAR..сегодня`, обе границы) -- тот же стандарт
+    правдоподобия года, что применён к EXIF-пути (`parse_exif_date`, Раунд 175-1). Год < 1900
+    (Windows CRT strftime такие отклоняет) ИЛИ из будущего (эпоха-фолбэк строит дату вплоть до
+    9999 из мусорного большого mtime -- переполнение FILETIME/наносекунд) -> None -> файл
+    уходит в Tier D (undated_media.csv), прогон продолжается. REVIEW-HANDOFF.md Раунд 177-1."""
+    try:
+        dt = datetime.fromtimestamp(mtime)
+    except (OSError, OverflowError, ValueError):
+        try:
+            dt = _EPOCH + timedelta(seconds=mtime)
+        except (OverflowError, ValueError, TypeError):
+            return None
+    return dt if _valid(dt.year, dt.month, dt.day) else None
+
 
 def _valid(y, mo=1, d=1):
     if y < _MIN_YEAR or y > datetime.now().year:
@@ -6221,11 +6262,18 @@ def mtime_is_copy_artifact(mtimes: list, window_seconds=5) -> bool:
 
 
 def folder_cluster_median(tier_ab_dates: list):
+    """Медиана Tier A/B-дат папки как основа для Tier C-датирования соседних файлов.
+
+    Считается через фиксированную эпоху, НЕ через `.timestamp()`/`.fromtimestamp()`: последние
+    на Windows бросают `OSError: [Errno 22]` для наивных дат до 1970 (идут через mktime()), а
+    `_MIN_YEAR=1900` сознательно допускает довоенные плёночные сканы -- одна EXIF-дата или
+    имя папки с годом 1900-1969 в кластере роняла весь скан (реальный краш 2026-08-31,
+    сетевой диск). Разность с фиксированной эпохой корректна для любого года 1..9999 на всех
+    платформах и заодно снимает round-trip-сдвиг на локальный TZ/DST, который давал прежний код."""
     if not tier_ab_dates:
         return None
-    ts = sorted(d.timestamp() for d in tier_ab_dates)
-    med = statistics.median(ts)
-    return datetime.fromtimestamp(med)
+    secs = sorted((d - _EPOCH).total_seconds() for d in tier_ab_dates)
+    return _EPOCH + timedelta(seconds=statistics.median(secs))
 
 
 class DateContext:
@@ -6240,7 +6288,12 @@ class DateContext:
     def record(self, dirname, dt, tier, mtime):
         if tier in ("A", "B"):
             self.dir_tier_ab_dates[dirname].append(dt)
-        self.dir_mtimes[dirname].append(mtime)
+        # mtime=None -- непригодное время файла (мусор с SMB/NAS, до-эпошное на Windows);
+        # НЕ копим его в dir_mtimes: одно значение вроде 1e30 раздувает span в
+        # mtime_is_copy_artifact() и глушит детектор копи-события по всей папке
+        # (REVIEW-HANDOFF.md Раунд 175-2).
+        if mtime is not None:
+            self.dir_mtimes[dirname].append(mtime)
 
 
 def resolve_date(ctx: DateContext, rel_path: str, mtime: float, exif_dt=None, exif_source=None, *,
@@ -6262,33 +6315,43 @@ def resolve_date(ctx: DateContext, rel_path: str, mtime: float, exif_dt=None, ex
     dirname = os.path.dirname(rel_path)
     name = os.path.basename(rel_path)
 
+    # mtime считаем один раз: None -> время файла непригодно (мусор с сетевой шары, до-эпошное
+    # на Windows). rec_mtime -> в ctx.record(), где None не копится в dir_mtimes (Раунд 175-2).
+    mtime_dt = _safe_dt_from_mtime(mtime)
+    rec_mtime = mtime if mtime_dt is not None else None
+
+    # parse_exif_date() уже гейтит год (Раунд 175-1), но exif_dt может прийти и из
+    # archive_cache, засеянного ДО этого фикса (неправдоподобная дата там уже лежит строкой) --
+    # второй барьер здесь ловит и этот путь до того, как год < 1900 дойдёт до strftime().
+    if exif_dt is not None and not _valid(exif_dt.year, exif_dt.month, exif_dt.day):
+        exif_dt = None
+
     if exif_dt:
-        ctx.record(dirname, exif_dt, "A", mtime)
+        ctx.record(dirname, exif_dt, "A", rec_mtime)
         return exif_dt, "A", "high", exif_source, "day"
 
     dt, ev = date_from_filename(name)
     if dt:
-        ctx.record(dirname, dt, "B", mtime)
+        ctx.record(dirname, dt, "B", rec_mtime)
         return dt, "B", "medium", ev, "day"
 
     dt, ev = date_from_folder_name(rel_path) if use_folder_name_date else (None, None)
     if dt:
-        ctx.record(dirname, dt, "B", mtime)
+        ctx.record(dirname, dt, "B", rec_mtime)
         return dt, "B", "medium", ev, "year"
 
     neighbors = ctx.dir_tier_ab_dates.get(dirname, [])
     if neighbors:
         med = folder_cluster_median(neighbors)
-        ctx.record(dirname, med, "C", mtime)
+        ctx.record(dirname, med, "C", rec_mtime)
         return med, "C", "low", "inferred_from_folder_cluster", "day"
 
     sibling_mtimes = ctx.dir_mtimes.get(dirname, [])
-    if not mtime_is_copy_artifact(sibling_mtimes + [mtime]):
-        dt = datetime.fromtimestamp(mtime)
-        ctx.record(dirname, dt, "C", mtime)
-        return dt, "C", "low", "mtime", "day"
+    if mtime_dt is not None and not mtime_is_copy_artifact(sibling_mtimes + [mtime]):
+        ctx.record(dirname, mtime_dt, "C", rec_mtime)
+        return mtime_dt, "C", "low", "mtime", "day"
 
-    ctx.record(dirname, None, "D", mtime)
+    ctx.record(dirname, None, "D", rec_mtime)
     return None, "D", "none", "no_signal", None
 
 # ============================================================================
@@ -10159,6 +10222,15 @@ DEFAULT_CONFIG_YAML_TEMPLATE = """\
                                 # вперемешку с обычными во всех будущих прогонах того же
                                 # архива (см. README.md).
 
+# gui_font_scale: 1.2            # ТОЛЬКО графическое меню (gui_menu.py), НЕ движок. Множитель
+                                # размера шрифта мастера ПОВЕРХ системного «Масштаба» экрана
+                                # Windows (программа его и так уважает). 1.2 (по умолчанию) --
+                                # крупнее для сценария ТВ/HTPC и возрастной дальнозоркости; 1.0
+                                # -- ровно системный масштаб, без надбавки; клэмп [1.0, 1.5].
+                                # Диалог выбора папки -- родное окно Windows, его шрифт НЕ
+                                # масштабируется: при надбавке он будет мельче шрифта мастера.
+                                # Применяется при следующем запуске программы.
+
 # ============================================================
 # СПРАВОЧНО, НЕ РЕДАКТИРУЕТСЯ -- ниже НЕ настройки этого файла, а список того, что реально
 # влияет на раскладку "альбом или по датам", но зашито в коде и не выведено в config.yaml.
@@ -10215,6 +10287,44 @@ CONFIG_YAML_FIELDS = {
     "dump_segment_prefixes", "extra_dump_segment_prefixes",
 }
 
+# gui_font_scale -- НЕ поле Config и НЕ движковая настройка: множитель размера шрифта GUI-мастера
+# (gui_menu.py) ПОВЕРХ системного «Масштаба» экрана Windows. Единственный потребитель -- gui_menu,
+# ещё ДО старта движка; в Config(**yaml_overrides) не попадает (load_yaml_config() фильтрует по
+# CONFIG_YAML_FIELDS, где его нет). Внесён в отдельный набор ниже только чтобы load_yaml_config()
+# не ругался на него как на незнакомый ключ. Читается отдельным gui_font_scale().
+_GUI_ONLY_CONFIG_YAML_FIELDS = {"gui_font_scale"}
+
+GUI_FONT_SCALE_DEFAULT = 1.2
+GUI_FONT_SCALE_MIN = 1.0
+GUI_FONT_SCALE_MAX = 1.5
+
+
+def gui_font_scale(path: str = None, log=print) -> float:
+    """Множитель размера шрифта GUI-мастера (gui_menu.py) ПОВЕРХ системного «Масштаба» экрана
+    Windows (который Tk уважает сам). Отдельно от load_yaml_config()/Config -- это настройка
+    интерфейса, не движка; её единственный потребитель -- gui_menu, ещё ДО старта движка, и в
+    дата-класс Config она не входит.
+
+    Дефолт 1.2 (целевая аудитория 45-75 / сценарий ТВ с 2-3 м, см. PROMPT_run_screen.md §7),
+    клэмп [1.0, 1.5]. Любая проблема чтения/типа -> дефолт: GUI обязан открыться, а не упасть
+    из-за косметической настройки. `log` не используется (симметрия сигнатуры с
+    load_yaml_config()), NaN/не-число -> дефолт, +-inf клампится границами."""
+    if path is None:
+        path = CONFIG_YAML_PATH
+    try:
+        if not os.path.exists(path):
+            return GUI_FONT_SCALE_DEFAULT
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        if not isinstance(data, dict) or "gui_font_scale" not in data:
+            return GUI_FONT_SCALE_DEFAULT
+        val = float(data["gui_font_scale"])
+    except (OSError, ValueError, TypeError, yaml.YAMLError):
+        return GUI_FONT_SCALE_DEFAULT
+    if val != val:  # NaN
+        return GUI_FONT_SCALE_DEFAULT
+    return max(GUI_FONT_SCALE_MIN, min(GUI_FONT_SCALE_MAX, val))
+
 
 def _ensure_config_yaml_exists(path: str, log=print) -> None:
     """2026-07-11: если файла нет, best-effort создаём его из DEFAULT_CONFIG_YAML_TEMPLATE --
@@ -10258,7 +10368,7 @@ def load_yaml_config(path: str, log=print) -> dict:
     if not isinstance(data, dict):
         log(f"ВНИМАНИЕ: {path} должен быть словарём ключ: значение, содержимое проигнорировано")
         return {}
-    unknown = set(data) - CONFIG_YAML_FIELDS
+    unknown = set(data) - CONFIG_YAML_FIELDS - _GUI_ONLY_CONFIG_YAML_FIELDS
     if unknown:
         log(f"ВНИМАНИЕ: ключи {', '.join(sorted(unknown))} в {path} не настраиваются через "
             f"YAML (проигнорированы) -- см. photoarchive_config.yaml.example")

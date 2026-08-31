@@ -258,6 +258,7 @@ _TONE_STYLE = {
 
 _dpi_awareness_set = False
 _dpi_scale = 1.0
+_ui_font_scale = None  # лениво из m.gui_font_scale(), кэш на процесс -- см. _get_ui_font_scale()
 
 
 def probe_display_available() -> bool:
@@ -312,8 +313,9 @@ def _compute_dpi_scale(root) -> None:
 
     Первая версия фикса (2026-08-21) замораживала `tk scaling=1.0` -- решала переполнение, но
     ценой рассинхрона с ОС: наш текст переставал расти вместе с реальным DPI, а системные
-    элементы (например, диалог `filedialog.askdirectory()` -- отдельное Explorer-окно,
-    Tk-масштаб на него не действует) оставались в родном масштабе Windows, из-за чего шрифт
+    элементы (диалог `filedialog.askdirectory()` -- отдельное Explorer-окно; `tkinter.messagebox`
+    в `_confirm_clear_lock()` -- нативный `MessageBoxW`; Tk-масштаб `tk scaling` ни на то, ни на
+    другое не действует) оставались в родном масштабе Windows, из-за чего шрифт
     мастера выглядел заметно мельче шрифта диалога выбора папки на одном и том же экране --
     замечено пользователем на реальном железе тем же заходом. Правильный фикс -- не мешать
     Tk масштабировать шрифты (как он и делает по умолчанию), а вместо этого масштабировать
@@ -332,6 +334,56 @@ def _compute_dpi_scale(root) -> None:
     те же пропорции, что уже провалидированы кликом на этой машине."""
     global _dpi_scale
     _dpi_scale = root.tk.call("tk", "scaling")
+
+
+def _get_ui_font_scale() -> float:
+    """Пользовательский множитель размера шрифта мастера ПОВЕРХ системного «Масштаба» экрана
+    Windows (photoarchive_config.yaml: gui_font_scale, дефолт 1.2, клэмп [1.0, 1.5] --
+    см. m.gui_font_scale()). Читается один раз за процесс и кэшируется: смена размера требует
+    перезапуска (то же ожидание, что и у любой другой настройки конфига). m.gui_font_scale()
+    сам никогда не бросает и уже клампит -- try здесь чисто оборонительный."""
+    global _ui_font_scale
+    if _ui_font_scale is None:
+        try:
+            _ui_font_scale = float(m.gui_font_scale())
+        except Exception:
+            _ui_font_scale = m.GUI_FONT_SCALE_DEFAULT
+    return _ui_font_scale
+
+
+def _apply_dpi_and_font_scale(root, _retry: bool = False) -> None:
+    """Единая точка настройки масштаба для tk.Tk()-окон этого модуля, рисующих СВОЁ содержимое:
+    build_shell() (экраны мастера) и _notice_window(). Заменяет прежний голый
+    `_compute_dpi_scale(root)`. НЕ зовётся из _confirm_clear_lock() -- там нативный
+    MessageBoxW, `tk scaling` на него не действует (Раунд 179, придирка 179-1).
+
+    Первая сборка (_retry=False): берёт системный `tk scaling` (_compute_dpi_scale()), затем --
+    если пользователь просил укрупнение (gui_font_scale != 1.0) -- домножает на него И _dpi_scale
+    (→ _px(), контейнеры/отступы), И реальный `tk scaling` Tk (→ шрифты в pt). Итог -- ровно
+    «монитор с более высоким DPI», режим, который весь модуль и _cap_dpi_scale_to_fit() уже
+    отрабатывают.
+
+    Повторная сборка после DPI-cap (_retry=True): `_dpi_scale` уже осознанно уменьшен под
+    конкретный экран (_cap_dpi_scale_to_fit()), пересчитывать его нельзя -- но у свежего tk.Tk()
+    `tk scaling` вернулся к системному значению, поэтому при активном укрупнении его нужно
+    подтянуть обратно к `_dpi_scale`, иначе шрифт окажется крупнее, чем заложено в ужатые
+    padding'и. Инвариант при активном укрупнении: `tk scaling` == `_dpi_scale`.
+
+    gui_font_scale == 1.0 -> ведём себя байт-в-байт как прежний код (только _compute_dpi_scale
+    на первой сборке, `tk scaling` не трогаем вовсе, в т.ч. на retry -- прежнее поведение
+    cap-пути сохраняется без изменений)."""
+    global _dpi_scale
+    scale = _get_ui_font_scale()
+    if not _retry:
+        _compute_dpi_scale(root)
+        if scale != 1.0:
+            _dpi_scale = _dpi_scale * scale
+    if scale == 1.0:
+        return
+    try:
+        root.tk.call("tk", "scaling", _dpi_scale)
+    except Exception:
+        pass
 
 
 def _px(n: int) -> int:
@@ -905,8 +957,7 @@ def _notice_window(message: str, button_label: str = "Продолжить", sho
     diag_notice_hwnd_holder = _diag_focus_poll_start() if not _retry else None
     _configure_dpi_awareness()
     root = tk.Tk()
-    if not _retry:
-        _compute_dpi_scale(root)
+    _apply_dpi_and_font_scale(root, _retry)
     root.title("PhotoArchive")
     root.resizable(False, False)
     root.configure(bg=_BG)
@@ -1228,11 +1279,11 @@ class _Wizard:
         # уже после того, как render_fn() и DPI-cap-цикл дали окну финальные content/геометрию)
         # деiconify'ит его уже полностью готовым, без промежуточного крошечного кадра.
         root.withdraw()
-        if not _retry:
-            # На повторной сборке (см. _cap_dpi_scale_to_fit() ниже) _dpi_scale уже осознанно
-            # уменьшен под конкретный экран -- пересчитывать его здесь заново значило бы
-            # затереть эту коррекцию исходным (снова не помещающимся) значением.
-            _compute_dpi_scale(root)
+        # На повторной сборке (см. _cap_dpi_scale_to_fit() ниже) _dpi_scale уже осознанно
+        # уменьшен под конкретный экран -- _apply_dpi_and_font_scale() при _retry его НЕ
+        # пересчитывает (иначе затёрла бы коррекцию снова не помещающимся значением), только
+        # подтягивает `tk scaling` под него при активном укрупнении шрифта.
+        _apply_dpi_and_font_scale(root, _retry)
         root.title("PhotoArchive")
         root.resizable(False, False)
         root.configure(bg=_BG)
@@ -1813,7 +1864,13 @@ def _confirm_clear_lock(message: str) -> bool:
     """Да/нет-окно перед принудительным снятием LOCK-файла архива. Отдельный лёгкий диалог
     (tkinter.messagebox), не экран мастера -- редкий путь восстановления, фиксированный
     степ-индикатор мастера тут не нужен (тот же принцип, что и у _notice_window()).
-    default="no" -- случайный Enter не снимает блокировку."""
+    default="no" -- случайный Enter не снимает блокировку.
+
+    Раунд 179 (придирка 179-1): _apply_dpi_and_font_scale() тут НЕ зовётся -- на Windows
+    tkinter.messagebox -> Tcl tk_messageBox -> нативный MessageBoxW, его шрифт следует за
+    системным «Масштабом» ОС, но НЕ за root.tk `tk scaling` (ровно как filedialog.askdirectory,
+    см. _compute_dpi_scale() docstring). При gui_font_scale > 1.0 это окно окажется мельче
+    мастера -- принято (путь редкий, текст читаемый, окно уважает системный масштаб)."""
     import tkinter as tk
     from tkinter import messagebox
     _configure_dpi_awareness()
