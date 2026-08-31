@@ -1,7 +1,8 @@
-# Собирает bin/ из инструментов, поставленных через choco (см. .github/workflows/ci.yml).
-# Только для CI: реальная portable-поставка пользователю по-прежнему собирается вручную
-# по bin/README-BIN.md (choco здесь просто самый быстрый источник тех же официальных
-# бинарников на чистом windows-latest runner, без интерактивной установки).
+# Собирает bin/ для сборки PhotoArchive.exe в CI (см. .github/workflows/ci.yml).
+# exiftool/7z/UnRAR берутся из choco (самый быстрый источник тех же официальных бинарников
+# на чистом windows-latest runner). ffmpeg.exe/ffprobe.exe СЮДА НЕ через choco -- их кладёт
+# отдельный шаг workflow из LGPL-сборки BtbN ДО вызова этого скрипта (choco-пакет `ffmpeg` --
+# GPL-сборка gyan.dev, см. комментарий в ci.yml); если они уже в bin\, скрипт их не трогает.
 $ErrorActionPreference = "Stop"
 $chocoLib = "$env:ChocolateyInstall\lib"
 New-Item -ItemType Directory -Force -Path bin | Out-Null
@@ -29,8 +30,16 @@ function Find-And-Copy($pattern, $destName, $extraSearchRoots = @()) {
 $sevenZipRoots = @("$env:ProgramFiles\7-Zip", "${env:ProgramFiles(x86)}\7-Zip")
 
 Find-And-Copy "exiftool.exe" "exiftool.exe"
-Find-And-Copy "ffmpeg.exe" "ffmpeg.exe"
-Find-And-Copy "ffprobe.exe" "ffprobe.exe"
+
+# ffmpeg/ffprobe кладёт отдельный шаг workflow (LGPL-сборка BtbN) ДО этого скрипта.
+foreach ($ff in "ffmpeg.exe", "ffprobe.exe") {
+    if (Test-Path "bin\$ff") {
+        Write-Host "OK: $ff already present (LGPL build placed by workflow), skipping choco lookup"
+    } else {
+        Write-Warning "MISSING: bin\$ff -- expected the 'Download LGPL ffmpeg/ffprobe' step to place it"
+    }
+}
+
 Find-And-Copy "7z.exe" "7z.exe" $sevenZipRoots
 Find-And-Copy "7z.dll" "7z.dll" $sevenZipRoots
 Find-And-Copy "UnRAR.exe" "UnRAR.exe"

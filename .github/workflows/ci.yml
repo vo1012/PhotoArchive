@@ -53,6 +53,9 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
+      # Здесь ffmpeg через choco -- ОК: этот job ничего не распространяет, только гоняет
+      # функциональные смоук-тесты CLI. Для сборки распространяемого .exe (job `build` ниже)
+      # ffmpeg берётся отдельно из LGPL-сборки BtbN, не из choco (GPL).
       - name: Install external tools (exiftool/ffmpeg/7zip/unrar)
         run: choco install exiftool ffmpeg 7zip unrar -y --no-progress
         shell: pwsh
@@ -85,11 +88,32 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
-      - name: Install external tools (exiftool/ffmpeg/7zip/unrar)
-        run: choco install exiftool ffmpeg 7zip unrar -y --no-progress
+      - name: Install external tools (exiftool/7zip/unrar)
+        run: choco install exiftool 7zip unrar -y --no-progress
         shell: pwsh
 
-      - name: Assemble bin/ from choco-installed tools
+      # ffmpeg -- НЕ через choco. Пакет choco `ffmpeg` = сборка gyan.dev "full"
+      # (--enable-gpl, x264/x265) => GPL, требует source-offer при распространении бинарника.
+      # Политика проекта (bin/README-BIN.md, THIRD_PARTY_LICENSES.md, licenses/ffmpeg/ =
+      # только COPYING.LGPLv3) -- LGPL-сборка без GPL-компонентов. Берём LGPL-сборку BtbN
+      # (тот же источник, что рекомендуют доки). Версия не пинится намеренно -- как и для
+      # остальных bin/-бинарников (bin/README-BIN.md).
+      - name: Download LGPL ffmpeg/ffprobe (BtbN build)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl.zip"
+          Invoke-WebRequest -Uri $url -OutFile ffmpeg-lgpl.zip -UseBasicParsing
+          Expand-Archive ffmpeg-lgpl.zip -DestinationPath ffmpeg-lgpl -Force
+          $ffbin = Join-Path (Get-ChildItem ffmpeg-lgpl -Directory | Select-Object -First 1).FullName "bin"
+          New-Item -ItemType Directory -Force -Path bin | Out-Null
+          Copy-Item (Join-Path $ffbin "ffmpeg.exe")  bin\ffmpeg.exe  -Force
+          Copy-Item (Join-Path $ffbin "ffprobe.exe") bin\ffprobe.exe -Force
+          $ver = (& bin\ffmpeg.exe -version | Out-String)
+          Write-Host $ver
+          if ($ver -match "--enable-gpl") { throw "BtbN lgpl build unexpectedly contains --enable-gpl" }
+
+      - name: Assemble the rest of bin/ from choco-installed tools
         shell: pwsh
         run: ./ci/assemble_bin.ps1
 
