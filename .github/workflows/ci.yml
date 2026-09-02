@@ -64,9 +64,9 @@ jobs:
         shell: pwsh
         run: |
           exiftool -ver
-          ffmpeg -version | Select-Object -First 1
-          ffprobe -version | Select-Object -First 1
-          7z i | Select-Object -First 1
+          ffmpeg -version | Out-Null
+          ffprobe -version | Out-Null
+          7z i | Out-Null
 
       - name: Syntax check
         run: python -m py_compile photosort_win.py
