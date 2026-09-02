@@ -93,3 +93,56 @@ class TestCliArchivePropagatesStoppedForSpace:
         assert exit_code == 0
         assert run_stats is not None
         assert run_stats["stopped_for_space"] is False
+
+
+class TestBareLaunchRunBuildOutcomeParam:
+    """Раунд 189, ответ на REVIEW-HANDOFF.md (вне формата) "outcome=warnings не реализован":
+    _bare_launch_run_build()'s необязательный `outcome` out-параметр -- gui_menu._run_worker_
+    thread() читает `outcome["stopped_for_space"]` после вызова, чтобы слать исходу экрана
+    «Выполнение» "warnings" вместо "ok" (воркер-сторона -- tests/test_run_screen_gui.py).
+    Здесь -- сама _bare_launch_run_build(), тем же приёмом монкипатча run_for_source()/
+    report.*, что и TestCliArchivePropagatesStoppedForSpace выше, но через интерактивный
+    вход (input_fn), не CLI."""
+
+    def _fake_run_result(self, **overrides):
+        kwargs = dict(failed=False, exit_code=0,
+                       stats={"appended_images": 1, "bytes_appended": 100},
+                       processed_count=1, stopped_for_space=False, pool=None, interrupted=False,
+                       walk_aborted=False)
+        kwargs.update(overrides)
+        return m.RunResult(**kwargs)
+
+    def _run_build(self, tmp_path, monkeypatch, run_result, pass_outcome=True):
+        source = tmp_path / "source"
+        source.mkdir()
+        target = tmp_path / "target"
+        target.mkdir()
+        monkeypatch.setattr(m.report, "generate_report", lambda *a, **k: None)
+        monkeypatch.setattr(m.report, "parse_target_logs", lambda *a, **k: {})
+        monkeypatch.setattr(m, "run_for_source", lambda *a, **k: run_result)
+        outcome = {} if pass_outcome else None
+        report_path = m._bare_launch_run_build(
+            [str(source)], str(target), input_fn=lambda *a, **k: "да",
+            log=lambda *a, **k: None, outcome=outcome)
+        return report_path, outcome
+
+    def test_stopped_for_space_sets_outcome_flag_true(self, tmp_path, monkeypatch):
+        report_path, outcome = self._run_build(
+            tmp_path, monkeypatch, self._fake_run_result(stopped_for_space=True))
+        assert report_path is not None
+        assert outcome["stopped_for_space"] is True
+
+    def test_not_stopped_for_space_sets_outcome_flag_false(self, tmp_path, monkeypatch):
+        report_path, outcome = self._run_build(
+            tmp_path, monkeypatch, self._fake_run_result(stopped_for_space=False))
+        assert report_path is not None
+        assert outcome["stopped_for_space"] is False
+
+    def test_default_outcome_none_is_not_read_text_mode_cli_unaffected(self, tmp_path, monkeypatch):
+        """Текстовый режим/CLI не передают outcome= -- сигнатура для них не меняется, вызов
+        без него не должен падать."""
+        report_path, outcome = self._run_build(
+            tmp_path, monkeypatch, self._fake_run_result(stopped_for_space=True),
+            pass_outcome=False)
+        assert report_path is not None
+        assert outcome is None

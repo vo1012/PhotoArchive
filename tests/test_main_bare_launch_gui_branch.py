@@ -158,20 +158,18 @@ def test_fatal_messagebox_swallows_ctypes_failure_on_windows(monkeypatch, capsys
 
 
 class _FakeConsoleWindll:
-    """Заглушка ctypes.windll.kernel32 для _configure_windows_stdio_at_startup()/
-    _ensure_work_console() -- НИКОГДА не давать этим тестам дёрнуть настоящие AttachConsole()/
-    AllocConsole() на РЕАЛЬНОЙ Windows-машине, где эта сессия сейчас и исполняется: настоящий
-    AttachConsole()/AllocConsole() отсоединил/подменил бы консоль САМОГО процесса pytest, ломая
-    вывод этого же прогона -- тот же класс риска, что уже описан в
+    """Заглушка ctypes.windll.kernel32 для _configure_windows_stdio_at_startup() -- НИКОГДА не
+    давать этим тестам дёрнуть настоящий AttachConsole() на РЕАЛЬНОЙ Windows-машине, где эта
+    сессия сейчас и исполняется: настоящий AttachConsole() отсоединил/подменил бы консоль
+    САМОГО процесса pytest, ломая вывод этого же прогона -- тот же класс риска, что уже описан в
     test_fatal_messagebox_swallows_ctypes_failure_on_windows() выше (там -- настоящий модальный
     MessageBoxW, здесь -- манипуляция консолью).
 
-    2026-08-22 (продолжение, "чёрный экран не должен выскакивать совсем"): GetConsoleWindow/
-    FreeConsole/ShowWindow (старый hide-after-the-fact подход) убраны из кода вместе с
-    переходом на windowed-сборку -- заглушка соответствующих методов тоже убрана, добавлен
-    AttachConsole (новый CLI-путь, см. _configure_windows_stdio_at_startup())."""
+    2026-09 (PROMPT_run_screen.md): AllocConsole/GetConsoleWindow больше не в реальном коде --
+    GUI-режим не создаёт рабочую консоль вовсе (см. RunEventBus/_BusTeeStream в
+    photosort_win.py) -- заглушки этих двух методов убраны отсюда вместе с ними."""
 
-    def __init__(self, raise_on=(), attach_result=1, console_hwnd=0):
+    def __init__(self, raise_on=(), attach_result=1):
         # Настоящие ctypes-функции (windll.kernel32.Foo) поддерживают присваивание .restype/
         # .argtypes -- обычный bound method Python этого не умеет (нет __dict__ у wrapper-
         # объекта). Функции-замыкания, назначенные атрибутами экземпляра, -- умеют (обычные
@@ -180,7 +178,6 @@ class _FakeConsoleWindll:
         self.calls = []
         self._raise_on = raise_on
         self._attach_result = attach_result
-        self._console_hwnd = console_hwnd
 
         def AttachConsole(pid):
             self.calls.append(("AttachConsole", pid))
@@ -188,69 +185,6 @@ class _FakeConsoleWindll:
                 raise OSError("simulated AttachConsole failure")
             return self._attach_result
         self.AttachConsole = AttachConsole
-
-        def AllocConsole():
-            self.calls.append("AllocConsole")
-            if "AllocConsole" in self._raise_on:
-                raise OSError("simulated AllocConsole failure")
-        self.AllocConsole = AllocConsole
-
-        def GetConsoleWindow():
-            self.calls.append("GetConsoleWindow")
-            return self._console_hwnd
-        self.GetConsoleWindow = GetConsoleWindow
-
-
-class _FakeUser32Windll:
-    """Заглушка ctypes.windll.user32 для _ensure_work_console()/_hide_work_console() --
-    2026-08-22, парная к _FakeConsoleWindll (kernel32) выше, тот же принцип: НИКОГДА не дёргать
-    настоящий ShowWindow()/SetForegroundWindow() на реальной машине, где сейчас исполняется этот
-    же тестовый прогон."""
-
-    def __init__(self):
-        self.calls = []
-
-        def ShowWindow(hwnd, cmd):
-            self.calls.append(("ShowWindow", hwnd, cmd))
-            return 1
-        self.ShowWindow = ShowWindow
-
-        def SetForegroundWindow(hwnd):
-            self.calls.append(("SetForegroundWindow", hwnd))
-            return 1
-        self.SetForegroundWindow = SetForegroundWindow
-
-
-class _FakeKernel32ForCloseHandler:
-    """Заглушка ctypes.windll.kernel32 для _install_console_close_handler() -- та не только
-    зовёт SetConsoleCtrlHandler(), но и присваивает .argtypes/.restype ПРЯМО на переданный
-    объект -- обычный bound method так не умеет (нет __dict__), нужна функция-замыкание в
-    качестве instance-атрибута, тот же приём, что и у _FakeConsoleWindll/_FakeUser32Windll выше."""
-
-    def __init__(self):
-        self.registered = []
-
-        def SetConsoleCtrlHandler(handler, add):
-            self.registered.append(handler)
-            return 1
-        self.SetConsoleCtrlHandler = SetConsoleCtrlHandler
-
-
-def _fake_winfunctype(restype, *argtypes):
-    """Заглушка ctypes.WINFUNCTYPE -- Раунд 142 ревью (замечание): та функция физически не
-    существует в модуле ctypes вне Windows (не атрибут ctypes.windll, который остальные фейки
-    этого файла умеют подменять -- отдельная фабрика на самом модуле ctypes), поэтому тесты,
-    завязанные на _install_console_close_handler()'s HANDLER_ROUTINE = ctypes.WINFUNCTYPE(...),
-    падали на POSIX с AttributeError, проглоченным собственным except Exception функции --
-    SetConsoleCtrlHandler ни разу не вызывался, что делало нулевым покрытие самого диспатча
-    события. Настоящий ctypes.WINFUNCTYPE(restype, *argtypes) возвращает ТИП function-pointer'а;
-    экземпляр этого типа, обёрнутый вокруг питоновской функции, остаётся вызываемым из Python
-    напрямую (тот же питоновский callable) -- эта заглушка воспроизводит ровно это поведение,
-    без реального ctypes function pointer'а (не нужен для теста, который просто зовёт handler(
-    event) напрямую)."""
-    def _wrap(func):
-        return func
-    return _wrap
 
 
 def _fake_windll(kernel32, user32=None):
@@ -388,261 +322,6 @@ def test_configure_windows_stdio_cli_swallows_attach_console_failure(monkeypatch
     m._configure_windows_stdio_at_startup(has_cli_args=True)  # must not raise
     assert m._console_freed_for_gui is True
     assert sys.stdout is not None
-
-
-def test_ensure_work_console_is_noop_off_windows(monkeypatch):
-    monkeypatch.setattr(os, "name", "posix")
-    monkeypatch.setattr(m, "_work_console_allocated", False)
-    orig_stdout = sys.stdout
-    m._ensure_work_console()
-    assert m._work_console_allocated is False
-    assert sys.stdout is orig_stdout
-
-
-def test_ensure_work_console_idempotent_on_windows(monkeypatch):
-    """AllocConsole() должен вызываться максимум ОДИН раз за весь процесс, даже если
-    _ensure_work_console() зовётся многократно (run_bare_launch() зовёт её на каждой итерации
-    главного цикла -- см. её докстринг)."""
-    monkeypatch.setattr(os, "name", "nt")
-    fake_kernel32 = _FakeConsoleWindll()
-    import ctypes
-    monkeypatch.setattr(ctypes, "windll", _fake_windll(fake_kernel32), raising=False)
-    monkeypatch.setattr(m, "_work_console_allocated", False)
-    orig_stdout, orig_stderr, orig_stdin = sys.stdout, sys.stderr, sys.stdin
-    opened = []
-
-    def _fake_open(path, mode, **kwargs):
-        opened.append(path)
-        import io
-        return io.StringIO()
-
-    monkeypatch.setattr("builtins.open", _fake_open)
-    try:
-        m._ensure_work_console()
-        m._ensure_work_console()
-        assert m._work_console_allocated is True
-        assert fake_kernel32.calls == ["AllocConsole"]
-        assert opened == ["CONOUT$", "CONOUT$", "CONIN$"]
-    finally:
-        sys.stdout, sys.stderr, sys.stdin = orig_stdout, orig_stderr, orig_stdin
-
-
-def test_ensure_work_console_swallows_ctypes_failure(monkeypatch):
-    monkeypatch.setattr(os, "name", "nt")
-    fake_kernel32 = _FakeConsoleWindll(raise_on=("AllocConsole",))
-    import ctypes
-    monkeypatch.setattr(ctypes, "windll", _fake_windll(fake_kernel32), raising=False)
-    monkeypatch.setattr(m, "_work_console_allocated", False)
-    m._ensure_work_console()  # must not raise
-    assert m._work_console_allocated is True
-
-
-def test_ensure_work_console_shows_and_focuses_existing_window(monkeypatch):
-    """2026-08-22, по прямой просьбе пользователя: на ПОВТОРНОМ вызове (консоль уже создана
-    прошлой итерацией цикла и, возможно, свёрнута _hide_work_console()) функция должна развернуть
-    её заново (ShowWindow(SW_RESTORE)) и вернуть фокус (SetForegroundWindow), не только пропустить
-    AllocConsole(). 2026-08-23: SW_SHOW -> SW_RESTORE (по прямой просьбе пользователя -- окно
-    сворачивается в панель задач, не исчезает бесследно, см. _ensure_work_console()'s докстринг)."""
-    monkeypatch.setattr(os, "name", "nt")
-    fake_kernel32 = _FakeConsoleWindll(console_hwnd=777)
-    fake_user32 = _FakeUser32Windll()
-    import ctypes
-    monkeypatch.setattr(ctypes, "windll", _fake_windll(fake_kernel32, fake_user32), raising=False)
-    monkeypatch.setattr(m, "_work_console_allocated", True)  # уже создана прошлой итерацией
-    m._ensure_work_console()
-    assert fake_kernel32.calls == ["GetConsoleWindow"]
-    SW_RESTORE = 9
-    assert fake_user32.calls == [("ShowWindow", 777, SW_RESTORE), ("SetForegroundWindow", 777)]
-
-
-def test_ensure_work_console_show_swallows_ctypes_failure(monkeypatch):
-    monkeypatch.setattr(os, "name", "nt")
-    fake_kernel32 = _FakeConsoleWindll(console_hwnd=777)
-    import ctypes
-    # Нет user32 в фейковом windll -- ctypes.windll.user32 бросит AttributeError.
-    monkeypatch.setattr(ctypes, "windll", _fake_windll(fake_kernel32), raising=False)
-    monkeypatch.setattr(m, "_work_console_allocated", True)
-    m._ensure_work_console()  # must not raise
-
-
-def test_hide_work_console_is_noop_off_windows(monkeypatch):
-    monkeypatch.setattr(os, "name", "posix")
-    monkeypatch.setattr(m, "_work_console_allocated", True)
-    m._hide_work_console()  # must not raise, and must not touch ctypes at all
-
-
-def test_hide_work_console_is_noop_when_never_allocated(monkeypatch):
-    """Самая первая итерация мастера -- консоль ещё ни разу не создавалась, прятать нечего."""
-    monkeypatch.setattr(os, "name", "nt")
-    monkeypatch.setattr(m, "_work_console_allocated", False)
-    fake_kernel32 = _FakeConsoleWindll(console_hwnd=777)
-    import ctypes
-    monkeypatch.setattr(ctypes, "windll", _fake_windll(fake_kernel32), raising=False)
-    m._hide_work_console()  # must not raise
-    assert fake_kernel32.calls == []
-
-
-def test_hide_work_console_hides_existing_window(monkeypatch):
-    """2026-08-23: SW_HIDE -> SW_MINIMIZE (по прямой просьбе пользователя -- окно консоли
-    сворачивается в панель задач как обычное окно, не исчезает бесследно, см.
-    _hide_work_console()'s докстринг)."""
-    monkeypatch.setattr(os, "name", "nt")
-    monkeypatch.setattr(m, "_work_console_allocated", True)
-    fake_kernel32 = _FakeConsoleWindll(console_hwnd=777)
-    fake_user32 = _FakeUser32Windll()
-    import ctypes
-    monkeypatch.setattr(ctypes, "windll", _fake_windll(fake_kernel32, fake_user32), raising=False)
-    m._hide_work_console()
-    assert fake_kernel32.calls == ["GetConsoleWindow"]
-    SW_MINIMIZE = 6
-    assert fake_user32.calls == [("ShowWindow", 777, SW_MINIMIZE)]
-
-
-def test_hide_work_console_swallows_ctypes_failure(monkeypatch):
-    monkeypatch.setattr(os, "name", "nt")
-    monkeypatch.setattr(m, "_work_console_allocated", True)
-    fake_kernel32 = _FakeConsoleWindll(console_hwnd=777)
-    import ctypes
-    # Нет user32 в фейковом windll -- ctypes.windll.user32 бросит AttributeError.
-    monkeypatch.setattr(ctypes, "windll", _fake_windll(fake_kernel32), raising=False)
-    m._hide_work_console()  # must not raise
-
-
-def test_hide_work_console_for_exit_is_noop_off_windows(monkeypatch):
-    monkeypatch.setattr(os, "name", "posix")
-    monkeypatch.setattr(m, "_work_console_allocated", True)
-    m._hide_work_console_for_exit()  # must not raise, and must not touch ctypes at all
-
-
-def test_hide_work_console_for_exit_is_noop_when_never_allocated(monkeypatch):
-    monkeypatch.setattr(os, "name", "nt")
-    monkeypatch.setattr(m, "_work_console_allocated", False)
-    fake_kernel32 = _FakeConsoleWindll(console_hwnd=777)
-    import ctypes
-    monkeypatch.setattr(ctypes, "windll", _fake_windll(fake_kernel32), raising=False)
-    m._hide_work_console_for_exit()  # must not raise
-    assert fake_kernel32.calls == []
-
-
-def test_hide_work_console_for_exit_hides_existing_window(monkeypatch):
-    """2026-08-24, живая находка пользователя: крестик на нотисе "Работа окончена" закрывал
-    сам нотис, но рабочая консоль оставалась видна, пока её не закрывала ОС вместе с процессом
-    (не мгновенно на onefile-сборке) -- SW_HIDE (не SW_MINIMIZE, как у _hide_work_console(),
-    предназначенной для промежуточного возврата в мастер той же сессией) прячет окно немедленно
-    и полностью."""
-    monkeypatch.setattr(os, "name", "nt")
-    monkeypatch.setattr(m, "_work_console_allocated", True)
-    fake_kernel32 = _FakeConsoleWindll(console_hwnd=777)
-    fake_user32 = _FakeUser32Windll()
-    import ctypes
-    monkeypatch.setattr(ctypes, "windll", _fake_windll(fake_kernel32, fake_user32), raising=False)
-    m._hide_work_console_for_exit()
-    assert fake_kernel32.calls == ["GetConsoleWindow"]
-    SW_HIDE = 0
-    assert fake_user32.calls == [("ShowWindow", 777, SW_HIDE)]
-
-
-def test_hide_work_console_for_exit_swallows_ctypes_failure(monkeypatch):
-    monkeypatch.setattr(os, "name", "nt")
-    monkeypatch.setattr(m, "_work_console_allocated", True)
-    fake_kernel32 = _FakeConsoleWindll(console_hwnd=777)
-    import ctypes
-    # Нет user32 в фейковом windll -- ctypes.windll.user32 бросит AttributeError.
-    monkeypatch.setattr(ctypes, "windll", _fake_windll(fake_kernel32), raising=False)
-    m._hide_work_console_for_exit()  # must not raise
-
-
-def test_install_console_close_handler_is_noop_off_windows(monkeypatch):
-    monkeypatch.setattr(os, "name", "posix")
-    monkeypatch.setattr(m, "_console_close_handler_ref", None)
-    m._install_console_close_handler()  # must not raise, must not touch ctypes at all
-    assert m._console_close_handler_ref is None
-
-
-def test_install_console_close_handler_registers_one_handler(monkeypatch):
-    monkeypatch.setattr(os, "name", "nt")
-    monkeypatch.setattr(m, "_console_close_handler_ref", None)
-    fake_kernel32 = _FakeKernel32ForCloseHandler()
-    import ctypes
-    monkeypatch.setattr(ctypes, "windll", _fake_windll(fake_kernel32), raising=False)
-    monkeypatch.setattr(ctypes, "WINFUNCTYPE", _fake_winfunctype, raising=False)
-    m._install_console_close_handler()
-    assert len(fake_kernel32.registered) == 1
-    assert m._console_close_handler_ref is not None
-
-
-def test_install_console_close_handler_swallows_ctypes_failure(monkeypatch):
-    monkeypatch.setattr(os, "name", "nt")
-    monkeypatch.setattr(m, "_console_close_handler_ref", None)
-    import ctypes
-
-    class _Boom:
-        def __getattr__(self, name):
-            raise OSError("simulated SetConsoleCtrlHandler failure")
-    monkeypatch.setattr(ctypes, "windll", _fake_windll(_Boom()), raising=False)
-    m._install_console_close_handler()  # must not raise
-
-
-class TestConsoleCloseHandlerDispatch:
-    """2026-08-24, живой вопрос пользователя ("разве нет нормального способа отработки
-    крестика?") -- CTRL_CLOSE_EVENT больше не зовёт os._exit(0) напрямую (см.
-    _install_console_close_handler()'s докстринг за полным обоснованием): вместо жёсткого обхода
-    всего питоновского shutdown -- _thread.interrupt_main(), тот же механизм, которым Windows
-    уже доставляет обычный Ctrl-C, даёт main()'s except KeyboardInterrupt отработать штатно
-    (PyInstaller чистит свою _MEIxxxxxx, place_file()/_handle_archive() чистят за собой). Тесты
-    вызывают саму внутреннюю функцию-обработчик напрямую (перехваченную через
-    _FakeKernel32ForCloseHandler.registered[0]) с каждым кодом события -- не полагаются на то,
-    что ОС реально пришлёт эти события (недостижимо в pytest)."""
-
-    def _install_and_get_handler(self, monkeypatch):
-        monkeypatch.setattr(os, "name", "nt")
-        monkeypatch.setattr(m, "_console_close_handler_ref", None)
-        fake_kernel32 = _FakeKernel32ForCloseHandler()
-        import ctypes
-        monkeypatch.setattr(ctypes, "windll", _fake_windll(fake_kernel32), raising=False)
-        monkeypatch.setattr(ctypes, "WINFUNCTYPE", _fake_winfunctype, raising=False)
-        m._install_console_close_handler()
-        return fake_kernel32.registered[0]
-
-    def test_ctrl_c_and_break_left_to_default_handler(self, monkeypatch):
-        handler = self._install_and_get_handler(monkeypatch)
-        import _thread
-        interrupt_calls = []
-        monkeypatch.setattr(_thread, "interrupt_main", lambda: interrupt_calls.append(True))
-        exit_calls = []
-        monkeypatch.setattr(os, "_exit", lambda code: exit_calls.append(code))
-        CTRL_C_EVENT, CTRL_BREAK_EVENT = 0, 1
-        assert handler(CTRL_C_EVENT) == 0
-        assert handler(CTRL_BREAK_EVENT) == 0
-        assert interrupt_calls == []
-        assert exit_calls == []
-
-    def test_ctrl_close_event_interrupts_main_thread_gracefully(self, monkeypatch):
-        handler = self._install_and_get_handler(monkeypatch)
-        import _thread
-        interrupt_calls = []
-        monkeypatch.setattr(_thread, "interrupt_main", lambda: interrupt_calls.append(True))
-        exit_calls = []
-        monkeypatch.setattr(os, "_exit", lambda code: exit_calls.append(code))
-        CTRL_CLOSE_EVENT = 2
-        assert handler(CTRL_CLOSE_EVENT) == 1  # "обработано" -- не os._exit()
-        assert interrupt_calls == [True]
-        assert exit_calls == []
-
-    def test_ctrl_logoff_and_shutdown_still_exit_immediately(self, monkeypatch):
-        """System-wide события -- бюджет времени общий на все процессы, оставлены на
-        гарантированный os._exit(0), не на interrupt_main() (см. докстринг)."""
-        handler = self._install_and_get_handler(monkeypatch)
-        import _thread
-        interrupt_calls = []
-        monkeypatch.setattr(_thread, "interrupt_main", lambda: interrupt_calls.append(True))
-        exit_calls = []
-        monkeypatch.setattr(os, "_exit", lambda code: exit_calls.append(code))
-        CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT = 5, 6
-        handler(CTRL_LOGOFF_EVENT)
-        handler(CTRL_SHUTDOWN_EVENT)
-        assert exit_calls == [0, 0]
-        assert interrupt_calls == []
 
 
 class TestShouldPauseBeforeExit:
