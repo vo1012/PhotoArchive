@@ -1485,6 +1485,22 @@ def test_two_line_status_shows_elapsed_time_before_rate(monkeypatch):
     bar.close()
 
 
+def test_two_line_status_omits_elapsed_field_in_gui_worker_mode(monkeypatch):
+    # 2026-09-01, живой отзыв ("время и отдельно, и в строке, причём разное"): экран
+    # «Выполнение» показывает «Прошло: MM:SS» отдельной строкой (общее время прогона), а поле
+    # в статус-строке -- время ТЕКУЩЕЙ ФАЗЫ -> расходятся, путают. В GUI поле убрано.
+    bar = _two_line_bar()
+    monkeypatch.setattr(bar, "_t0", bar._t0 - 20)
+    monkeypatch.setattr(m, "_run_event_bus", None)
+    assert "00:20" in bar._build_two_line_status()
+    monkeypatch.setattr(m, "_run_event_bus", m.RunEventBus())
+    line = bar._build_two_line_status()
+    assert "00:20" not in line
+    assert "с/файл" in line  # скорость осталась
+    monkeypatch.setattr(m, "_run_event_bus", None)
+    bar.close()
+
+
 def test_console_columns_returns_real_terminal_width(monkeypatch):
     # REVIEW-HANDOFF.md, Раунд 134, придирка: все существующие тесты подменяют
     # _console_columns() целиком (лямбдой), ни один не гоняет её РЕАЛЬНОЕ тело -- эти три теста
@@ -1492,6 +1508,36 @@ def test_console_columns_returns_real_terminal_width(monkeypatch):
     fake_size = m.os.terminal_size((137, 40))
     monkeypatch.setattr(m.os, "get_terminal_size", lambda fd: fake_size)
     assert m._console_columns() == 137
+
+
+def test_console_columns_returns_mirror_width_in_gui_worker_mode(monkeypatch):
+    # 2026-09-01: GUI-воркер (_run_event_bus set) -- реальной консоли нет, вывод в панель
+    # фикс. ширины; _console_columns() возвращает её, не гадает по несуществующему терминалу.
+    monkeypatch.setattr(m, "_run_event_bus", object())
+    monkeypatch.setattr(m.os, "get_terminal_size",
+                         lambda fd: (_ for _ in ()).throw(AssertionError("не должно вызываться")))
+    assert m._console_columns() == m._GUI_MIRROR_COLUMNS
+
+
+def test_two_line_status_fits_mirror_width_in_gui_worker_mode_even_without_tty(monkeypatch):
+    # 2026-09-01, живой отзыв (скриншот): прогрессивное снятие полей было завязано ТОЛЬКО на
+    # sys.stderr.isatty() -- в GUI (не tty) статус-строка не ужималась вовсе и обрезалась за
+    # краем плашки. Теперь логика ужимания работает и при активной _run_event_bus, по ширине
+    # панели-зеркала (_GUI_MIRROR_COLUMNS).
+    monkeypatch.setattr(m.sys.stderr, "isatty", lambda: False)
+    # длинный transient-op + своб.место -> строка заведомо шире панели, если не ужимать
+    bar = m.ProgressReporter(total=None, desc=" Копирую", unit="файл", two_line=True,
+                              total_estimate=152000, disk_usage_path="C:/")
+    bar._obj_count = 87654
+    bar.count = 87654
+    bar._disk_free_text = "своб.  1234.5ГБ"
+    bar._transient_op = " распаковываю очень длинное имя архива очень длинное имя.7z"
+
+    monkeypatch.setattr(m, "_run_event_bus", None)
+    assert len(bar._build_two_line_status()) > m._GUI_MIRROR_COLUMNS  # не-GUI не-tty: целиком
+
+    monkeypatch.setattr(m, "_run_event_bus", object())
+    assert len(bar._build_two_line_status()) <= m._GUI_MIRROR_COLUMNS  # GUI: ужато под панель
 
 
 def test_console_columns_falls_back_when_stdout_has_no_fileno(monkeypatch):
@@ -2138,6 +2184,31 @@ def test_handle_archive_status_lines_carry_placement_letter_when_enabled(tmp_pat
 def test_extraction_log_name_budget_returns_large_value_when_not_a_tty(monkeypatch):
     monkeypatch.setattr(m.sys.stdout, "isatty", lambda: False)
     assert m._extraction_log_name_budget() >= 200  # write_heavy_notice() never wraps off-tty
+
+
+def test_extraction_log_name_budget_targets_mirror_width_in_gui_worker_mode(monkeypatch):
+    # 2026-09-01, живой отзыв: не-tty И активна RunEventBus (GUI-воркер) -- реальной консоли
+    # нет, но панель-зеркало _GUI_MIRROR_COLUMNS широкая, имя архива обрезать под неё, не
+    # отдавать «широкий» бюджет как для пайпа/редиректа.
+    monkeypatch.setattr(m.sys.stdout, "isatty", lambda: False)
+    monkeypatch.setattr(m, "_run_event_bus", object())
+    budget = m._extraction_log_name_budget()
+    assert budget < m._GUI_MIRROR_COLUMNS
+    long_name = "backup-" + "very-long-folder-name-" * 6 + "2024-09-18.tar.gz"
+    msg = f"  Распаковка {m._truncate_progress_note(long_name, maxlen=budget)} (6.2 ГБ)…"
+    assert len(msg) <= m._GUI_MIRROR_COLUMNS
+
+
+def test_console_tag_line_budget_targets_mirror_width_in_gui_worker_mode(monkeypatch):
+    monkeypatch.setattr(m.sys.stderr, "isatty", lambda: False)
+    tail = len(" найдено медиафайлов ")
+    assert m._console_tag_line_budget(tail) == 80  # пайп/редирект/тесты -- ширина не важна
+    monkeypatch.setattr(m, "_run_event_bus", object())
+    gui_budget = m._console_tag_line_budget(tail, tag_width=10)
+    assert gui_budget < m._GUI_MIRROR_COLUMNS
+    # объект-строка целиком влезает в ширину панели
+    line = "  " + "[archive] " + ("p" * gui_budget) + ": найдено медиафайлов 0"
+    assert len(line) <= m._GUI_MIRROR_COLUMNS
 
 
 def test_extraction_log_message_fits_full_terminal_width_after_truncation(monkeypatch):

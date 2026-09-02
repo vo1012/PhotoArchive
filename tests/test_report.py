@@ -1652,6 +1652,75 @@ def test_dispute_reason_label_translates_known_codes_and_passes_through_unknown(
     assert r._dispute_reason_label("some_future_code") == "some_future_code"
 
 
+def test_every_media_note_code_that_can_reach_unsorted_has_a_russian_label():
+    """Файл уходит в _Unsorted через run_logs.disputed(source, rec.media_note or "not_media",
+    dest) (photosort_win.py _process_record). В xlsx-детализации/HTML это идёт в «Примечание»
+    как _dispute_reason_label(reason) -- каждый код media_note обязан иметь перевод, иначе в
+    отчёт попадает сырой английский код (живая находка 2026-09-01: processing_error). Скан:
+    все строковые литералы `rec.media_note = "..."` в photosort_win.py, ПЛЮС (Раунд 189, 186-1)
+    строковые литералы во второй позиции `return`-кортежей classify_image() -- она отдаёт
+    "icon_or_svg"/"animated_gif"/"tiny_image"/... как `note` через `return is_media, note`, и та
+    же переменная затем присваивается `rec.is_media, rec.media_note = is_media, note` (:5863) --
+    обычный Assign-скан видит только `ast.Name` на месте присваивания, не литералы внутри
+    classify_image(), ни одного её кода не собирает без отдельного прохода ниже."""
+    import ast
+    import inspect
+
+    import photosort_win as m
+
+    tree = ast.parse(inspect.getsource(m))
+    codes = set()
+    for node in ast.walk(tree):
+        # rec.media_note = "literal"  и  rec.is_media, rec.media_note = x, "literal"
+        if not isinstance(node, ast.Assign):
+            continue
+        targets = node.targets
+        is_media_note = any(
+            isinstance(t, ast.Attribute) and t.attr == "media_note" for t in targets
+        ) or any(
+            isinstance(t, ast.Tuple)
+            and any(isinstance(e, ast.Attribute) and e.attr == "media_note" for e in t.elts)
+            for t in targets
+        )
+        if not is_media_note:
+            continue
+        for lit in ast.walk(node.value):
+            if isinstance(lit, ast.Constant) and isinstance(lit.value, str):
+                codes.add(lit.value)
+
+    # classify_image()'s `note` reaches rec.media_note through a bare ast.Name (see docstring
+    # above) -- follow its own `return is_media, "literal"` statements directly instead of
+    # relying on the Assign-target scan above to see through that indirection. Only
+    # `is_media=False` codes matter here: `not rec.is_media` is the sole gate that lets
+    # media_note reach disputed/"Примечание" in _process_record() (:9388) -- an `is_media=True`
+    # note (small_image/low_confidence_photo) never leaves the archived/appended path, so it
+    # doesn't need a dispute-reason translation.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "classify_image":
+            for ret in ast.walk(node):
+                if not isinstance(ret, ast.Return) or not isinstance(ret.value, ast.Tuple):
+                    continue
+                if len(ret.value.elts) != 2:
+                    continue
+                is_media_expr, note_expr = ret.value.elts
+                if not (isinstance(is_media_expr, ast.Constant) and is_media_expr.value is False):
+                    continue
+                if isinstance(note_expr, ast.Constant) and isinstance(note_expr.value, str):
+                    codes.add(note_expr.value)
+            break
+
+    codes.add("not_media")  # фолбэк `rec.media_note or "not_media"` в _process_record()
+    assert codes, "скан не нашёл ни одного media_note-литерала -- проверить парсер"
+    missing = sorted(c for c in codes if c not in r._DISPUTE_REASON_LABELS)
+    assert not missing, f"media_note-коды без русской формулировки в _DISPUTE_REASON_LABELS: {missing}"
+
+
+def test_processing_error_reason_is_a_plain_phrase_without_traceback():
+    label = r._dispute_reason_label("processing_error")
+    assert label != "processing_error"  # не сырой код
+    assert "разобрать" in label
+
+
 def test_build_checklist_items_shows_dispute_file_and_reason_when_detail_available():
     """Раунд 32, задача 2 (REVIEW-HANDOFF.md): "Спорные" должны показывать имя файла и причину,
     не только число на папку -- тот же паттерн, что уже есть у near-dup/exact-dup."""
