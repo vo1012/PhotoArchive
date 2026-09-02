@@ -264,7 +264,7 @@ h2+.section-lede{margin-top:.25rem}
 .advanced-list li{position:relative;padding-left:1.2rem;margin-bottom:.7rem;font-size:.98rem}
 .advanced-list li::before{content:"–";position:absolute;left:0;color:var(--color-muted)}
 .advanced-group p{margin:0;font-size:.98rem}
-.advanced-divider{border:none;border-top:1px solid var(--color-border);margin:1.3rem 0 0}
+.advanced-divider{border:none;border-top:1px solid var(--color-border);margin:1.8rem 0 0}
 .advanced-more{margin-top:1.8rem;font-size:.95rem}
 
 /* ============ Download ============ */
