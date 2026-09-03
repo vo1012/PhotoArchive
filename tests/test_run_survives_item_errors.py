@@ -65,15 +65,16 @@ class TestAnalyzeBatchSurvivesItemError:
     def test_one_bad_item_does_not_lose_the_good_ones_in_the_same_batch(
             self, tmp_path, monkeypatch):
         good1, bad, good2 = tmp_path / "g1.jpg", tmp_path / "bad.jpg", tmp_path / "g2.jpg"
-        for p in (good1, bad, good2):
-            _make_jpeg(p)
+        _make_jpeg(good1)
+        _make_jpeg(good2)
+        _make_jpeg(bad, size=(321, 123))  # отличимый размер (read-once даёт байты, не путь)
         monkeypatch.setattr(m, "exiftool_batch", lambda paths, **kw: {})
         real = m.image_phash_and_size
 
-        def _flaky(path):
-            if os.path.basename(path) == "bad.jpg":
+        def _flaky(src):
+            if m.image_size_only(src) == (321, 123):
                 raise ValueError("decode exploded")
-            return real(path)
+            return real(src)
 
         monkeypatch.setattr(m, "image_phash_and_size", _flaky)
         recs = m.analyze_batch([_item(good1), _item(bad), _item(good2)])

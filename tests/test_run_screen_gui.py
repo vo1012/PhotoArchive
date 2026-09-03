@@ -27,6 +27,29 @@ def _inject_fake_tkinter(monkeypatch):
 # «Экран 4» в gui_menu.py. Тесты на _friendly_phase_label() удалены вместе с функцией.
 
 
+class TestFmtElapsedClock:
+    """_fmt_elapsed_clock() -- живой таймер «Прошло:» экрана «Выполнение». Адаптивный:
+    MM:SS -> Ч:MM:SS -> «Nд Ч:MM:SS» (боевой прогон на большом архиве длится дольше суток,
+    раньше минуты в MM:SS пухли без ограничения)."""
+
+    def test_under_hour_is_mm_ss(self):
+        assert g._fmt_elapsed_clock(0) == "00:00"
+        assert g._fmt_elapsed_clock(5 * 60 + 3) == "05:03"
+        assert g._fmt_elapsed_clock(59 * 60 + 59) == "59:59"
+
+    def test_under_day_is_h_mm_ss(self):
+        assert g._fmt_elapsed_clock(3600) == "1:00:00"
+        assert g._fmt_elapsed_clock(3 * 3600 + 7 * 60 + 41) == "3:07:41"
+        assert g._fmt_elapsed_clock(23 * 3600 + 59 * 60 + 59) == "23:59:59"
+
+    def test_over_day_prefixes_days(self):
+        assert g._fmt_elapsed_clock(86400) == "1д 0:00:00"
+        assert g._fmt_elapsed_clock(2 * 86400 + 3 * 3600 + 7 * 60 + 41) == "2д 3:07:41"
+
+    def test_negative_clamped(self):
+        assert g._fmt_elapsed_clock(-5) == "00:00"
+
+
 class _FakeBus:
     def __init__(self):
         self.events = []

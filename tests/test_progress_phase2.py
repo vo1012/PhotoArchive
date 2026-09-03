@@ -12,6 +12,7 @@
 терминала (is_tty=False по умолчанию под pytest, тот же принцип, что и у остальных тестов
 этого файла)."""
 import tarfile
+import threading
 import zipfile
 
 import pytest
@@ -948,6 +949,43 @@ def test_quick_media_count_estimate_reports_progress_deltas(tmp_path):
     assert total == 3
     assert sum(deltas) == 3
     assert all(d > 0 for d in deltas)  # never called with a zero/negative delta
+
+
+def test_quick_media_count_estimate_pauses_on_bus_pause_event(tmp_path, monkeypatch):
+    """Живая находка (2026-09-03): фаза «Оцениваю объём работы» -- не-two_line, не проходит
+    через основной цикл _run_impl()/run_analyze() с его _cooperative_checkpoint(), поэтому
+    «Пауза» (bus.pause_event) её не останавливала: таймер/«Работа приостановлена» замирали
+    (GUI-сторона), а статус-строка продолжала сыпаться, т.к. воркер крутил этот обход. Теперь
+    while-цикл обхода зовёт _cooperative_checkpoint() на каждую директорию."""
+    source = tmp_path / "source"
+    for d in ("A", "B", "C"):
+        (source / d).mkdir(parents=True)
+        (source / d / "x.jpg").write_bytes(b"x")
+    (tmp_path / "target").mkdir()
+    cfg = _make_cfg(tmp_path)
+
+    bus = m.RunEventBus()
+    bus.pause_event.set()
+    monkeypatch.setattr(m, "_run_event_bus", bus)
+
+    result = {}
+    deltas = []
+
+    def _run():
+        result["total"] = m._quick_media_count_estimate(
+            str(source), cfg, on_progress=deltas.append)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=0.3)
+    assert t.is_alive(), "обход не встал на паузу -- _cooperative_checkpoint() не вызывается"
+    assert deltas == [], "ни одна директория из stack не должна была обработаться на паузе"
+
+    bus.pause_event.clear()
+    t.join(timeout=2.0)
+    assert not t.is_alive()
+    assert result["total"] == 3
+    assert sum(deltas) == 3
 
 
 def test_quick_media_count_estimate_never_descends_into_target(tmp_path):
