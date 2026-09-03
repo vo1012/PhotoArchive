@@ -476,6 +476,24 @@ def _px(n: int) -> int:
     return round(n * _dpi_scale)
 
 
+def _fmt_elapsed_clock(seconds: int) -> str:
+    """Живой таймер «Прошло:» на экране «Выполнение» (см. _Wizard._start_run_timer()).
+    Адаптивный, а не фикс. ДД:ЧЧ:ММ:СС: типовой прогон -- минуты, и «00:00:05:03» ради
+    редкого края хуже читался бы, чем «05:03». Растёт по мере надобности:
+    <1ч -- MM:SS, <1сут -- Ч:MM:SS, дальше -- «Nд Ч:MM:SS» (боевой прогон на очень большом
+    архиве реально длится дольше суток, минуты в MM:SS пухли до «1543:12»). Подпись «Прошло:»
+    рядом снимает неоднозначность формата."""
+    seconds = max(int(seconds), 0)
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    if days:
+        return f"{days}д {hours}:{minutes:02d}:{secs:02d}"
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
 def _get_work_area(root) -> tuple:
     """Реальный клик-тест на HTPC (2026-08-21, SESSION-HANDOFF.txt) нашёл: на этом мониторе
     честное пропорциональное масштабирование (см. _compute_dpi_scale()) даёт окну требуемую
@@ -1944,10 +1962,9 @@ class _Wizard:
         import tkinter as tk
 
         def _tick():
-            elapsed = int(time.time() - self._run_started_at)
-            mm, ss = divmod(max(elapsed, 0), 60)
+            elapsed = max(int(time.time() - self._run_started_at), 0)
             try:
-                self._run_timer_var.set(f"Прошло: {mm:02d}:{ss:02d}")
+                self._run_timer_var.set(f"Прошло: {_fmt_elapsed_clock(elapsed)}")
                 self._run_timer_job[0] = self.root.after(1000, _tick)
             except tk.TclError:
                 pass

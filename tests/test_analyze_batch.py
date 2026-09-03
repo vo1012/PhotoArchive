@@ -131,6 +131,88 @@ class TestImageExactDupSkipsPhash:
         assert (recs[0].width, recs[0].height) == (800, 600)
 
 
+class TestImageReadOnce:
+    """read-once (2026-09-03, боевой прогон «ускорить анализ по сетевой шаре»): файл-изображение
+    читается по сети ОДИН раз -- те же байты идут и под sha256, и под perceptual hash, вместо
+    двух полных чтений (REVIEW-HANDOFF-ARCHIVE.md «Вариант E» / внеочередная запись 2026-08-05)."""
+
+    def test_image_hashed_from_single_buffered_read(self, tmp_path, monkeypatch):
+        img = tmp_path / "a.jpg"
+        _make_jpeg(img)
+        real_read = m.read_file_bytes_with_retry
+        reads = []
+        monkeypatch.setattr(m, "read_file_bytes_with_retry",
+                             lambda p, *a, **kw: (reads.append(p), real_read(p, *a, **kw))[1])
+        monkeypatch.setattr(m, "sha256_file_with_retry",
+                             lambda *a, **kw: pytest.fail("streamed sha path used for an image"))
+
+        rec = m.analyze_batch([_item(img)])[0]
+
+        assert reads == [str(img)]  # ровно одно чтение файла с диска
+        assert rec.sha256 == hashlib.sha256(img.read_bytes()).hexdigest()
+        assert rec.phash is not None
+        assert (rec.width, rec.height) == (800, 600)
+
+    def test_oversized_image_keeps_streamed_hash_path(self, tmp_path, monkeypatch):
+        img = tmp_path / "big.jpg"
+        _make_jpeg(img)
+        monkeypatch.setattr(m, "_READ_ONCE_MAX_IMAGE_BYTES", 10)  # меньше самого файла
+        monkeypatch.setattr(m, "read_file_bytes_with_retry",
+                             lambda *a, **kw: pytest.fail("buffered read used for oversized image"))
+
+        rec = m.analyze_batch([_item(img)])[0]
+
+        assert rec.sha256 == hashlib.sha256(img.read_bytes()).hexdigest()
+        assert rec.phash is not None
+
+    def test_read_error_in_buffered_read_marks_read_error(self, tmp_path, monkeypatch):
+        img = tmp_path / "a.jpg"
+        _make_jpeg(img)
+
+        def _raise(*a, **kw):
+            raise m.ReadError("smb hiccup")
+        monkeypatch.setattr(m, "read_file_bytes_with_retry", _raise)
+
+        rec = m.analyze_batch([_item(img)])[0]
+
+        assert rec.read_error is True
+        assert rec.broken is False  # read_error, не "не распознан"
+
+    def test_exact_dup_skips_phash_on_read_once_path(self, tmp_path, monkeypatch):
+        img = tmp_path / "a.jpg"
+        _make_jpeg(img)
+        sha = hashlib.sha256(img.read_bytes()).hexdigest()
+        pool = m.Pool()
+        pool.add(m.PoolEntry(sha256=sha, ftype="image", dest_path="existing.jpg", size=1))
+        calls = []
+        real = m.image_phash_and_size
+        monkeypatch.setattr(m, "image_phash_and_size", lambda s: (calls.append(1), real(s))[1])
+
+        rec = m.analyze_batch([_item(img)], pool=pool)[0]
+
+        assert calls == []            # дорогой decode+DCT пропущен
+        assert rec.phash is None
+        assert rec.sha256 == sha
+        assert (rec.width, rec.height) == (800, 600)  # размер -- дешёвым image_size_only из буфера
+
+    def test_bytesio_hostile_decoder_falls_back_to_path(self, tmp_path, monkeypatch):
+        # эмулируем плагин формата (напр. HEIC), который не принимает BytesIO: байтовый вызов
+        # отдаёт (None, None, None), путь -- нормальный результат. Фолбэк не должен метить broken.
+        img = tmp_path / "a.jpg"
+        _make_jpeg(img)
+        real = m.image_phash_and_size
+
+        def _bytes_hostile(src):
+            return (None, None, None) if not isinstance(src, str) else real(src)
+        monkeypatch.setattr(m, "image_phash_and_size", _bytes_hostile)
+
+        rec = m.analyze_batch([_item(img)])[0]
+
+        assert rec.broken is False
+        assert rec.phash is not None
+        assert (rec.width, rec.height) == (800, 600)
+
+
 class TestVideoExactDupSkipsPhash:
     def _video_item(self, tmp_path, ftype="video"):
         vid = tmp_path / "a.mp4"
@@ -204,36 +286,31 @@ class TestArchiveHashCacheReuse:
         assert rec.phash == "cached-phash"
         assert (rec.width, rec.height) == (111, 222)
 
-    def test_image_cache_miss_size_mismatch_recomputes(self, tmp_path, monkeypatch):
-        sha_calls = []
-        monkeypatch.setattr(m, "sha256_file_with_retry",
-                             lambda p, *a, **kw: (sha_calls.append(p), "real-sha")[1])
-
+    def test_image_cache_miss_size_mismatch_recomputes(self, tmp_path):
+        # read-once (2026-09-03): изображения хешируются из буфера (read_file_bytes_with_retry
+        # + sha256_bytes), не через sha256_file_with_retry -- проверяем ИНТЕНТ (устаревший кэш
+        # отвергнут, посчитан настоящий sha), не какой внутренний помощник вызвался.
         img = tmp_path / "a.jpg"
         _make_jpeg(img)
         it = _item(img)
+        real_sha = hashlib.sha256(img.read_bytes()).hexdigest()
         # size deliberately wrong -- cache entry must be treated as stale, not trusted.
         cache = {str(img): (it.size + 1, it.mtime, "stale-sha", "stale-phash", None, 1, 1, None)}
 
         recs = m.analyze_batch([it], cache=cache)
 
-        assert sha_calls == [str(img)]  # real hashing DID run -- cache was correctly rejected
-        assert recs[0].sha256 == "real-sha"
+        assert recs[0].sha256 == real_sha  # cache rejected -> real recompute happened
 
-    def test_image_cache_miss_mtime_mismatch_recomputes(self, tmp_path, monkeypatch):
-        sha_calls = []
-        monkeypatch.setattr(m, "sha256_file_with_retry",
-                             lambda p, *a, **kw: (sha_calls.append(p), "real-sha")[1])
-
+    def test_image_cache_miss_mtime_mismatch_recomputes(self, tmp_path):
         img = tmp_path / "a.jpg"
         _make_jpeg(img)
         it = _item(img)
+        real_sha = hashlib.sha256(img.read_bytes()).hexdigest()
         cache = {str(img): (it.size, it.mtime + 5.0, "stale-sha", "stale-phash", None, 1, 1, None)}
 
         recs = m.analyze_batch([it], cache=cache)
 
-        assert sha_calls == [str(img)]
-        assert recs[0].sha256 == "real-sha"
+        assert recs[0].sha256 == real_sha
 
     def test_image_cache_hit_still_correct_with_exact_dup_pool(self, tmp_path):
         """cache_hit -- phash приходит бесплатно из кэша, поэтому НЕ нулится даже при
@@ -310,17 +387,14 @@ class TestArchiveHashCacheReuse:
 
         assert (rec.width, rec.height) == (640, 480)
 
-    def test_no_cache_argument_behaves_exactly_as_before(self, tmp_path, monkeypatch):
-        sha_calls = []
-        monkeypatch.setattr(m, "sha256_file_with_retry",
-                             lambda p, *a, **kw: (sha_calls.append(p), "real-sha")[1])
+    def test_no_cache_argument_behaves_exactly_as_before(self, tmp_path):
         img = tmp_path / "a.jpg"
         _make_jpeg(img)
+        real_sha = hashlib.sha256(img.read_bytes()).hexdigest()
 
         recs = m.analyze_batch([_item(img)])  # cache=None default
 
-        assert sha_calls == [str(img)]
-        assert recs[0].sha256 == "real-sha"
+        assert recs[0].sha256 == real_sha
 
     def test_run_analyze_self_scan_false_does_not_pollute_archive_cache(self, tmp_path):
         """REVIEW-HANDOFF.md, Раунд 52 [ЗАМЕЧАНИЕ]: archive_hash_cache (эта же задача 7) был
@@ -981,6 +1055,8 @@ class TestDisputedAndUnreadablePaths:
         def _raise(*a, **kw):
             raise m.ReadError("locked by another process")
         monkeypatch.setattr(m, "sha256_file_with_retry", _raise)
+        # read-once: изображения читаются буфером -- сбой I/O для .jpg приходит отсюда.
+        monkeypatch.setattr(m, "read_file_bytes_with_retry", _raise)
 
         stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)
 

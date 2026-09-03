@@ -24,6 +24,7 @@ import errno
 import fnmatch
 import hashlib
 import inspect
+import io
 import itertools
 import json
 import multiprocessing
@@ -78,7 +79,7 @@ warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
 # blanket ignore of all warnings, so any other future PIL/library warning still surfaces.
 warnings.filterwarnings("ignore", message="Palette images with Transparency.*", category=UserWarning)
 
-__version__ = "0.6.9"           # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
+__version__ = "0.6.10"          # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
                                  # с RULES_VERSION ниже (та про совместимость архива, а не exe)
 RULES_VERSION = "2026-08-11"   # дата последнего изменения бизнес-правил -- см. RULES.md;
                                 # менять руками при изменении логики раскладки/дедупа/дат
@@ -1573,7 +1574,7 @@ class ProgressReporter:
         # Речь пользователя, 2026-08-11: подпись "занято" перед временем убрана -- само поле
         # (единственное чистое ЧЧ:ММ:СС в строке, между "|") уже читается однозначно.
         # GUI-режим (2026-09-01, живой отзыв "время и отдельно, и в строке, причём разное"):
-        # поле убрано -- экран «Выполнение» уже показывает «Прошло: MM:SS» отдельной строкой
+        # поле убрано -- экран «Выполнение» уже показывает «Прошло: …» отдельной строкой
         # (общее время прогона, замирает на паузе), а это поле -- время ТЕКУЩЕЙ ФАЗЫ (свой
         # self._t0 на фазу), они законно расходятся и путают. Оставляем одно -- заголовочное.
         elapsed_part = "" if _run_event_bus is not None else f"{sep}{_tqdm.format_interval(elapsed):>8}"
@@ -2825,10 +2826,41 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def image_phash_and_size(path: str):
-    """Returns (phash_hex, width, height) or (None, None, None) if unreadable."""
+# read-once (2026-09-03, боевой прогон «как ускорить анализ по сетевой шаре»): _analyze_one_item()
+# читал КАЖДЫЙ файл-изображение по сети ДВАЖДЫ -- один раз целиком под sha256
+# (sha256_file_with_retry), второй раз целиком под perceptual hash (Image.open внутри
+# image_phash_and_size форсирует полный декод => полное чтение файла) -- плюс два отдельных
+# open()/SMB-round-trip на файл. Для архива из JPEG по сети это ~2× лишнего трафика и удвоенное
+# число round-trip'ов (REVIEW-HANDOFF-ARCHIVE.md «Вариант E» / внеочередная запись 2026-08-05,
+# п.4). image_phash_and_size()/image_size_only() ниже принимают ЛИБО путь, ЛИБО уже прочитанные
+# байты, чтобы вызывающий прочитал файл один раз и скормил те же байты и sha256, и PIL.
+#
+# Порог _READ_ONCE_MAX_IMAGE_BYTES: файл крупнее -- прежний потоковый путь (sha256_file 4-МБ
+# чанками + Image.open(path)), в память целиком НЕ тянется. Для файла В ПРЕДЕЛАХ порога RAM-пик
+# transient ~= 2× его размера: io.BytesIO(bytearray) КОПИРУЕТ (не разделяет буфер), так что во
+# время image_phash_and_size() одновременно живут сам bytearray и его копия внутри BytesIO
+# (плюс C-decode-буфер PIL, как и на потоковом пути). analyze_batch() однопоточный -- пик
+# держится на одном файле за раз, не умножается. 48 МБ: перекрывает любой реалистичный камерный
+# JPEG (даже 100-200 МП ~= 30-45 МБ) с запасом; всё, что крупнее (большой TIFF/PNG, склеенная
+# панорама) -- редкое и как раз то, что разумно оставить на потоковом пути (REVIEW-HANDOFF.md
+# Раунд 199, 199-1).
+_READ_ONCE_MAX_IMAGE_BYTES = 48 * 1024 * 1024
+
+
+def _pil_open_source(src):
+    """src -- путь к файлу (str) ЛИБО уже прочитанные байты. bytes/bytearray -> BytesIO
+    (PIL/pillow-heif определяют формат по сигнатуре, имя файла не нужно); str -> winlong(path),
+    как раньше."""
+    if isinstance(src, (bytes, bytearray)):
+        return io.BytesIO(src)
+    return winlong(src)
+
+
+def image_phash_and_size(src):
+    """Returns (phash_hex, width, height) or (None, None, None) if unreadable.
+    src -- путь ЛИБО байты файла (read-once, см. _pil_open_source() и комментарий выше)."""
     try:
-        with Image.open(winlong(path)) as im:
+        with Image.open(_pil_open_source(src)) as im:
             im = im.convert("L")
             w, h = im.size
             ph = imagehash.phash(im)
@@ -2837,13 +2869,14 @@ def image_phash_and_size(path: str):
         return None, None, None
 
 
-def image_size_only(path: str):
+def image_size_only(src):
     """Returns (width, height) or (None, None) if unreadable -- используется analyze-quick
-    (skip_hash=True в analyze_batch): PIL лениво декодирует заголовок для .size без разбора
-    полных пиксельных данных, поэтому это на порядок дешевле, чем image_phash_and_size()
-    (там ещё и convert("L") + imagehash.phash -- полное декодирование + DCT)."""
+    (skip_hash=True в analyze_batch) и путь точного дубля: PIL лениво декодирует заголовок для
+    .size без разбора полных пиксельных данных, поэтому это на порядок дешевле, чем
+    image_phash_and_size() (там ещё и convert("L") + imagehash.phash -- полное декодирование +
+    DCT). src -- путь ЛИБО байты файла (см. _pil_open_source())."""
     try:
-        with Image.open(winlong(path)) as im:
+        with Image.open(_pil_open_source(src)) as im:
             return im.size
     except Exception:
         return None, None
@@ -3039,23 +3072,36 @@ def exiftool_batch(paths, batch_size=200, log=print):
                     sf = entry.get("SourceFile")
                     if sf:
                         results[sf] = entry
-        except Exception as e:
+        except Exception:
             # REVIEW-HANDOFF.md round 13, ticket 2c + rounds 173/174: a chunk-wide failure
             # here loses EXIF for every file in the chunk -- на 20-50k архиве это заметная
             # просадка качества дат, если exiftool спотыкается на одном чанке (битый argfile,
             # таймаут). Одна строка на чанк, не на файл -- лог не заливается. Build-path чанк
             # 100 (не 200, см. _BUILD_EXIF_PREFETCH_BATCH_SIZE); полное устранение
             # (per-file/подчанками retry здесь вместо `continue`) -- бэклог, замечание 173-2.
+            #
+            # 2026-09-03 (живой отзыв пользователя): раньше строка начиналась с «ВНИМАНИЕ:» и
+            # несла `repr(исключения)` (для TimeoutExpired -- вся команда: путь к бинарнику +
+            # все тег-флаги + путь к argfile, ~400 символов, в зеркале экрана «Выполнение»
+            # выглядит как трейсбек). Пользователю это не диагностика, а повод решить, что
+            # архив сломан / прервать прогон. Технический хвост убран целиком; слово смягчено
+            # до «Замечание». Класс/текст исключения тут не логируется вовсе -- ветка `except`
+            # намеренно широкая (таймаут, битый argfile, крах json), а на решение пользователя
+            # ни один из вариантов не влияет: всё равно «часть дат приблизительна, смотри
+            # отчёт».
+            #
             # Строка КОНТЕКСТНО-НЕЙТРАЛЬНА (Раунд 174): exiftool_batch() зовут и _run_impl()
-            # (сборка), и run_analyze() (диагностика/Паспорт, ничего не размещает) -- фраза про
-            # "уже размещены / повторный запуск не переложит" была бы бессмысленной для
-            # analyze. Без claim'а про конкретный тир: resolve_date() до mtime пробует дату из
-            # имени файла/папки/медиану соседей -- в смешанной папке большинство файлов
-            # получат ВЕРНУЮ дату; часть уйдёт в undated_media.csv, часть -- в dates_review.csv.
-            log_line(f"ВНИМАНИЕ: exiftool не смог обработать чанк из {len(chunk)} файлов "
-                     f"({i}-{i + len(chunk)}, {e!r}) -- их даты будут определены менее точно "
-                     f"(по имени файла, папке или времени файла); см. dates_review.csv и "
-                     f"undated_media.csv", log=log)
+            # (сборка), и run_analyze() (диагностика/Паспорт, ничего не размещает) -- поэтому
+            # ни «попадут в архив», ни имена конкретных CSV (в Паспорте/пробном прогоне логи
+            # копятся в памяти, файлов на диске нет), только «в отчёте». Без claim'а про
+            # конкретный тир: resolve_date() до mtime пробует дату из имени файла/папки/медиану
+            # соседей -- в смешанной папке большинство файлов получат ВЕРНУЮ дату, часть уйдёт
+            # в раздел недатированных, часть -- в раздел дат на проверку.
+            log_line(f"Замечание: у части файлов ({len(chunk)} шт.) не удалось прочитать "
+                     f"съёмочные данные (EXIF). На содержимое файлов это не влияет -- "
+                     f"снижается только точность даты: её определяем по имени файла, названию "
+                     f"папки или по дате файла на диске. Такие файлы перечислены в отчёте.",
+                     log=log)
             continue
         finally:
             if argfile_path:
@@ -4068,6 +4114,13 @@ def _quick_media_count_estimate(source: str, cfg: Config, on_progress=None) -> i
 
     _scan(source, is_root=True)  # корень -- ПРАВИЛО ЯВНОГО УКАЗАНИЯ (RULES.md), без проверки исключений
     while stack:
+        # Живая находка (2026-09-03): фаза "Оцениваю объём работы" -- не-two_line, не проходит
+        # через основной цикл _run_impl()/run_analyze() с его _cooperative_checkpoint() (:8405/
+        # :10054), поэтому "Пауза" (bus.pause_event) её не останавливала -- таймер/"Работа
+        # приостановлена" замирали (GUI-сторона), а статус-строка продолжала сыпаться, т.к.
+        # воркер крутил этот обход. Гранулярность на директорию -- та же, что у on_progress ниже
+        # и у SourceWalker._walk_dir() (:5207).
+        _cooperative_checkpoint()
         dirpath = stack.pop()
         base_lower = os.path.basename(dirpath).lower()
         if base_lower in HARD_EXCLUDE_DIRS:
@@ -5802,6 +5855,38 @@ def sha256_file_with_retry(path: str, retries: int, delay: float, progress_cb=No
     raise ReadError(str(last_err))
 
 
+def read_file_bytes_with_retry(path: str, retries: int, delay: float, progress_cb=None):
+    """Читает файл ЦЕЛИКОМ в память тем же retry/_volume_likely_gone-контуром, что и
+    sha256_file_with_retry() (тот же ReadError на исчерпании попыток, тот же быстрый выход при
+    пропаже всего тома). Для read-once изображений в _analyze_one_item(): прочитать один раз
+    -> sha256_bytes() + image_phash_and_size(bytes) без второго сетевого чтения того же файла.
+    progress_cb -- как у sha256_file(): дёргается на каждый прочитанный чанк, чтобы пауза по
+    пробелу отвечала и посреди чтения одного файла. Возвращает bytearray: hashlib.sha256()
+    хеширует его без копии, а вот io.BytesIO(bytearray) КОПИРУЕТ начальные байты в свой буфер
+    -- поэтому read-once ограничен _READ_ONCE_MAX_IMAGE_BYTES (см. комментарий там; RAM-пик на
+    файл в пределах порога ~= 2× его размера, transient, однопоточно)."""
+    last_err = None
+    for attempt in range(retries):
+        try:
+            buf = bytearray()
+            with open(winlong(path), "rb") as f:
+                while True:
+                    chunk = f.read(4 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    buf.extend(chunk)
+                    if progress_cb is not None:
+                        progress_cb()
+            return buf
+        except OSError as e:
+            last_err = e
+            if attempt < retries - 1:
+                if _volume_likely_gone(path):
+                    break
+                time.sleep(delay)
+    raise ReadError(str(last_err))
+
+
 def _log_item_skipped(it, exc, log=print) -> None:
     """Одна спокойная строка в лог, когда разбор ОДНОГО файла упал неожиданным исключением
     (analyze_batch()/_run_impl()/run_analyze()). Файл попадает в отчёт в разделе «не удалось
@@ -5819,7 +5904,12 @@ def _analyze_one_item(it, *, skip_hash, cache, retries, retry_delay, pause_cb,
     """Разбор ОДНОГО файла для analyze_batch() (хеш / EXIF / классификация типа/размера).
     Вынесено из тела цикла, чтобы вызывающий мог обернуть его в try/except и не ронять весь
     прогон на одном проблемном файле (см. analyze_batch()). Возвращает готовый
-    SourceRecord (в т.ч. с broken=True / read_error=True); в общий список кладёт вызывающий."""
+    SourceRecord (в т.ч. с broken=True / read_error=True); в общий список кладёт вызывающий.
+
+    read-once: файл-изображение размером <= _READ_ONCE_MAX_IMAGE_BYTES читается по сети ОДИН
+    раз (read_file_bytes_with_retry) -- те же байты идут и под sha256_bytes(), и под
+    image_phash_and_size()/image_size_only(), вместо двух полных сетевых чтений. Прочие ftype,
+    крупные изображения, cache_hit и skip_hash -- прежний потоковый sha256_file_with_retry."""
     rec = SourceRecord(item=it)
     rec.is_hidden = is_hidden_path(it.read_path)
 
@@ -5839,9 +5929,22 @@ def _analyze_one_item(it, *, skip_hash, cache, retries, retry_delay, pause_cb,
     # _exif_cache_ready() в _tag_prefetch_pairs() -- та же проверка, тот же смысл).
     exif_cache_hit = bool(cache_hit and len(cached) > 8 and cached[8])
 
+    # read-once: если это файл-изображение разумного размера, прочитанный целиком ради sha256
+    # ниже -- те же байты уходят в image_phash_and_size()/image_size_only() без второго
+    # сетевого чтения (см. read_file_bytes_with_retry() и комментарий у image_phash_and_size()).
+    image_buf = None
     if not skip_hash:
         if cache_hit:
             rec.sha256 = cached[2]
+        elif it.ftype == "image" and it.size <= _READ_ONCE_MAX_IMAGE_BYTES:
+            try:
+                image_buf = read_file_bytes_with_retry(it.read_path, retries, retry_delay,
+                                                       progress_cb=pause_cb)
+            except ReadError as e:
+                rec.read_error = True
+                rec.read_error_msg = str(e)
+                return rec
+            rec.sha256 = sha256_bytes(image_buf)
         else:
             try:
                 rec.sha256 = sha256_file_with_retry(it.read_path, retries, retry_delay,
@@ -5892,13 +5995,20 @@ def _analyze_one_item(it, *, skip_hash, cache, retries, retry_delay, pause_cb,
         rec.is_media = True
 
     elif it.ftype == "image":
+        # read-once: image_buf выставлен только когда файл уже прочитан целиком выше (не
+        # cache_hit, не skip_hash, размер в пределах порога) -- иначе прежний путь по it.read_path.
+        img_src = image_buf if image_buf is not None else it.read_path
         if cache_hit:
             ph, w, h = cached[3], cached[5], cached[6]
         elif skip_hash or exact_dup:
-            w, h = image_size_only(it.read_path)
+            w, h = image_size_only(img_src)
+            if w is None and image_buf is not None:
+                w, h = image_size_only(it.read_path)  # плагин формата (HEIC?) не принял BytesIO
             ph = "-" if w is not None else None  # заглушка: не None -> "не broken"
         else:
-            ph, w, h = image_phash_and_size(it.read_path)
+            ph, w, h = image_phash_and_size(img_src)
+            if ph is None and image_buf is not None:
+                ph, w, h = image_phash_and_size(it.read_path)  # фолбэк на чтение с диска
         if ph is None:
             rec.broken = True
             rec.is_media = False
