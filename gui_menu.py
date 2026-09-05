@@ -741,7 +741,7 @@ def _describe_target(mode: str, raw_target: str, source: str = None) -> dict:
             message = f"На диске {raw_target} уже есть архив ({resolved}) — {action}."
         else:
             tone = "info" if mode == "dry_run" else "warn"
-            action = "проверит, что в неё попадёт бы" if mode == "dry_run" else "соберёт архив там"
+            action = "проверит, что в неё попадёт" if mode == "dry_run" else "соберёт архив там"
             # Раунд 188 (188-2): называем РЕЗОЛВЛЕННЫЙ путь дословно (симметрично
             # _describe_passport_target() и ветке «архив уже есть» выше) -- экрана «Финальная
             # проверка», который раньше показывал «Архив: {resolved}» строкой, больше нет.
@@ -2073,10 +2073,12 @@ class _Wizard:
             self._append_run_log_line(item[1])
         elif kind == "done":
             _, report_path, outcome = item
+            self._append_run_end_marker()
             self._finish_worker()
             self.render_run_outcome(outcome, report_path=report_path)
         elif kind == "error":
             _, text, crashlog_path = item
+            self._append_run_end_marker()
             self._finish_worker()
             self.render_run_outcome("failed", error_text=text, crashlog_path=crashlog_path)
 
@@ -2117,6 +2119,20 @@ class _Wizard:
                 menu.grab_release()
 
         mirror.bind("<Button-3>", _popup)
+
+    def _append_run_end_marker(self) -> None:
+        """Строка с временем ОКОНЧАНИЯ работы в панель-зеркало — симметрично шапке начала
+        прогона (движок пишет «[<время>] <режим>» + параметры в НАЧАЛЕ, см.
+        _log_run_start_header() в photosort_win.py). Живой отзыв пользователя 2026-09-03:
+        время старта в зеркале было, времени финиша — нет. «прошло» здесь — активное время
+        (без пауз), та же семантика, что у «Прошло:» в шапке экрана; wall-clock интервал
+        читается по паре меток «[<старт>] <режим>» / «[<финиш>] Работа завершена»."""
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        if self._run_started_at is not None:
+            elapsed = _fmt_elapsed_clock(max(int(time.time() - self._run_started_at), 0))
+            self._append_run_log_line(f"[{stamp}] Работа завершена — прошло {elapsed}")
+        else:
+            self._append_run_log_line(f"[{stamp}] Работа завершена")
 
     def _append_run_log_line(self, text: str) -> None:
         import tkinter as tk

@@ -244,6 +244,25 @@ def test_undated_checklist_item_shows_folder_and_name():
     assert "ByDate\\0000-undated\\Отпуск" in joined
 
 
+def test_undated_and_bc_cluster_tolerate_forward_slash_dest():
+    """REVIEW-HANDOFF.md Раунд 199-follow-up: _cluster_undated()/_cluster_dates_review()
+    делали `dest.split("\\")` -- в проде dest всегда Windows-путь, но ci/windows_ci_test.py
+    гоняет НАСТОЯЩИЙ конвейер на Linux, где реальный dest приходит с "/". Тогда сегментная
+    проверка "0000-undated" / "Albums" мимо -> КАЖДЫЙ недатированный файл ошибочно
+    отфильтровывался, Раздел 3 отчёта не показывал бакет "без надёжной даты"
+    (test_undated_file_shows_folder_and_name_in_report падал на Linux-прогоне харнесса)."""
+    data = {"undated_media": [
+        {"timestamp": "2026-01-01 00:00:00", "source": "src/dcim/plain2.jpg",
+         "dest": "/tmp/t/target/ByDate/0000-undated/dcim/plain2.jpg"},
+    ], "dates_review": [
+        {"tier": "C", "dest": "/tmp/t/target/Albums/Trip/x.jpg"},          # Albums -> отфильтрован
+        {"tier": "C", "dest": "/tmp/t/target/ByDate/2015/2015-06/y.jpg"},  # ByDate -> учтён
+    ]}
+    fields = r._build_checklist_fields(data)
+    assert fields["date_issues_d_total"] == 1   # недатированный файл больше НЕ теряется
+    assert fields["date_issues_c_total"] == 1   # Albums-файл всё ещё отфильтрован, ByDate учтён
+
+
 def test_undated_checklist_item_hides_albums_files_entirely():
     """Задача 5 (SESSION-HANDOFF.txt, пакет "боевой прогон D:\\"): по RULES.md (блок UNDATED)
     Albums/ раскладывается по структуре исходных папок независимо от даты -- отсутствие даты

@@ -292,15 +292,33 @@ def generate_detail_xlsx(data: dict, report_out_path: str) -> str:
     return DETAIL_XLSX_FILENAME
 
 
+_SMALL_FONT_SIZE = 8  # против дефолтного Calibri 11 -- см. small_font_col ниже
+
+
 def _write_flat_xlsx(headers: list, widths: list, values: list, colors: list,
-                      out_path: str) -> None:
+                      out_path: str, small_font_col: int = None) -> None:
     """Общая механика записи листа (заголовок жирным, freeze panes, автофильтр, ширины
     колонок, `\\?\\`-безопасное сохранение) -- переиспользуется generate_detail_xlsx() (прогон)
     и generate_passport_detail_xlsx() (Паспорт архива), у которых разная ФОРМА строк
-    (9 колонок vs 5), но одинаковая механика листа. `values` -- уже полностью отформатированные
+    (9 колонок vs 6), но одинаковая механика листа. `values` -- уже полностью отформатированные
     для отображения списки (никаких bool/Counter/сырых кодов -- ответственность вызывающего
     builder'а). `colors` -- цвет шрифта строки ("#rrggbb") или None; уникальных значений
     единицы, объекты Font кэшируются и один инстанс переиспользуется на все ячейки.
+
+    `small_font_col` (0-based, опционально) -- одна колонка получает уменьшенный шрифт
+    (`_SMALL_FONT_SIZE`) независимо от цвета строки. Единственный вызывающий сейчас --
+    Паспорт-детализация для столбца "Открыть файл (PowerShell)" (SESSION-HANDOFF.txt,
+    2026-09-04): вся ячейка копируется целиком, читаемость на глаз вторична.
+    generate_detail_xlsx() параметр не передаёт (None) -- поведение для обычного прогона
+    не меняется байт-в-байт.
+
+    REVIEW-HANDOFF.md, Раунд 204 [ПРИДИРКА] 204-1: `needs_styled_path` ниже гейтит только
+    выбор между быстрым (`ws.append`) и медленным (`WriteOnlyCell`) путём -- если строка ушла
+    по медленному пути (цветная строка ИЛИ непустая ячейка `small_font_col`), сама ячейка
+    `small_font_col` красится мелким шрифтом БЕЗУСЛОВНО, даже когда она пуста (напр. цветная
+    строка "дубликат" с файлом-одиночкой в своей папке). Визуально не наблюдаемо (пустая ячейка
+    не рендерит текст ни при каком размере) -- ревизор согласился, что править не нужно; имя
+    переименовано только для ясности при чтении, не поведение.
 
     write_only-режим openpyxl (2026-08-28, живой боевой прогон + прямое решение пользователя,
     «вариант 1»): на большом архиве (десятки тысяч спорных/дублей) обычный режим openpyxl
@@ -325,16 +343,29 @@ def _write_flat_xlsx(headers: list, widths: list, values: list, colors: list,
     ws.append(header_cells)
 
     font_by_color = {}
+    small_font_by_color = {}
     for row_values, color in zip(values, colors, strict=True):
-        if not color:
+        needs_styled_path = small_font_col is not None and row_values[small_font_col]
+        if not color and not needs_styled_path:
             ws.append(row_values)
             continue
-        font = font_by_color.get(color)
-        if font is None:
-            font = font_by_color[color] = Font(color=_argb(color))
+        row_font = None
+        if color:
+            row_font = font_by_color.get(color)
+            if row_font is None:
+                row_font = font_by_color[color] = Font(color=_argb(color))
         cells = [WriteOnlyCell(ws, value=v) for v in row_values]
-        for cell in cells:
-            cell.font = font
+        for idx, cell in enumerate(cells):
+            if idx == small_font_col:
+                small_font = small_font_by_color.get(color)
+                if small_font is None:
+                    kwargs = {"size": _SMALL_FONT_SIZE}
+                    if color:
+                        kwargs["color"] = _argb(color)
+                    small_font = small_font_by_color[color] = Font(**kwargs)
+                cell.font = small_font
+            elif row_font is not None:
+                cell.font = row_font
         ws.append(cells)
 
     last_col = get_column_letter(len(headers))
@@ -356,15 +387,40 @@ def _write_flat_xlsx(headers: list, widths: list, values: list, colors: list,
 
 PASSPORT_DETAIL_XLSX_FILENAME = "passport_detail.xlsx"
 
-_PASSPORT_COLUMN_HEADERS = ["Папка", "Имя", "Тип находки", "№ группы", "Примечание"]
-_PASSPORT_COLUMN_WIDTHS = [55, 32, 20, 10, 45]
+_PASSPORT_COLUMN_HEADERS = ["Папка", "Имя", "Тип находки", "№ группы",
+                             "Открыть файл (PowerShell)", "Примечание"]
+_PASSPORT_COLUMN_WIDTHS = [55, 32, 20, 10, 46, 45]
+_PASSPORT_PS_COMMAND_COL = 4  # 0-based -- индекс "Открыть файл (PowerShell)" в _values ниже
 
 
-def _passport_row(path: str, category: str, group_id: int, note: str, color: str) -> dict:
+def _passport_row(path: str, category: str, group_id: int, note: str, color: str,
+                   ps_command: str = "") -> dict:
     return {
         "folder": _source_dirname(path), "name": _source_basename(path),
         "category": category, "group_id": group_id, "note": note, "color": color,
+        "ps_command": ps_command,
     }
+
+
+def _powershell_open_command(path: str) -> str:
+    """SESSION-HANDOFF.txt, 2026-09-04 ("серии: РЕШЕНИЕ ПРИНЯТО"): готовая команда для вставки
+    в открытое окно PowerShell -- открывает файл приложением по умолчанию для его расширения у
+    ЭТОГО пользователя (не хардкодим "Фотографии"), тем же путём, что уже проверен живым кликом
+    в этой сессии (ShellExecute без явной программы). Одинарная кавычка в пути ломает
+    PowerShell-литерал '...' -- экранируется удвоением, штатный приём самого PowerShell."""
+    return "Start-Process '%s'" % path.replace("'", "''")
+
+
+def _passport_series_ps_commands(abs_paths: list) -> dict:
+    """Команда -- только для member'ов кластера (дубликат/похожая серия), чья подгруппа В ОДНОЙ
+    папке (порезка по _source_dirname()) насчитывает >=2 файлов -- решение пользователя: серия,
+    раскиданная по разным папкам (напр. то же фото в альбоме и в ByDate), реально сравнивать
+    как серию всё равно не даёт (Проводник открывается по одной папке за раз), пустая ячейка
+    честнее, чем команда на единственный файл."""
+    by_folder = {}
+    for p in abs_paths:
+        by_folder.setdefault(_source_dirname(p), []).append(p)
+    return {p: _powershell_open_command(p) for p in abs_paths if len(by_folder[_source_dirname(p)]) >= 2}
 
 
 def _passport_abs_path(rel_path: str, target_path: str = None) -> str:
@@ -424,15 +480,19 @@ def _build_passport_detail_rows(stats, target_path: str = None) -> list:
 
     exact_clusters = _cluster_passport_edges(stats.exact_dup_edges)
     for i, cluster in enumerate(exact_clusters, start=1):
-        for path in cluster:
-            rows.append(_passport_row(_passport_abs_path(path, target_path), "дубликат", i, "",
-                                       _COLOR_DUPLICATE))
+        abs_paths = [_passport_abs_path(path, target_path) for path in cluster]
+        ps_by_path = _passport_series_ps_commands(abs_paths)
+        for path in abs_paths:
+            rows.append(_passport_row(path, "дубликат", i, "", _COLOR_DUPLICATE,
+                                       ps_by_path.get(path, "")))
 
     near_clusters = _cluster_passport_edges(stats.near_dup_edges)
     for i, cluster in enumerate(near_clusters, start=1):
-        for path in cluster:
-            rows.append(_passport_row(_passport_abs_path(path, target_path), "похожая серия", i,
-                                       "", None))
+        abs_paths = [_passport_abs_path(path, target_path) for path in cluster]
+        ps_by_path = _passport_series_ps_commands(abs_paths)
+        for path in abs_paths:
+            rows.append(_passport_row(path, "похожая серия", i, "", None,
+                                       ps_by_path.get(path, "")))
 
     # Живая находка пользователя, 2026-08-24: "N файлов лежат не внутри альбома/даты"
     # (_render_passport_integrity()) раньше был единственным пунктом карточки "Целостность
@@ -456,9 +516,10 @@ def generate_passport_detail_xlsx(stats, report_out_path: str, target_path: str 
     rows = _build_passport_detail_rows(stats, target_path)
     if not rows:
         return None
-    values = [[row["folder"], row["name"], row["category"], row["group_id"], row["note"]]
-              for row in rows]
+    values = [[row["folder"], row["name"], row["category"], row["group_id"], row["ps_command"],
+               row["note"]] for row in rows]
     out_path = os.path.join(os.path.dirname(report_out_path), PASSPORT_DETAIL_XLSX_FILENAME)
     _write_flat_xlsx(_PASSPORT_COLUMN_HEADERS, _PASSPORT_COLUMN_WIDTHS, values,
-                      colors=[row["color"] for row in rows], out_path=out_path)
+                      colors=[row["color"] for row in rows], out_path=out_path,
+                      small_font_col=_PASSPORT_PS_COMMAND_COL)
     return PASSPORT_DETAIL_XLSX_FILENAME

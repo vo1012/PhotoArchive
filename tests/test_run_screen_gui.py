@@ -261,6 +261,35 @@ class TestAppendRunLogLine:
         wiz._append_run_log_line("too early")  # must not raise -- self._run_mirror is None
 
 
+class TestAppendRunEndMarker:
+    """Живой отзыв пользователя 2026-09-03: в зеркало экрана «Выполнение» пишется время
+    СТАРТА прогона (движок, _log_run_start_header), но не время ФИНИША -- _append_run_end_marker()
+    добавляет его на событии done/error."""
+
+    def _wiz(self, monkeypatch):
+        _inject_fake_tkinter(monkeypatch)
+        wiz = g._Wizard()
+        wiz._run_mirror = TestAppendRunLogLine._FakeMirror()
+        wiz._run_mirror_line_count = 0
+        return wiz
+
+    def test_marker_has_timestamp_and_elapsed_when_started_at_known(self, monkeypatch):
+        import time
+        wiz = self._wiz(monkeypatch)
+        wiz._run_started_at = time.time() - (2 * 60 + 5)  # 2:05 назад
+        wiz._append_run_end_marker()
+        line = wiz._run_mirror.lines[-1]
+        assert line.startswith("[") and "] Работа завершена — прошло " in line
+        assert line.rstrip().endswith("02:05") or line.rstrip().endswith("02:06")  # ±1с
+
+    def test_marker_without_elapsed_when_started_at_missing(self, monkeypatch):
+        wiz = self._wiz(monkeypatch)
+        wiz._run_started_at = None
+        wiz._append_run_end_marker()
+        line = wiz._run_mirror.lines[-1]
+        assert "] Работа завершена" in line and "прошло" not in line
+
+
 class TestHandleRunEvent:
     """Диспетчер событий шины -> обновление виджетов (§2.2 ТЗ). Подменяет сами
     render/finish-методы -- проверяется МАРШРУТИЗАЦИЯ (какой обработчик на какое событие), не
@@ -271,6 +300,7 @@ class TestHandleRunEvent:
         wiz = g._Wizard()
         calls = []
         wiz._append_run_log_line = lambda text: calls.append(("log", text))
+        wiz._append_run_end_marker = lambda: calls.append(("end_marker",))
         wiz._finish_worker = lambda: calls.append(("finish",))
         wiz.render_run_outcome = lambda outcome, **kw: calls.append(("outcome", outcome, kw))
         return wiz, calls
@@ -297,12 +327,16 @@ class TestHandleRunEvent:
     def test_done_event_finishes_worker_then_renders_outcome(self):
         wiz, calls = self._make_wizard()
         wiz._handle_run_event(("done", "C:\\r.html", "ok"))
-        assert calls == [("finish",), ("outcome", "ok", {"report_path": "C:\\r.html"})]
+        # метка времени финиша в зеркало -> снятие bus/stdio -> отрисовка исхода
+        assert calls == [
+            ("end_marker",), ("finish",), ("outcome", "ok", {"report_path": "C:\\r.html"}),
+        ]
 
     def test_error_event_finishes_worker_then_renders_failed_outcome(self):
         wiz, calls = self._make_wizard()
         wiz._handle_run_event(("error", "boom", "C:\\crash.log"))
         assert calls == [
+            ("end_marker",),
             ("finish",),
             ("outcome", "failed", {"error_text": "boom", "crashlog_path": "C:\\crash.log"}),
         ]
@@ -312,7 +346,9 @@ class TestHandleRunEvent:
         затем render_run_outcome("nothing"), НЕ через error-ветку."""
         wiz, calls = self._make_wizard()
         wiz._handle_run_event(("done", None, "nothing"))
-        assert calls == [("finish",), ("outcome", "nothing", {"report_path": None})]
+        assert calls == [
+            ("end_marker",), ("finish",), ("outcome", "nothing", {"report_path": None}),
+        ]
 
 
 class TestDrainBusCostAxis:
