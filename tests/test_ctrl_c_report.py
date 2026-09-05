@@ -371,3 +371,103 @@ def test_run_analyze_tmp_extract_sweep_never_touches_foreign_content(tmp_path):
     m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
 
     assert (foreign / "precious.txt").exists()
+
+
+# --- Отмена В ФАЗЕ "Оцениваю объём работы" ------------------------------------------------
+# Регрессия 0.6.10 (7f103ba): _quick_media_count_estimate() получила подиректорный
+# _cooperative_checkpoint() ради паузы, но та же точка поднимает KeyboardInterrupt на
+# "Прервать работу", а фаза оценки идёт ДО try/except основного цикла и в run_analyze(), и в
+# _run_impl(). Мягкая отмена в этой фазе летела из воркер-потока наружу необработанной
+# ("Exception in thread Thread-1", отчёт не строился, экран "Выполнение" висел без исхода).
+# Источник с подпапкой обязателен: при плоском корне `while stack` в _quick_media_count_
+# estimate() не делает ни одной итерации -> checkpoint там не зовётся вовсе.
+
+def _bus_with_soft_cancel():
+    bus = m.RunEventBus()
+    bus.cancel_event.set()
+    return bus
+
+
+def test_run_analyze_soft_cancel_during_estimate_phase_returns_partial_not_raises(
+        tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    (source / "sub").mkdir(parents=True)
+    _make_jpeg(source / "sub" / "a.jpg")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    monkeypatch.setattr(m, "_run_event_bus", _bus_with_soft_cancel())
+
+    cfg = m.Config(source=str(source), target=str(target))
+    # Без фикса здесь вылетает голый KeyboardInterrupt (тест падает с ошибкой, не assert).
+    stats = m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+
+    assert stats.interrupted is True
+    assert stats.walk_aborted is False  # отмена пользователя -- НЕ краш обходчика
+
+
+def test_run_impl_soft_cancel_during_estimate_phase_flags_interrupted_not_raises(
+        tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    (source / "sub").mkdir(parents=True)
+    _make_jpeg(source / "sub" / "a.jpg")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    monkeypatch.setattr(m, "_run_event_bus", _bus_with_soft_cancel())
+
+    cfg = m.Config(source=str(source), target=str(target), dry_run=True)
+    (stats, processed, stopped_for_space, rows, pool,
+     interrupted, walk_aborted) = m._run_impl(cfg, log=lambda *a, **k: None, print_summary=False)
+
+    assert interrupted is True
+    assert walk_aborted is False
+
+
+def test_run_analyze_hard_exit_during_estimate_phase_still_propagates(tmp_path, monkeypatch):
+    """_HardExit (крестик окна) -- НЕ KeyboardInterrupt, обёртка вокруг фазы оценки её не
+    ловит: жёсткий выход обязан долететь до воркера в gui_menu.py (там `except m._HardExit:
+    return`), не подмениться мягким частичным отчётом."""
+    source = tmp_path / "source"
+    (source / "sub").mkdir(parents=True)
+    _make_jpeg(source / "sub" / "a.jpg")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    bus = m.RunEventBus()
+    bus.cancel_hard = True
+    bus.cancel_event.set()
+    monkeypatch.setattr(m, "_run_event_bus", bus)
+
+    cfg = m.Config(source=str(source), target=str(target))
+    raised = False
+    try:
+        m.run_analyze(cfg, "analyze-quick", log=lambda *a, **k: None)
+    except m._HardExit:
+        raised = True
+    assert raised is True
+
+
+def test_bare_launch_run_view_soft_cancel_during_estimate_raises_interrupted_report(
+        tmp_path, monkeypatch):
+    """Сквозной путь меню [1]: отмена в фазе оценки -> _bare_launch_run_view() поднимает
+    _InterruptedRunReport с путём к отчёту (как и отмена в основном цикле), не голый
+    KeyboardInterrupt -- воркер gui_menu.py умеет ровно первое."""
+    source = tmp_path / "source"
+    (source / "sub").mkdir(parents=True)
+    _make_jpeg(source / "sub" / "a.jpg")
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    monkeypatch.setattr(m, "WORKDIR", str(workdir))
+    monkeypatch.setattr(m, "_run_event_bus", _bus_with_soft_cancel())
+
+    raised = None
+    try:
+        m._bare_launch_run_view([str(source)], log=lambda *a, **k: None)
+    except m._InterruptedRunReport as e:
+        raised = e
+
+    assert raised is not None
+    assert raised.report_path is not None
+    html = open(raised.report_path, encoding="utf-8").read()
+    assert "прервана пользователем" in html.lower()

@@ -910,7 +910,11 @@ def _cluster_dates_review(dates_review_rows: list) -> list:
         if r.get("tier") not in ("B", "C"):
             continue
         dest = r.get("dest", "")
-        if "Albums" in dest.split("\\"):
+        # re.split("[\\/]"), не .split("\\"): в проде dest всегда Windows-путь, но
+        # ci/windows_ci_test.py гоняет НАСТОЯЩИЙ конвейер на Linux -> реальный dest там с "/",
+        # и .split("\\") вернула бы всю строку одним куском (сегментная проверка мимо). Тот же
+        # приём, что уже в _source_basename() (REVIEW-HANDOFF.md Раунд 199-follow-up).
+        if "Albums" in re.split(r"[\\/]", dest):
             continue
         name = _win_basename(dest) or dest
         by_folder[_win_dirname(dest)].append((name, r.get("tier", "")))
@@ -938,7 +942,11 @@ def _cluster_undated(undated_rows: list) -> list:
     by_folder = defaultdict(list)
     for r in undated_rows:
         dest = r.get("dest", "")
-        if "0000-undated" not in dest.split("\\"):
+        # re.split("[\\/]"), не .split("\\"): см. _cluster_dates_review() выше -- на Linux-прогоне
+        # ci/windows_ci_test.py dest приходит с "/", и .split("\\") давала одноэлементный список
+        # => КАЖДЫЙ недатированный файл ошибочно отфильтровывался, Раздел 3 отчёта не показывал
+        # бакет "без надёжной даты" (в проде Windows-путь, баг не проявлялся).
+        if "0000-undated" not in re.split(r"[\\/]", dest):
             continue
         name = _win_basename(dest) or dest
         by_folder[_win_dirname(dest)].append(name)

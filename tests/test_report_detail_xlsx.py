@@ -470,6 +470,58 @@ class TestBuildPassportDetailRows:
         assert group_by_name["b1.jpg"] == group_by_name["b2.jpg"]
         assert group_by_name["a1.jpg"] != group_by_name["b1.jpg"]
 
+    def test_same_folder_dup_pair_gets_powershell_command(self):
+        """SESSION-HANDOFF.txt, 2026-09-04 ("серии: РЕШЕНИЕ ПРИНЯТО"): подгруппа >=2 файлов В
+        ОДНОЙ папке -- готовая Start-Process-команда на каждый member этой подгруппы."""
+        stats = _passport_stats(exact_dup_edges=[
+            {"dest": "Albums/A/orig.jpg", "matched_dest": "Albums/A/copy.jpg"},
+        ])
+        rows = rx._build_passport_detail_rows(stats, target_path=r"D:\TARGET")
+        by_name = {row["name"]: row for row in rows}
+        assert by_name["orig.jpg"]["ps_command"] == "Start-Process 'D:\\TARGET\\Albums\\A\\orig.jpg'"
+        assert by_name["copy.jpg"]["ps_command"] == "Start-Process 'D:\\TARGET\\Albums\\A\\copy.jpg'"
+
+    def test_cross_folder_cluster_member_alone_in_folder_gets_no_command(self):
+        """Тот же файл в альбоме и в ByDate (by-design, не одна серия для просмотра) --
+        каждая папка несёт ровно одного member'а кластера -- пустая ячейка для обоих."""
+        stats = _passport_stats(exact_dup_edges=[
+            {"dest": "Albums/A/orig.jpg", "matched_dest": "ByDate/2024/orig.jpg"},
+        ])
+        rows = rx._build_passport_detail_rows(stats)
+        assert all(row["ps_command"] == "" for row in rows)
+
+    def test_three_way_cluster_two_same_folder_one_elsewhere(self):
+        """Смешанный случай: 2 из 3 членов кластера делят папку -- те двое получают команду,
+        третий (единственный в своей папке) -- нет."""
+        stats = _passport_stats(exact_dup_edges=[
+            {"dest": "Albums/A/orig.jpg", "matched_dest": "Albums/A/copy1.jpg"},
+            {"dest": "Albums/A/orig.jpg", "matched_dest": "ByDate/2024/copy2.jpg"},
+        ])
+        rows = rx._build_passport_detail_rows(stats)
+        by_name = {row["name"]: row for row in rows}
+        assert by_name["orig.jpg"]["ps_command"] != ""
+        assert by_name["copy1.jpg"]["ps_command"] != ""
+        assert by_name["copy2.jpg"]["ps_command"] == ""
+
+    def test_near_dup_same_folder_also_gets_command(self):
+        """Решение пользователя: столбец применяется к ОБЕИМ категориям, не только "дубликат"."""
+        stats = _passport_stats(near_dup_edges=[
+            {"dest": "ByDate/2024/a.jpg", "matched_dest": "ByDate/2024/b.jpg"},
+        ])
+        rows = rx._build_passport_detail_rows(stats)
+        assert all(row["ps_command"] != "" for row in rows)
+
+    def test_single_quote_in_path_escaped_doubled(self):
+        """Одинарная кавычка в имени файла ломает PowerShell-литерал '...' без экранирования --
+        мелкая деталь, явно отмеченная в SESSION-HANDOFF.txt как легко забываемая."""
+        stats = _passport_stats(exact_dup_edges=[
+            {"dest": "Albums/A/O'Brien.jpg", "matched_dest": "Albums/A/copy.jpg"},
+        ])
+        rows = rx._build_passport_detail_rows(stats, target_path=r"D:\TARGET")
+        by_name = {row["name"]: row for row in rows}
+        assert by_name["O'Brien.jpg"]["ps_command"] == \
+            "Start-Process 'D:\\TARGET\\Albums\\A\\O''Brien.jpg'"
+
     def test_dump_item_paths_get_own_category_no_color_no_group(self):
         """Живая находка пользователя, 2026-08-24: "N файлов лежат не внутри альбома/даты"
         (_render_passport_integrity()) раньше был единственным пунктом карточки без путей в
@@ -508,7 +560,26 @@ class TestGeneratePassportDetailXlsx:
         header = [c.value for c in ws[1]]
         assert header == rx._PASSPORT_COLUMN_HEADERS
         row = [c.value for c in ws[2]]
-        assert row == [r"D:\TARGET", "Foto.zip", "архив", 0, "запаролен"]
+        # openpyxl округляет "" до None на реальном сохранении/чтении файла (не наблюдалось
+        # раньше -- предыдущие проверки этого файла сверяли только строящиеся dict'ы, не
+        # реально записанный .xlsx) -- сама ячейка пуста, что и требовалось для "нет команды".
+        assert row == [r"D:\TARGET", "Foto.zip", "архив", 0, None, "запаролен"]
+
+    def test_powershell_column_uses_small_font_when_populated(self, tmp_path):
+        stats = _passport_stats(exact_dup_edges=[
+            {"dest": "Albums/A/orig.jpg", "matched_dest": "Albums/A/copy.jpg"},
+        ])
+        out_path = tmp_path / "passport.html"
+        rx.generate_passport_detail_xlsx(stats, str(out_path), target_path=r"D:\TARGET")
+        wb = load_workbook(str(tmp_path / rx.PASSPORT_DETAIL_XLSX_FILENAME))
+        ws = wb.active
+        ps_cell = ws.cell(row=2, column=rx._PASSPORT_PS_COMMAND_COL + 1)
+        assert ps_cell.value.startswith("Start-Process ")
+        assert ps_cell.font.size == rx._SMALL_FONT_SIZE
+        # соседняя колонка ("Тип находки", раскрашенная _COLOR_DUPLICATE) сохраняет обычный
+        # размер -- маленький шрифт не протекает за пределы своей колонки
+        category_cell = ws.cell(row=2, column=3)
+        assert category_cell.font.size != rx._SMALL_FONT_SIZE
 
 
 class TestGeneratePassportReportWiresDetailXlsxButton:

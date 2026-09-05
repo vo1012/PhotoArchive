@@ -79,7 +79,7 @@ warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
 # blanket ignore of all warnings, so any other future PIL/library warning still surfaces.
 warnings.filterwarnings("ignore", message="Palette images with Transparency.*", category=UserWarning)
 
-__version__ = "0.6.10"          # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
+__version__ = "0.6.11"          # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
                                  # с RULES_VERSION ниже (та про совместимость архива, а не exe)
 RULES_VERSION = "2026-08-11"   # дата последнего изменения бизнес-правил -- см. RULES.md;
                                 # менять руками при изменении логики раскладки/дедупа/дат
@@ -2373,6 +2373,17 @@ class Config:
     place_lookup: str = "offline"
     home_country: str = "RU"
     archive_hash_cache: bool = True
+    # 2026-09-04, по прямой просьбе пользователя (многочасовая сборка, прерванная под конец --
+    # повторный запуск снова гонит весь анализ источника). True (по умолчанию) = персистентный
+    # кэш метаданных ИСХОДНЫХ файлов по (read_path,size,mtime) (см. SCHEMA source_meta_cache /
+    # _seed_source_meta_cache()): при возобновлении оборванного прогона уже разобранные
+    # SOURCE-файлы не перехешируются/не перечитываются exiftool'ом. Отдельно от
+    # archive_hash_cache: у таблиц разный профиль (архивный кэш ограничен размером архива и
+    # сам чистится по исчезнувшим путям; этот -- разовый, чистится по возрасту, может быть
+    # заметно крупнее -- на `--source all` объёмного C:\\ ~100-400 МБ RSS разово при
+    # возобновлении, замер в докстринге _load_source_meta_cache()). Тот же класс теоретической
+    # коллизии path+size+mtime, что и у archive_hash_cache -- false отключает.
+    source_meta_cache: bool = True
     # SESSION-HANDOFF.txt, 2026-08-09 (одиннадцатая задача, "как ускорить анализ"): sniff_signature()
     # читает первые 32 байта КАЖДОГО файла отдельным open() -- заметные накладные расходы на
     # медленном/сетевом диске. По умолчанию ВЫКЛЮЧЕНА -- проверка не выполняется в обычном
@@ -2724,6 +2735,44 @@ CREATE TABLE IF NOT EXISTS dvd_units (
     total_bytes INTEGER,
     created_at TEXT
 );
+
+-- 2026-09-04, по прямой просьбе пользователя (многочасовая сборка, прерванная под конец:
+-- повторный запуск снова гонит весь анализ источника). Персистентный кэш метаданных
+-- ИСХОДНЫХ файлов -- зеркало archive_cache для другой стороны конвейера. При возобновлении
+-- оборванного прогона уже разобранные SOURCE-файлы (в большинстве своём дубли, копировать
+-- их не надо) не перехешируются и не перечитываются exiftool'ом заново. Строку потребляет
+-- _walk_with_exif_prefetch(cache=)/_analyze_one_item(cache=) при следующем прогоне -- тот же
+-- 14-элементный формат, что archive_cache читает Паспорт архива (SELECT ниже в _load_source_
+-- meta_cache()). Ключ -- read_path (стабильный абсолютный путь для файла на диске; файлы
+-- внутри распакованного архива сюда не попадают -- их read_path временный). Живёт в ТОМ ЖЕ
+-- archive_cache.db, что archive_cache/dvd_units. Чистка по возрасту (seeded_at) -- см.
+-- _SOURCE_META_CACHE_TTL_DAYS/_prune_source_meta_cache(): источник разовый, повторный прогон
+-- обычно в пределах дней-недели после первого, строки старше почти наверняка мертвы.
+CREATE TABLE IF NOT EXISTS source_meta_cache (
+    read_path TEXT PRIMARY KEY,
+    root TEXT,
+    size INTEGER,
+    mtime REAL,
+    seeded_at REAL,
+    sha256 TEXT,
+    phash TEXT,
+    duration REAL,
+    width INTEGER,
+    height INTEGER,
+    bitrate INTEGER,
+    exif_cached INTEGER,
+    exif_dt TEXT,
+    exif_dt_source TEXT,
+    camera TEXT,
+    gps_lat REAL,
+    gps_lon REAL
+);
+-- REVIEW-HANDOFF.md Раунд 201, замечание 201-1: без индекса _load_source_meta_cache() --
+-- full-scan всей таблицы на КАЖДЫЙ вызов _run_impl(), т.е. по разу на каждый источник при
+-- `--source all` (несколько полных проходов 1-2-млн-строчной таблицы за прогон). Индекс по
+-- root делает каждый _load пропорциональным строкам своего источника. root -- низкая
+-- кардинальность (один на источник), поддержка индекса при INSERT OR REPLACE ничтожна.
+CREATE INDEX IF NOT EXISTS ix_source_meta_cache_root ON source_meta_cache(root);
 """
 
 
@@ -7303,6 +7352,116 @@ def _seed_archive_cache(conn, dest_path: str, size: int, sha256, phash, duration
          1, exif_dt.isoformat() if exif_dt else None, exif_dt_source, camera, gps_lat, gps_lon),
     )
 
+
+# 2026-09-04, по прямой просьбе пользователя: 30 дней. Повторный прогон того же источника
+# используют, как правило, в пределах дней-недели после первого (прерванного); строки старше
+# почти наверняка мертвы (источник разовый). Модульная константа, не поле конфига -- лишний
+# переключатель того не стоит, при нужде правится одной строкой (тот же принцип, что
+# _COLD_CACHE_WARNING_THRESHOLD).
+_SOURCE_META_CACHE_TTL_DAYS = 30
+
+
+def _seed_source_meta_cache(conn, root: str, item, rec) -> None:
+    """Персистентный кэш метаданных ИСТОЧНИКА -- зеркало _seed_archive_cache() для другой
+    стороны конвейера (см. SCHEMA source_meta_cache). Мотив (2026-09-04, прямая просьба
+    пользователя): многочасовая сборка, прерванная под конец, при повторном запуске гонит
+    весь анализ (SHA-256/pHash/exiftool) источника заново, хотя почти все файлы уже в архиве
+    и копироваться не будут. Строку потребляет _walk_with_exif_prefetch(cache=)/
+    _analyze_one_item(cache=) при следующем прогоне -- тот же формат, что archive_cache
+    читает Паспорт архива.
+
+    exif_cached=1 безусловно, как и у _seed_archive_cache(): к этой точке (_process_record)
+    файл прочитан и разобран analyze_batch()'ом, exiftool для media уже отработал; None у
+    поля -- легитимный кэшированный ответ "такого тега нет". Компромисс (озвучен
+    пользователю): если exiftool споткнулся на чанке в прогоне 1 (дата упала в Tier B/C),
+    повторный прогон возьмёт эту дату из кэша и НЕ переспросит exiftool -- та же цена, что
+    уже принята для archive_cache.
+
+    Ключ -- item.read_path (стабильный абсолютный путь на диске; вызывающая сторона уже
+    отсекла файлы из распакованных архивов -- их read_path временный, распаковку всё равно
+    надо повторять). mtime -- источника, из SourceItem (в отличие от _seed_archive_cache(),
+    который берёт mtime уже РАЗМЕЩЁННОЙ копии -- здесь сверяться будем с самим исходником)."""
+    conn.execute(
+        "INSERT OR REPLACE INTO source_meta_cache"
+        "(read_path,root,size,mtime,seeded_at,sha256,phash,duration,width,height,bitrate,"
+        "exif_cached,exif_dt,exif_dt_source,camera,gps_lat,gps_lon) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (item.read_path, root, item.size, item.mtime, time.time(), rec.sha256, rec.phash,
+         rec.duration, rec.width, rec.height, rec.bitrate,
+         1, rec.exif_dt.isoformat() if rec.exif_dt else None, rec.exif_dt_source,
+         rec.camera, rec.gps_lat, rec.gps_lon),
+    )
+
+
+def _load_source_meta_cache(conn, root: str) -> dict:
+    """{read_path: (size, mtime, sha256, phash, duration, width, height, bitrate,
+    exif_cached, exif_dt, exif_dt_source, camera, gps_lat, gps_lon)} -- РОВНО тот кортеж (и
+    порядок индексов 0..13), что понимают _analyze_one_item()/_exif_cache_ready() (см. их
+    cache= параметр и SELECT в run_analyze()'s self_scan-ветке). WHERE root=? -- многоисточ-
+    никовый прогон зовёт _run_impl() по одному источнику за раз, грузить чужие строки в
+    память незачем (индекс ix_source_meta_cache_root в SCHEMA -- см. 201-1).
+
+    Стоимость (REVIEW-HANDOFF.md Раунд 201, замер на синтетике; реальные Windows-пути длиннее,
+    точное число ±1.5-2x): типичный проект 20-50 тыс. фото -- _load ~0.1-0.25 с, ~10-40 МБ
+    RSS, файл archive_cache.db растёт на ~15-25 МБ. Верхняя граница `--source all` на объёмном
+    C:\\ (0.5-2 млн файлов): _load ~2-5 с, ~100-400 МБ RSS РАЗОВО при возобновлении, файл
+    ~150-350 МБ. Всё это много ниже пола по I/O многочасовой сборки и платится один раз;
+    source_meta_cache: false отключает. Сев идёт для КАЖДОГО прочитанного файла на диске (не
+    только медиа), т.е. на `--source all` таблица зеркалит весь список файлов диска."""
+    cache = {}
+    for row in conn.execute(
+        "SELECT read_path, size, mtime, sha256, phash, duration, width, height, bitrate, "
+        "exif_cached, exif_dt, exif_dt_source, camera, gps_lat, gps_lon "
+        "FROM source_meta_cache WHERE root = ?", (root,)
+    ):
+        cache[row[0]] = row[1:]
+    return cache
+
+
+def _prune_source_meta_cache(conn, log=print) -> None:
+    """Чистка по возрасту (см. _SOURCE_META_CACHE_TTL_DAYS). Один DELETE full-scan на прогон,
+    до начала обхода -- ничтожно против времени сборки, индекс ради него заводить не стоит."""
+    cutoff = time.time() - _SOURCE_META_CACHE_TTL_DAYS * 86400
+    try:
+        cur = conn.execute("DELETE FROM source_meta_cache WHERE seeded_at IS NULL OR seeded_at < ?",
+                            (cutoff,))
+        if cur.rowcount and cur.rowcount > 0:
+            log(f"Кэш метаданных источника: удалено устаревших записей — {cur.rowcount} "
+                f"(старше {_SOURCE_META_CACHE_TTL_DAYS} дней)")
+    except sqlite3.Error as e:
+        log(f"ВНИМАНИЕ: не удалось почистить кэш метаданных источника ({e!r}) — не фатально")
+
+
+# 2026-09-04, по прямой просьбе пользователя: докоммит archive_cache/source_meta_cache по ходу
+# Фазы 2 не реже раза в минуту. Причина -- жёсткий выход (крестик окна во время работы:
+# _HardExit -- BaseException, минует st.cache_conn.commit() в конце _run_impl(), см.
+# gui_menu._Wizard._on_run_hard_exit()) или крах теряли бы ВСЮ незакоммиченную транзакцию, то
+# есть весь кэш прогона. С периодическим коммитом теряется только хвост с последнего тика.
+# fsync раз в минуту ничтожен против времени сборки (десятки минут -- часы).
+_CACHE_COMMIT_INTERVAL_SEC = 60.0
+
+
+def _maybe_commit_run_cache(st: "_RunState", log=print) -> None:
+    """Периодический докоммит кэша в основном цикле Фазы 2 -- см. _CACHE_COMMIT_INTERVAL_SEC.
+    Каждый _seed_* -- одиночный INSERT OR REPLACE (атомарен), межстрочных инвариантов между
+    кэш-таблицами нет, поэтому коммит между севами безопасен: просто «эти строки теперь на
+    диске». sqlite-сбой (БД занята/полна) не должен ронять обход -- один warn на прогон,
+    финальный commit() в конце _run_impl() попробует ещё раз."""
+    if st.cache_conn is None:
+        return
+    now = time.monotonic()
+    if now - st.cache_last_commit < _CACHE_COMMIT_INTERVAL_SEC:
+        return
+    try:
+        st.cache_conn.commit()
+    except sqlite3.Error as e:
+        if not st.cache_commit_warned:
+            log(f"ВНИМАНИЕ: не удалось сохранить кэш по ходу прогона ({e!r}) — не фатально, "
+                f"повторный прогон просто пересчитает больше файлов")
+            st.cache_commit_warned = True
+    st.cache_last_commit = now
+
+
 # ============================================================================
 # LOGS  (from pipeline/logs.py)
 # ============================================================================
@@ -8450,8 +8609,20 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
     # ДО старта основного бара, синхронно (не фоновым потоком) -- тот же довод, что и у Фазы 2:
     # один физический источник, параллельный обход того же дерева рискует замедлить оба
     # прохода на медленных/сетевых дисках.
+    # Мягкая отмена ("Прервать работу") В ЭТОЙ фазе: _quick_media_count_estimate() зовёт
+    # _cooperative_checkpoint() на каждую директорию (пауза, 7f103ba) -- та же точка поднимает
+    # KeyboardInterrupt на отмене. Фаза идёт ДО try/except ниже -- без этого перехвата
+    # прерывание летело из воркер-потока наружу необработанным ("Exception in thread ...",
+    # отчёт не строился). Ловим здесь, помечаем и роняем в тот же `except KeyboardInterrupt`
+    # ниже (bar уже создан). _HardExit (крестик окна) -- НЕ KeyboardInterrupt, пролетает
+    # насквозь до воркера, как и задумано.
+    _interrupted_during_estimate = False
     with ProgressReporter(total=None, desc=" Оцениваю объём работы", unit="файл") as est_bar:
-        total_estimate = _quick_media_count_estimate(cfg.source, cfg, on_progress=est_bar.update)
+        try:
+            total_estimate = _quick_media_count_estimate(cfg.source, cfg, on_progress=est_bar.update)
+        except KeyboardInterrupt:
+            _interrupted_during_estimate = True
+            total_estimate = None
     # Без `with`/reindent остального тела: явный close() перед return ниже (см. дальше по
     # функции) -- вызывающий печатает чек-лист сразу после возврата stats.
     bar = ProgressReporter(total=None, desc=progress_desc, unit="файл",
@@ -8506,6 +8677,8 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                       # сравнялось с ним -- пофайловый рубеж сработал на КАЖДОМ, систематический
                       # баг (не единичный кривой файл) -> walk_aborted ниже.
     try:
+        if _interrupted_during_estimate:
+            raise KeyboardInterrupt  # отмена в фазе "Оцениваю объём" -> тот же обработчик ниже
         for item, tags_by_path in walker_iter:
             _iter_count += 1
             # 2026-08-23, живая находка пользователя: пауза по пробелу (_check_pause_keypress())
@@ -9382,11 +9555,18 @@ class _RunState:
         self.date_ctx = date_ctx
         self.run_logs = run_logs
         self.stats = stats
-        # Раунд 5 ревью, вариант D (REVIEW-HANDOFF.md): выделенное sqlite-соединение только
-        # для сева archive_cache во время Фазы 2 -- см. _run_impl(), где оно открывается/
-        # закрывается. None, если archive_hash_cache выключен или это dry_run (тогда
-        # place_file() не вызывается вовсе -- сеять нечего).
+        # Раунд 5 ревью, вариант D (REVIEW-HANDOFF.md): выделенное sqlite-соединение для сева
+        # archive_cache во время Фазы 2 -- см. _run_impl(), где оно открывается/закрывается.
+        # 2026-09-04: то же соединение (тот же файл archive_cache.db) обслуживает и
+        # source_meta_cache -- открывается, если ВКЛЮЧЁН ЛЮБОЙ из двух кэшей и это не dry_run.
+        # Отдельные флаги ниже гейтят, ЧТО именно писать: archive_hash_cache=False +
+        # source_meta_cache=True не должно писать в archive_cache, и наоборот.
         self.cache_conn = None
+        self.archive_cache_on = cfg.archive_hash_cache and not cfg.dry_run
+        self.source_meta_cache_on = cfg.source_meta_cache and not cfg.dry_run
+        self.source_meta_cache_warned = False  # одно предупреждение на прогон при сбое записи
+        self.cache_last_commit = 0.0           # time.monotonic() последнего докоммита кэша (Фаза 2)
+        self.cache_commit_warned = False
         self.dest_path_by_read_path = {}
         self.merged_albums_seen = set()
         self.stopped_for_space = False
@@ -9536,7 +9716,9 @@ def _process_dvd_item(item: "SourceItem", st: _RunState, log=print) -> str:
     try:
         if not cfg.dry_run:
             place_file(item, dest_path, item.dvd_sha256, cfg, run_logs, stats=stats)
-            if st.cache_conn is not None:
+            # st.archive_cache_on -- st.cache_conn теперь бывает открыт и при
+            # archive_hash_cache=False (ради source_meta_cache), см. _run_impl() / _RunState.
+            if st.archive_cache_on and st.cache_conn is not None:
                 _seed_archive_cache(st.cache_conn, dest_path, item.size, item.dvd_sha256,
                                      None, None, None, None, None)
     except InsufficientSpace as e:
@@ -9558,6 +9740,28 @@ def _process_record(rec, st: _RunState, log=print):
     Returns True if the run must stop (out of space)."""
     cfg, pool, date_ctx, run_logs, stats = st.cfg, st.pool, st.date_ctx, st.run_logs, st.stats
     item = rec.item
+
+    # Персистентный кэш метаданных ИСТОЧНИКА (2026-09-04, прямая просьба пользователя): сеем
+    # ДО любой маршрутизации/размещения -- цель именно дубли, которые ниже сделают ранний
+    # `return False` (при возобновлении оборванного прогона это подавляющее большинство
+    # файлов). rec.sha256 пуст только у size==0 (analyze_batch() не хеширует пустышки);
+    # read_error -- файл физически не прочитан, кэшировать нечего. archive_boundary_idx
+    # is None + не под tmp_extract -- файл найден прямо на диске, его read_path стабилен между
+    # прогонами (внутри распакованного архива read_path временный -- следующий прогон
+    # распакует заново под другим путём, это отдельный follow-up по образцу dvd_units).
+    # Обёрнуто в try: sqlite-сбой здесь НЕ должен уйти в _run_impl()'s `except Exception`
+    # (файл ошибочно попал бы в _Unsorted через _dispute_processing_error()).
+    if (st.source_meta_cache_on and st.cache_conn is not None
+            and rec.sha256 and not rec.read_error
+            and item.archive_boundary_idx is None
+            and not item.read_path.startswith(cfg.tmp_extract + os.sep)):
+        try:
+            _seed_source_meta_cache(st.cache_conn, cfg.source, item, rec)
+        except sqlite3.Error as e:
+            if not st.source_meta_cache_warned:
+                log(f"ВНИМАНИЕ: не удалось записать кэш метаданных источника ({e!r}) — "
+                    f"повторный прогон не ускорится, обработка продолжается")
+                st.source_meta_cache_warned = True
 
     # Зоны доверия (слой 2, см. classify_zone): в шумной зоне (кэши/temp) любое сомнение --
     # не медиа ИЛИ погранично-неуверенное (small_image/low_confidence_photo) -- уходит только
@@ -9679,7 +9883,7 @@ def _process_record(rec, st: _RunState, log=print):
             if not is_dup:
                 pool.add(PoolEntry(sha256=rec.sha256, ftype="raw", dest_path=dest_path, size=item.size))
                 st.dest_path_by_read_path[item.read_path] = dest_path
-                if not cfg.dry_run and st.cache_conn is not None:
+                if st.archive_cache_on and st.cache_conn is not None:
                     _seed_archive_cache(st.cache_conn, dest_path, item.size, rec.sha256, rec.phash,
                                         rec.duration, rec.width, rec.height, rec.bitrate,
                                         rec.exif_dt, rec.exif_dt_source, rec.camera,
@@ -9816,7 +10020,7 @@ def _process_record(rec, st: _RunState, log=print):
             aspect=rec.aspect, width=rec.width, height=rec.height, phash=rec.phash,
             duration=rec.duration, bitrate=rec.bitrate, has_camera=bool(rec.camera),
         ))
-        if not cfg.dry_run and st.cache_conn is not None:
+        if st.archive_cache_on and st.cache_conn is not None:
             _seed_archive_cache(st.cache_conn, dest_path, item.size, rec.sha256, rec.phash,
                                 rec.duration, rec.width, rec.height, rec.bitrate,
                                 rec.exif_dt, rec.exif_dt_source, rec.camera,
@@ -10043,8 +10247,32 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
     # выше уже создала __служебные_файлы\ до этой точки (suppress_logs=False здесь всегда,
     # иначе dry_run=True и мы не дошли бы до этой ветки), так что _open_archive_cache_conn()
     # надёжно откроет соединение, не вернёт None.
+    #
+    # 2026-09-04: ОДНО соединение (тот же файл archive_cache.db) на обе таблицы --
+    # archive_cache и source_meta_cache. Открываем, если включён ЛЮБОЙ из двух кэшей; что
+    # именно писать, гейтят st.archive_cache_on / st.source_meta_cache_on раздельно. Два
+    # соединения к одному sqlite-файлу не годятся: st.cache_conn держит один незакоммиченный
+    # transaction всю Фазу 2 (commit только в конце), второе соединение получало бы
+    # "database is locked" на первой же записи.
     st.cache_conn = (_open_archive_cache_conn(cfg.target)
-                      if (cfg.archive_hash_cache and not cfg.dry_run) else None)
+                      if ((cfg.archive_hash_cache or cfg.source_meta_cache) and not cfg.dry_run)
+                      else None)
+    st.cache_last_commit = time.monotonic()  # отсчёт периодического докоммита -- см. _maybe_commit_run_cache()
+
+    # Персистентный кэш метаданных источника (см. _seed_source_meta_cache()/_process_record()):
+    # чистка по возрасту + загрузка валидных строк для ЭТОГО источника в память. Отдаётся в
+    # analyze_batch(cache=)/_walk_with_exif_prefetch(cache=) ниже -- _analyze_one_item()/
+    # _exif_cache_ready() понимают тот же формат, что уже применяет Паспорт архива к archive_cache.
+    # Чистка -- всегда, когда есть соединение (в т.ч. если source_meta_cache сейчас выключен, но
+    # archive_hash_cache открыл conn): иначе выключение флага навсегда заморозило бы старые строки.
+    source_meta_cache = None
+    if st.cache_conn is not None:
+        _prune_source_meta_cache(st.cache_conn, log=log)
+    if st.source_meta_cache_on and st.cache_conn is not None:
+        source_meta_cache = _load_source_meta_cache(st.cache_conn, cfg.source)
+        if source_meta_cache:
+            log(f"Кэш метаданных источника: {len(source_meta_cache)} записей с прошлых прогонов "
+                f"(файлы без изменений не будут пересчитаны заново)")
 
     # 2026-08-07: реестр уже архивированных DVD-юнитов (см. секцию "DVD-VIDEO UNITS" выше) --
     # НАМЕРЕННО читается из ТОГО ЖЕ st.cache_conn, не отдельного соединения. Живая находка на
@@ -10060,7 +10288,7 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
     # реестр не читает вообще -- превью всегда покажет VIDEO_TS как "новый" диск, даже если он
     # уже реально заархивирован; сама РЕАЛЬНАЯ сборка (эта функция, не dry_run) решает правильно.
     dvd_unit_registry = {}
-    if st.cache_conn is not None:
+    if st.archive_cache_on and st.cache_conn is not None:
         for fp, dest in st.cache_conn.execute("SELECT fingerprint, dest_path FROM dvd_units"):
             dvd_unit_registry[fp] = dest
 
@@ -10121,8 +10349,18 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
     # источник, параллельный обход того же дерева рискует замедлить оба прохода на медленных
     # дисках/сети). Свой простой индикатор -- переиспользует ОБЫЧНЫЙ (не two_line) режим
     # ProgressReporter, тот же принцип "не должно выглядеть зависшим", без ETA у самого себя.
+    # Мягкая отмена ("Прервать работу") В ЭТОЙ фазе -- см. тот же комментарий в run_analyze():
+    # _quick_media_count_estimate() опрашивает _cooperative_checkpoint() подиректорно, эта же
+    # точка поднимает KeyboardInterrupt на отмене, а фаза идёт ДО try/except основного цикла.
+    # Ловим и роняем в тот же `except KeyboardInterrupt` ниже (bar уже создан). _HardExit
+    # (крестик окна) пролетает насквозь.
+    _interrupted_during_estimate = False
     with ProgressReporter(total=None, desc=" Оцениваю объём работы", unit="файл") as est_bar:
-        total_estimate = _quick_media_count_estimate(cfg.source, cfg, on_progress=est_bar.update)
+        try:
+            total_estimate = _quick_media_count_estimate(cfg.source, cfg, on_progress=est_bar.update)
+        except KeyboardInterrupt:
+            _interrupted_during_estimate = True
+            total_estimate = None
     with ProgressReporter(total=None, desc=_source_phase_desc, unit="файл",
                            disk_usage_path=_disk_usage_path, two_line=True,
                            total_estimate=total_estimate) as bar:
@@ -10144,9 +10382,12 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
         # per file -- ~140 ms -> ~5 ms/file, Раунд 4 measurement); each item is still yielded and
         # processed one at a time. Same wrapper run_analyze() has used since 2026-08-02: it
         # never accumulates archive-tmp or DVD-unit items (yields them alone), so the
-        # tmp_extract lifetime guarantee above is untouched. cache=None -- the build path
-        # re-hashes every SOURCE file anyway (it copies them), no persistent per-file hash
-        # cache to consult. defer_media_object_tick=True above + the manual add_object_progress
+        # tmp_extract lifetime guarantee above is untouched. cache=source_meta_cache
+        # (2026-09-04): персистентный кэш метаданных источника -- при возобновлении оборванного
+        # прогона SOURCE-файлы без изменений (size+mtime) не перехешируются и не перечитываются
+        # exiftool'ом (файлы внутри распакованных архивов сюда не входят -- их временный
+        # read_path в кэш не попадает, распаковку всё равно надо повторять). None, если
+        # source_meta_cache выключен. defer_media_object_tick=True above + the manual add_object_progress
         # after analyze_batch() below: the "% objects" tick must fire on real completion
         # (incl. ffprobe for video), not when the batch was merely sent to exiftool
         # (REVIEW-HANDOFF.md, Раунд 100 -- the bug this exact split already fixed for analyze).
@@ -10155,13 +10396,19 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
         prefetch_batch_size = (min(_BUILD_EXIF_PREFETCH_BATCH_SIZE, cfg.sample_limit)
                                 if cfg.sample_limit else _BUILD_EXIF_PREFETCH_BATCH_SIZE)
         walker_iter = _walk_with_exif_prefetch(
-            walker.walk(), cfg.tmp_extract, prefetch_batch_size, cache=None, log=log,
+            walker.walk(), cfg.tmp_extract, prefetch_batch_size, cache=source_meta_cache, log=log,
             rate_hint_cb=bar.set_batch_rate_hint)
         try:
+            if _interrupted_during_estimate:
+                raise KeyboardInterrupt  # отмена в фазе "Оцениваю объём" -> тот же обработчик ниже
             for item, tags_by_path in walker_iter:
                 # 2026-08-23, по прямой просьбе пользователя: пауза по пробелу, см.
                 # _check_pause_keypress()'s докстринг -- между файлами, не внутри одного.
                 _cooperative_checkpoint(log=log)
+                # 2026-09-04: периодический докоммит кэша (раз в минуту) -- крестик окна /
+                # крах теряет только строки с последнего тика, не весь прогон. До DVD-ветки
+                # ниже -- покрывает и её сев (_process_dvd_item() -> _seed_archive_cache()).
+                _maybe_commit_run_cache(st, log=log)
                 if cfg.sample_limit and processed_count >= cfg.sample_limit:
                     break
 
@@ -10225,9 +10472,13 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
                 # неотличимо от зависания. n=0 -- только обновление текста, счётчик не трогаем
                 # (тот же приём, что и self.update(0) в ProgressReporter.__init__).
                 bar.update(0, note=note)
+                # cache=source_meta_cache (2026-09-04): sha256/pHash/размеры из кэша, если файл
+                # источника без изменений (size+mtime) с прошлого прогона -- _walk_with_exif_
+                # prefetch(cache=) выше отсекает по тому же кэшу exiftool, здесь -- всё
+                # остальное. Тот же параметр, что уже передаёт Паспорт архива (см. run_analyze()).
                 records = analyze_batch([item], retries=cfg.read_retry_count, retry_delay=cfg.read_retry_delay,
                                          small_image_px=cfg.small_image_px, log=log, pool=pool,
-                                         tags_by_path=tags_by_path)
+                                         cache=source_meta_cache, tags_by_path=tags_by_path)
                 # "обработано объектов %" -- тикаем ЗДЕСЬ, ПОСЛЕ analyze_batch() (значит и после
                 # ffprobe/phash -- самой медленной части для видео), не когда батч был лишь
                 # ОТПРАВЛЕН в exiftool. defer_media_object_tick=True на walker'е выше отключил
@@ -10311,6 +10562,17 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
             st.walk_aborted = True
             bar.mark_interrupted()
         finally:
+            # 2026-09-04: докоммитить кэш ДО раскрутки генератора. Крестик окна во время работы
+            # (_HardExit -- BaseException) минует st.cache_conn.commit() в конце функции; этот
+            # finally отрабатывает и на BaseException. Периодический _maybe_commit_run_cache()
+            # в самом цикле уже сбросил основную массу, здесь -- хвост с последнего тика.
+            # commit() без pending-транзакции -- no-op (нормальный / soft-Ctrl+C-путь, где код
+            # ниже сам дойдёт до финального commit()). sqlite-сбой не должен ронять раскрутку.
+            if st.cache_conn is not None:
+                try:
+                    st.cache_conn.commit()
+                except sqlite3.Error:
+                    pass
             # 2026-08-31: walker_iter -- именованный локал (в отличие от прежнего инлайнового
             # `for item in walker.walk()`, чью ссылку refcount ронял сразу на выходе из for) --
             # на break (--sample-limit) / stopped_for_space / KeyboardInterrupt обёртка и
@@ -10373,7 +10635,7 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
         ]
         stats["dvd_units_copied"] = dvd_units_confirmed
         stats["dvd_units_skipped_duplicate"] = list(walker.dvd_units_skipped_duplicate)
-        if st.cache_conn is not None and dvd_units_confirmed:
+        if st.archive_cache_on and st.cache_conn is not None and dvd_units_confirmed:
             now_iso = datetime.now().isoformat()
             st.cache_conn.executemany(
                 "INSERT OR REPLACE INTO dvd_units(fingerprint,dest_path,n_files,total_bytes,created_at) "
@@ -10615,6 +10877,11 @@ DEFAULT_CONFIG_YAML_TEMPLATE = """\
                                 # ускорения повторных прогонов на растущем архиве; false = всегда
                                 # пересчитывать всё заново (медленнее, но нечувствительно к
                                 # теоретической коллизии path+size+mtime при разном содержимом)
+# source_meta_cache: true       # true (по умолчанию) = кэш метаданных ИСХОДНЫХ файлов по
+                                # (путь,size,mtime): прерванную многочасовую сборку при повторном
+                                # запуске не гонит через весь анализ (хеши/EXIF) заново. Живёт
+                                # рядом с логами архива, чистится по возрасту (30 дней). false =
+                                # всегда пересчитывать (тот же класс коллизии, что archive_hash_cache)
 # check_signature: false        # false (по умолчанию) = не проверять сигнатуру файла (первые
                                 # байты содержимого) против расширения в обычном анализе
                                 # ("Сканирование источника" / CLI analyze) -- ускоряет анализ на
@@ -10777,7 +11044,7 @@ DEFAULT_CONFIG_YAML_TEMPLATE = """\
 # поля Config, которые можно переопределить через photoarchive_config.yaml -- сознательно НЕ включает
 # source/target/dry_run/sample_limit: они всегда приходят из CLI/интерактивного ввода
 CONFIG_YAML_FIELDS = {
-    "place_lookup", "home_country", "archive_hash_cache",
+    "place_lookup", "home_country", "archive_hash_cache", "source_meta_cache",
     "check_signature",
     "max_archive_depth", "max_dest_path", "small_image_px", "free_space_margin_gb",
     "read_retry_count", "read_retry_delay", "bydate_granularity",
@@ -12159,16 +12426,23 @@ def _bare_launch_run_view(sources: list, log=print) -> str:
                                             source_path=sources[0])
     if stats.walk_aborted:
         # 183-2: сломалась сама обработка (краш обходчика / систематический пофайловый сбой) --
-        # НЕ пользователь нажал «Прервать». Отдельный экран + указание на crash.log.
+        # НЕ пользователь нажал «Прервать». Отдельный экран + указание на crash.log, счётчик
+        # объектов НЕ выставляем (см. gui_menu._render_run_outcome(), ветка "aborted" его и не
+        # показывает -- тем же обоснованием, что и ниже для "interrupted").
         raise _AbortedRunReport(report_path)
+    # Живая находка (боевой прогон source_meta_cache, 2026-09-04): счётчик выставлялся ПОСЛЕ
+    # этой проверки, т.е. только на полном успехе -- на "Прервана" экран «Выполнение» показывал
+    # _last_bare_launch_object_count от ПРЕДЫДУЩЕГО успешного прогона в этом же процессе
+    # (устаревшее, часто завышенное число). stats.total_files уже посчитан к этому моменту
+    # (walk уже прошёл, прерванный или нет) -- значение верно для ОБЕИХ веток ниже.
+    global _last_bare_launch_object_count
+    _last_bare_launch_object_count = stats.total_files
     if stats.interrupted:
         # Ctrl+C-пакет (2026-08-07, распространено с [3]/CLI archive на [1]): тот же приём,
         # что и _bare_launch_run_build() -- отчёт уже сформирован выше (баннер прерывания
         # внутри), заново возбуждаем KeyboardInterrupt, чтобы main() отработал как обычно
         # (пауза с report_path для голого запуска, "Прервано пользователем." + exit 130).
         raise _InterruptedRunReport(report_path)
-    global _last_bare_launch_object_count
-    _last_bare_launch_object_count = stats.total_files
     return report_path
 
 
@@ -12205,14 +12479,16 @@ def _bare_launch_run_passport(target: str, log=print) -> str:
     log(f"Паспорт архива: {out_path}")
     if stats.walk_aborted:
         raise _AbortedRunReport(out_path)  # 183-2, см. _bare_launch_run_view()
+    # см. _bare_launch_run_view() -- счётчик выставляем ДО проверки на прерывание, иначе на
+    # "Прервана" остаётся устаревшее значение от прошлого успешного прогона в этом процессе.
+    global _last_bare_launch_object_count
+    _last_bare_launch_object_count = stats.total_files
     if stats.interrupted:
         # Ctrl+C-пакет (2026-08-07, распространено с [3]/CLI archive на [4]/CLI analyze
         # --target): тот же приём, что и _bare_launch_run_view()/_bare_launch_run_build() --
         # отчёт уже записан на диск (в TARGET, не WORKDIR -- см. докстринг выше), заново
         # возбуждаем KeyboardInterrupt для единообразной обработки в main().
         raise _InterruptedRunReport(out_path)
-    global _last_bare_launch_object_count
-    _last_bare_launch_object_count = stats.total_files
     return out_path
 
 
@@ -12329,13 +12605,15 @@ def _bare_launch_run_dryrun(sources: list, target: str, input_fn=input, log=prin
     log(f"Отчёт: {out_path}")
     if any_walk_aborted:
         raise _AbortedRunReport(out_path)  # 183-2, см. _bare_launch_run_view()
+    # см. _bare_launch_run_view() -- счётчик выставляем ДО проверки на прерывание, иначе на
+    # "Прервана" остаётся устаревшее значение от прошлого успешного прогона в этом процессе.
+    global _last_bare_launch_object_count
+    _last_bare_launch_object_count = total_processed
     if any_interrupted:
         # Ctrl+C-пакет: тот же приём, что и _bare_launch_run_build() -- отчёт с баннером
         # прерывания уже на диске, заново возбуждаем KeyboardInterrupt для main().
         log(f"\n  Отчёт (данные на момент остановки): {_display_path(out_path)}")
         raise _InterruptedRunReport(out_path)
-    global _last_bare_launch_object_count
-    _last_bare_launch_object_count = total_processed
     return out_path
 
 
@@ -12438,6 +12716,11 @@ def _bare_launch_run_build(sources: list, target: str, input_fn=input, log=print
                                                source_paths=expanded)
         if report_path:
             log(f"\n  Отчёт (данные на момент остановки): {_display_path(report_path)}")
+        # см. _bare_launch_run_view() -- счётчик выставляем ДО возбуждения KeyboardInterrupt,
+        # иначе на "Прервана" остаётся устаревшее значение от прошлого успешного прогона в
+        # этом процессе (живая находка боевого прогона source_meta_cache, 2026-09-04).
+        global _last_bare_launch_object_count
+        _last_bare_launch_object_count = total_processed
         raise _InterruptedRunReport(report_path)
     if not any_succeeded:
         log("")
@@ -12460,7 +12743,9 @@ def _bare_launch_run_build(sources: list, target: str, input_fn=input, log=print
     # "чтобы убедиться".
     log("  Ваши исходные фотографии остались на месте — программа их не трогает.")
     log("  Архив — их полная копия, готовая к использованию.")
-    global _last_bare_launch_object_count
+    # global уже объявлен выше (ветка any_interrupted) -- повторное "global" в этой же функции
+    # после промежуточного присваивания -- SyntaxError ("assigned to before global declaration"),
+    # проверено исполнением при реализации этого фикса.
     _last_bare_launch_object_count = total_processed
     if outcome is not None:
         outcome["stopped_for_space"] = any_stopped_for_space
