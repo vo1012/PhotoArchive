@@ -23,8 +23,9 @@ data_new (_split_rows_by_time(), см. generate_report()) -- этот xlsx то�
 Паспорт архива (PROMPT_report_detail_xlsx.md, "Открыто на момент записи", решено и реализовано
 2026-08-16) -- ВТОРОЙ, отдельный построитель/генератор в этом же модуле (_build_passport_detail_
 rows()/generate_passport_detail_xlsx()): self-scan TARGET, не source->dest события прогона --
-другая форма строки (находка, не файл-событие), общая только механика записи листа
-(_write_flat_xlsx()) и мелкие визуальные хелперы (_argb()/цвета)."""
+другая форма строки (находка, не файл-событие), общая механика записи листа (_write_flat_xlsx()),
+визуальные хелперы (_argb()/цвета) и с 2026-09-05 -- PowerShell-хелперы (_powershell_open_
+command()/_series_ps_commands()) для одноимённого столбца, теперь в обоих построителях."""
 import os
 import re
 
@@ -52,8 +53,14 @@ DETAIL_XLSX_FILENAME = "report_detail.xlsx"
 _COLUMN_HEADERS = [
     "Путь к исходной папке", "Имя файла", "Расширение", "Тип медиа", "Копировано",
     "Куда / с чем дуп", "Итоговое имя файла", "№ серии", "Примечание",
+    "Открыть файл (PowerShell)",
 ]
-_COLUMN_WIDTHS = [55, 32, 10, 10, 10, 55, 32, 8, 45]
+_COLUMN_WIDTHS = [55, 32, 10, 10, 10, 55, 32, 8, 45, 46]
+# 0-based -- индекс "Открыть файл (PowerShell)" в _values ниже. ПОСЛЕДНЯЯ колонка -- живая
+# находка пользователя, 2026-09-05: длинный текст команды (теперь -- вся серия, не один файл,
+# см. _series_ps_commands()) переполняет соседнюю пустую ячейку Excel'ем визуально; последняя
+# колонка переполняется в пустое место листа, не на "Примечание".
+_DETAIL_PS_COMMAND_COL = 9
 
 _KIND_LABELS = {"image": "фото", "video": "видео", "raw": "RAW", "other": "прочее"}
 
@@ -107,6 +114,83 @@ def _dvd_unit_root(dest: str) -> str:
     return _source_dirname(dest)
 
 
+def _powershell_open_command(path: str) -> str:
+    """SESSION-HANDOFF.txt, 2026-09-04 ("серии: РЕШЕНИЕ ПРИНЯТО"): готовая команда для вставки
+    в открытое окно PowerShell -- открывает файл приложением по умолчанию для его расширения у
+    ЭТОГО пользователя (не хардкодим "Фотографии"), тем же путём, что уже проверен живым кликом
+    в этой сессии (ShellExecute без явной программы). Одинарная кавычка в пути ломает
+    PowerShell-литерал '...' -- экранируется удвоением, штатный приём самого PowerShell."""
+    return "Start-Process '%s'" % path.replace("'", "''")
+
+
+# REVIEW-HANDOFF.md, Раунд 207 [ЗАМЕЧАНИЕ] 207-1: запас от жёсткого лимита ячейки .xlsx
+# (32767 UTF-16 code units, формат, не openpyxl-специфика) -- без запаса openpyxl/Excel
+# молча обрезают значение при реальной записи, обрезка может прийтись на середину
+# 'литерала...' (нечётное число кавычек) -- ВСЯ команда становится невыполнимой в PowerShell
+# целиком ("The string is missing the terminator"), не "открылись первые N файлов". Проверено
+# исполнением: реалистичный кластер серийной съёмки (~350-400+ членов при типичной длине
+# пути) на большом архиве даёт команду длиннее лимита. 30000 -- запас с большим отрывом от
+# 32767 под замыкающий комментарий-пояснение ниже (тот всегда короче нескольких сотен
+# символов).
+_PS_COMMAND_CHAR_BUDGET = 30000
+
+
+def _series_ps_commands(abs_paths: list) -> dict:
+    """Одна команда на ВЕСЬ кластер (серию/группу дублей) -- открывает КАЖДЫЙ файл серии
+    сразу, независимо от того, лежат ли они в одной папке. Решение пользователя, 2026-09-05:
+    отменяет прежнее ограничение "команда только если >=2 членов в одной папке" (2026-09-04) --
+    та причина опиралась на то, что Проводник открывается по одной папке за раз, но эта колонка
+    Проводник вообще не открывает: Start-Process запускает каждый файл СВОЕЙ программой по
+    умолчанию, расположение файла для визуального сравнения роли не играет. ВСЕ члены кластера
+    получают ОДНУ и ТУ ЖЕ строку (копипаст с любой строки серии открывает всю серию целиком) --
+    пути сортируются для детерминированности (один и тот же кластер даёт один и тот же текст
+    команды при каждом прогоне, порядок членов не зависит от порядка обхода). Общая для
+    Паспорта (кластеры self-scan) и обычного прогона (кластеры near_dup внутри
+    _build_detail_rows) -- одна и та же форма входа (список абсолютных путей одного кластера,
+    гарантированно >=2 элемента -- кластер существует только при наличии хотя бы одного ребра).
+
+    REVIEW-HANDOFF.md, Раунд 207 (207-1): гигантский кластер обрезается по ЦЕЛЫМ путям (никогда
+    не разрывает Start-Process '...'-литерал посередине) под _PS_COMMAND_CHAR_BUDGET, остаток
+    обозначается PowerShell-КОММЕНТАРИЕМ (после `#` до конца строки) -- сама команда остаётся
+    синтаксически рабочей, пользователь явно видит текстом, что кластер не поместился целиком,
+    вместо молчаливого битого обрезка от Excel.
+
+    REVIEW-HANDOFF.md, Раунд 208 (208-1, придирка на 43d4062): упаковка ПРОПУСКАЕТ (`continue`)
+    отдельный не поместившийся элемент, а не останавливает набор целиком (`break`) -- один
+    аномально длинный путь в алфавитно РАННЕЙ позиции (сам по себе или с уже накопленным не
+    помещается в бюджет) раньше отбрасывал вообще ВСЕ элементы после себя, даже если почти
+    весь кластер состоял из коротких, прекрасно помещающихся путей. С `continue` результат --
+    максимум того, что реально влезает (пропуская только сами непомещающиеся элементы), не
+    "префикс алфавитного порядка до первого сбоя"."""
+    ordered = sorted(abs_paths)
+    pieces = [_powershell_open_command(p) for p in ordered]
+    command = "; ".join(pieces)
+    if len(command) > _PS_COMMAND_CHAR_BUDGET:
+        fitted = []
+        length = 0
+        for piece in pieces:
+            add = len(piece) + (2 if fitted else 0)  # "; " перед каждым, кроме первого
+            if length + add > _PS_COMMAND_CHAR_BUDGET:
+                continue  # пропускаем ТОЛЬКО этот элемент, не рвём набор остальных
+            fitted.append(piece)
+            length += add
+        omitted = len(pieces) - len(fitted)
+        note = f"# и ещё {omitted} файлов не поместились в команду (слишком большой кластер)"
+        command = f"{'; '.join(fitted)}; {note}" if fitted else note
+    return dict.fromkeys(abs_paths, command)
+
+
+def _dup_pair_ps_command(source: str, matched: str) -> str:
+    """Дубликат обычного прогона -- не кластер self-scan (Паспорт), а ровно ОДНА пара:
+    новый файл (ещё не скопирован, лежит на SOURCE) vs то, с чем он совпал (уже в архиве,
+    TARGET). Команда открывает ОБА -- тот же принцип "открыть всю группу сразу", что и у
+    _series_ps_commands() выше, просто без сортировки/join по кластеру: группа здесь всегда
+    ровно из двух файлов, порядок (источник, потом совпадение) сам по себе осмыслен."""
+    if not source or not matched:
+        return ""
+    return _powershell_open_command(source) + "; " + _powershell_open_command(matched)
+
+
 def _row_kind(primary_path: str, fallback_path: str = "") -> str:
     """image/video/raw -- три основных значения колонки "Тип медиа" (спека). "other" --
     осознанный запасной вариант ДЛЯ ЭТОГО модуля, не буквально "ровно три значения" из
@@ -130,9 +214,11 @@ def _build_detail_rows(data: dict) -> list:
     в xlsx, тестируется независимо от openpyxl."""
     near_dup_clusters = _cluster_near_dup(data.get("near_dup_edges", []))
     series_id_by_dest = {}
+    series_ps_by_dest = {}
     for i, cluster in enumerate(near_dup_clusters, start=1):
         for dest in cluster:
             series_id_by_dest[dest] = i
+        series_ps_by_dest.update(_series_ps_commands(cluster))
 
     # PROMPT_report_detail_xlsx.md, "Примечание": «дата приблизительная» -- Tier B/C
     # (дата ЕСТЬ, но не по EXIF, run_logs.date_review()/dates_review.csv, только
@@ -183,6 +269,7 @@ def _build_detail_rows(data: dict) -> list:
             "folder": _source_dirname(source), "name": source_name, "ext": _ext(source),
             "kind": kind, "copied": True, "dest_or_dup": dest, "final_name": final_name,
             "series_id": series_id, "note": note, "color": None,
+            "ps_command": series_ps_by_dest.get(dest, ""),
         })
 
     for dest_dir, group_rows in dvd_groups.items():
@@ -198,7 +285,7 @@ def _build_detail_rows(data: dict) -> list:
             "final_name": dest_name if dest_name != "VIDEO_TS" else "",
             "series_id": 0,
             "note": f"DVD-видео (VIDEO_TS), скопировано целиком ({_n_files(len(group_rows))})",
-            "color": None,
+            "color": None, "ps_command": "",
         })
 
     for r in data.get("disputes", []):
@@ -214,6 +301,7 @@ def _build_detail_rows(data: dict) -> list:
             "folder": _source_dirname(source), "name": source_name, "ext": _ext(source),
             "kind": _row_kind(dest, source), "copied": True, "dest_or_dup": dest,
             "final_name": final_name, "series_id": 0, "note": "; ".join(notes), "color": None,
+            "ps_command": "",
         })
 
     for r in data.get("skipped", []):
@@ -234,6 +322,7 @@ def _build_detail_rows(data: dict) -> list:
             "folder": _source_dirname(source), "name": source_name, "ext": _ext(source),
             "kind": kind, "copied": False, "dest_or_dup": matched, "final_name": "",
             "series_id": 0, "note": note, "color": color,
+            "ps_command": _dup_pair_ps_command(source, matched),
         })
 
     for r in data.get("unreadable", []):
@@ -244,7 +333,7 @@ def _build_detail_rows(data: dict) -> list:
             "folder": _source_dirname(source), "name": source_name, "ext": _ext(source),
             "kind": _row_kind(source), "copied": False, "dest_or_dup": "", "final_name": "",
             "series_id": 0, "note": f"не прочитано: {error}" if error else "не прочитано",
-            "color": _COLOR_PROBLEM,
+            "color": _COLOR_PROBLEM, "ps_command": "",
         })
 
     rows.sort(key=lambda d: (d["folder"], d["name"]))
@@ -276,19 +365,29 @@ def generate_detail_xlsx(data: dict, report_out_path: str) -> str:
       +/- по папке); убран 2026-08-28 вместе с переходом на write_only-режим openpyxl (см.
       _write_flat_xlsx()) -- на большом архиве обычный режим уходил в минуты, а outline для
       прогонов с тысячами папок всё равно бесполезен. Навигация по папке -- автофильтр +
-      сортировка по первой колонке."""
+      сортировка по первой колонке.
+    - "Открыть файл (PowerShell)" (живая находка пользователя, 2026-09-05: колонка уже была
+      в Паспорте, отсутствие в детализации обычного прогона неожиданно для пользователя) --
+      две разные логики под одним заголовком, по типу строки: "похожая серия" -- тот же приём,
+      что и в Паспорте (_series_ps_commands(), одна команда на весь кластер near_dup, открывает
+      всех членов сразу независимо от папки); "дубликат" (skipped: already_present/
+      identical_at_destination/raw_skipped_has_jpeg) -- своя логика (_dup_pair_ps_command()):
+      ровно одна пара источник (ещё не скопирован, SOURCE) / то, с чем совпал (уже в архиве,
+      TARGET) -- команда открывает оба. Остальные строки (обычный новый файл, DVD-юнит,
+      спорный, не прочитано) -- пустая ячейка, открывать нечего/не с чем сравнивать."""
     rows = _build_detail_rows(data)
     if not rows:
         return None
     values = [
         [row["folder"], row["name"], row["ext"], _KIND_LABELS.get(row["kind"], row["kind"]),
          "да" if row["copied"] else "нет", row["dest_or_dup"], row["final_name"],
-         row["series_id"], row["note"]]
+         row["series_id"], row["note"], row["ps_command"]]
         for row in rows
     ]
     out_path = os.path.join(os.path.dirname(report_out_path), DETAIL_XLSX_FILENAME)
     _write_flat_xlsx(_COLUMN_HEADERS, _COLUMN_WIDTHS, values,
-                      colors=[row["color"] for row in rows], out_path=out_path)
+                      colors=[row["color"] for row in rows], out_path=out_path,
+                      small_font_col=_DETAIL_PS_COMMAND_COL)
     return DETAIL_XLSX_FILENAME
 
 
@@ -306,18 +405,18 @@ def _write_flat_xlsx(headers: list, widths: list, values: list, colors: list,
     единицы, объекты Font кэшируются и один инстанс переиспользуется на все ячейки.
 
     `small_font_col` (0-based, опционально) -- одна колонка получает уменьшенный шрифт
-    (`_SMALL_FONT_SIZE`) независимо от цвета строки. Единственный вызывающий сейчас --
-    Паспорт-детализация для столбца "Открыть файл (PowerShell)" (SESSION-HANDOFF.txt,
-    2026-09-04): вся ячейка копируется целиком, читаемость на глаз вторична.
-    generate_detail_xlsx() параметр не передаёт (None) -- поведение для обычного прогона
-    не меняется байт-в-байт.
+    (`_SMALL_FONT_SIZE`) независимо от цвета строки. Введён 2026-09-04 для столбца
+    "Открыть файл (PowerShell)" в Паспорт-детализации (SESSION-HANDOFF.txt), с 2026-09-05
+    передаётся и generate_detail_xlsx() (тот же столбец в детализации обычного прогона) --
+    вся ячейка копируется целиком, читаемость на глаз вторична.
 
     REVIEW-HANDOFF.md, Раунд 204 [ПРИДИРКА] 204-1: `needs_styled_path` ниже гейтит только
     выбор между быстрым (`ws.append`) и медленным (`WriteOnlyCell`) путём -- если строка ушла
     по медленному пути (цветная строка ИЛИ непустая ячейка `small_font_col`), сама ячейка
     `small_font_col` красится мелким шрифтом БЕЗУСЛОВНО, даже когда она пуста (напр. цветная
-    строка "дубликат" с файлом-одиночкой в своей папке). Визуально не наблюдаемо (пустая ячейка
-    не рендерит текст ни при каком размере) -- ревизор согласился, что править не нужно; имя
+    строка "дубликат" без пары для сравнения -- `_dup_pair_ps_command()` вернул "").
+    Визуально не наблюдаемо (пустая ячейка не рендерит текст ни при каком размере) -- ревизор
+    согласился, что править не нужно; имя
     переименовано только для ясности при чтении, не поведение.
 
     write_only-режим openpyxl (2026-08-28, живой боевой прогон + прямое решение пользователя,
@@ -388,9 +487,11 @@ def _write_flat_xlsx(headers: list, widths: list, values: list, colors: list,
 PASSPORT_DETAIL_XLSX_FILENAME = "passport_detail.xlsx"
 
 _PASSPORT_COLUMN_HEADERS = ["Папка", "Имя", "Тип находки", "№ группы",
-                             "Открыть файл (PowerShell)", "Примечание"]
-_PASSPORT_COLUMN_WIDTHS = [55, 32, 20, 10, 46, 45]
-_PASSPORT_PS_COMMAND_COL = 4  # 0-based -- индекс "Открыть файл (PowerShell)" в _values ниже
+                             "Примечание", "Открыть файл (PowerShell)"]
+_PASSPORT_COLUMN_WIDTHS = [55, 32, 20, 10, 45, 46]
+# 0-based -- см. _DETAIL_PS_COMMAND_COL (ПОСЛЕДНЯЯ колонка, переполнение текста не перекрывает
+# "Примечание").
+_PASSPORT_PS_COMMAND_COL = 5
 
 
 def _passport_row(path: str, category: str, group_id: int, note: str, color: str,
@@ -400,27 +501,6 @@ def _passport_row(path: str, category: str, group_id: int, note: str, color: str
         "category": category, "group_id": group_id, "note": note, "color": color,
         "ps_command": ps_command,
     }
-
-
-def _powershell_open_command(path: str) -> str:
-    """SESSION-HANDOFF.txt, 2026-09-04 ("серии: РЕШЕНИЕ ПРИНЯТО"): готовая команда для вставки
-    в открытое окно PowerShell -- открывает файл приложением по умолчанию для его расширения у
-    ЭТОГО пользователя (не хардкодим "Фотографии"), тем же путём, что уже проверен живым кликом
-    в этой сессии (ShellExecute без явной программы). Одинарная кавычка в пути ломает
-    PowerShell-литерал '...' -- экранируется удвоением, штатный приём самого PowerShell."""
-    return "Start-Process '%s'" % path.replace("'", "''")
-
-
-def _passport_series_ps_commands(abs_paths: list) -> dict:
-    """Команда -- только для member'ов кластера (дубликат/похожая серия), чья подгруппа В ОДНОЙ
-    папке (порезка по _source_dirname()) насчитывает >=2 файлов -- решение пользователя: серия,
-    раскиданная по разным папкам (напр. то же фото в альбоме и в ByDate), реально сравнивать
-    как серию всё равно не даёт (Проводник открывается по одной папке за раз), пустая ячейка
-    честнее, чем команда на единственный файл."""
-    by_folder = {}
-    for p in abs_paths:
-        by_folder.setdefault(_source_dirname(p), []).append(p)
-    return {p: _powershell_open_command(p) for p in abs_paths if len(by_folder[_source_dirname(p)]) >= 2}
 
 
 def _passport_abs_path(rel_path: str, target_path: str = None) -> str:
@@ -481,7 +561,7 @@ def _build_passport_detail_rows(stats, target_path: str = None) -> list:
     exact_clusters = _cluster_passport_edges(stats.exact_dup_edges)
     for i, cluster in enumerate(exact_clusters, start=1):
         abs_paths = [_passport_abs_path(path, target_path) for path in cluster]
-        ps_by_path = _passport_series_ps_commands(abs_paths)
+        ps_by_path = _series_ps_commands(abs_paths)
         for path in abs_paths:
             rows.append(_passport_row(path, "дубликат", i, "", _COLOR_DUPLICATE,
                                        ps_by_path.get(path, "")))
@@ -489,7 +569,7 @@ def _build_passport_detail_rows(stats, target_path: str = None) -> list:
     near_clusters = _cluster_passport_edges(stats.near_dup_edges)
     for i, cluster in enumerate(near_clusters, start=1):
         abs_paths = [_passport_abs_path(path, target_path) for path in cluster]
-        ps_by_path = _passport_series_ps_commands(abs_paths)
+        ps_by_path = _series_ps_commands(abs_paths)
         for path in abs_paths:
             rows.append(_passport_row(path, "похожая серия", i, "", None,
                                        ps_by_path.get(path, "")))
@@ -516,8 +596,8 @@ def generate_passport_detail_xlsx(stats, report_out_path: str, target_path: str 
     rows = _build_passport_detail_rows(stats, target_path)
     if not rows:
         return None
-    values = [[row["folder"], row["name"], row["category"], row["group_id"], row["ps_command"],
-               row["note"]] for row in rows]
+    values = [[row["folder"], row["name"], row["category"], row["group_id"], row["note"],
+               row["ps_command"]] for row in rows]
     out_path = os.path.join(os.path.dirname(report_out_path), PASSPORT_DETAIL_XLSX_FILENAME)
     _write_flat_xlsx(_PASSPORT_COLUMN_HEADERS, _PASSPORT_COLUMN_WIDTHS, values,
                       colors=[row["color"] for row in rows], out_path=out_path,

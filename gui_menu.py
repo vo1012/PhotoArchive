@@ -476,6 +476,19 @@ def _px(n: int) -> int:
     return round(n * _dpi_scale)
 
 
+def _make_nav_button(parent, text: str, command=None, **extra):
+    """Общий стиль кнопок нижней панели мастера/нотисов/экрана «Выполнение» (REVIEW-HANDOFF.md,
+    Раунд 206-9): 11 мест собирали `tk.Button(..., font=("Segoe UI", 9), padx=_px(11),
+    pady=_px(4))` вручную, идентичным набором аргументов -- следующая смена шрифта/отступа
+    требовала правки в каждом. `command=None` -- как у next_btn мастера (_Wizard.build_shell()),
+    который получает реальную команду позже через `.config()`, не в момент создания.
+    `**extra` -- редкие отличия отдельных кнопок (напр. `width=11` у кнопки «Пауза», см.
+    _render_run_buttons_running())."""
+    import tkinter as tk
+    return tk.Button(parent, text=text, command=command, font=("Segoe UI", 9),
+                      padx=_px(11), pady=_px(4), **extra)
+
+
 def _fmt_elapsed_clock(seconds: int) -> str:
     """Живой таймер «Прошло:» на экране «Выполнение» (см. _Wizard._start_run_timer()).
     Адаптивный, а не фикс. ДД:ЧЧ:ММ:СС: типовой прогон -- минуты, и «00:00:05:03» ради
@@ -854,105 +867,6 @@ def _open_report_link(report_path: str) -> None:
         pass
 
 
-def _diag_focus_poll_start(duration_s: float = 8.0) -> list:
-    """ВРЕМЕННАЯ диагностика (2026-08-24, живая просьба пользователя -- продолжение открытой
-    задачи "после отчёта фокус остаётся не на нотисе"). Тот же приём, что уже сработал для
-    находки "две копии _ACTIVE_BARS" (печать в файл + чтение постфактум, env-гейт
-    `PHOTOARCHIVE_DIAG_STDIO`, убран после находки) -- ловить момент через диалог с
-    пользователем не получается (сама попытка поймать -- уже переключение на другую программу,
-    после которого проблема исчезает), значит логировать должен сам процесс, без участия
-    пользователя в критический момент.
-
-    2026-08-24, ВТОРОЙ заход -- первая версия (см. git-историю) фильтровала строки по смене
-    PID владельца foreground-окна и логировала только имя exe. Живой прогон её опроверг: PID
-    оставался "наш" (own=True) с самой первой миллисекунды -- гипотеза "фокус держит ЧУЖОЙ
-    процесс (conhost.exe/Windows Terminal)" неверна. Но это не значит, что фокус реально на
-    нотисе -- у ОДНОГО нашего процесса несколько СВОИХ окон (консоль и нотис), PID-фильтр в
-    принципе не мог отличить их друг от друга. Эта версия сравнивает HWND напрямую: консоль
-    (`GetConsoleWindow()`, известен сразу) и нотис (реальный top-level этого Tk-root, тот же
-    `GetAncestor(..., GA_ROOT)`-приём, что и у `_set_crisp_taskbar_icon()` -- `winfo_id()` сам
-    по себе НЕ top-level, см. её докстринг) -- строка пишется на любую смену HWND (не PID),
-    is_console/is_notice -- явные булевы флаги, а не только имя exe.
-
-    Возвращает [0] -- мутируемый holder на один элемент: вызывающая сторона (_notice_window())
-    заполняет его реальным top-level HWND нотиса, как только тот известен (после
-    update_idletasks(), см. вызов ниже) -- до этого поток видит там 0 и просто не может
-    сопоставить is_notice, что тоже видно в логе (is_notice=False, notice_hwnd=0).
-
-    Гейт `PHOTOARCHIVE_DIAG_FOCUS` -- без него функция no-op (возвращает holder сразу, поток не
-    стартует), нулевая цена в обычной работе. Пишет в `%TEMP%\\photoarchive_focus_diag.log`
-    (append, не перезаписывает старые сессии). Поток фоновый/daemon -- не блокирует и не может
-    сломать сам нотис, любая ошибка проглатывается. Убрать целиком после находки (тот же
-    принцип, что и у уже убранного `PHOTOARCHIVE_DIAG_STDIO` -- не постоянная часть кодовой
-    базы)."""
-    holder = [0]
-    if os.name != "nt" or not os.environ.get("PHOTOARCHIVE_DIAG_FOCUS"):
-        return holder
-    import ctypes
-    import tempfile
-    import threading
-    import time
-
-    def _worker():
-        try:
-            log_path = os.path.join(tempfile.gettempdir(), "photoarchive_focus_diag.log")
-            user32 = ctypes.windll.user32
-            kernel32 = ctypes.windll.kernel32
-            user32.GetForegroundWindow.restype = ctypes.c_void_p
-            user32.GetWindowThreadProcessId.restype = ctypes.c_ulong
-            user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p,
-                                                          ctypes.POINTER(ctypes.c_ulong)]
-            user32.IsIconic.restype = ctypes.c_int
-            user32.IsIconic.argtypes = [ctypes.c_void_p]
-            kernel32.GetConsoleWindow.restype = ctypes.c_void_p
-            kernel32.OpenProcess.restype = ctypes.c_void_p
-            kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
-            kernel32.QueryFullProcessImageNameW.argtypes = [
-                ctypes.c_void_p, ctypes.c_ulong, ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_ulong)]
-            own_pid = os.getpid()
-            console_hwnd = kernel32.GetConsoleWindow()
-            t0 = time.monotonic()
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write("\n--- diag session start pid=%d console_hwnd=%s %s ---\n"
-                         % (own_pid, console_hwnd, time.strftime("%H:%M:%S")))
-                f.flush()
-                last_hwnd = None
-                while time.monotonic() - t0 < duration_s:
-                    hwnd = user32.GetForegroundWindow()
-                    if hwnd != last_hwnd:
-                        pid = ctypes.c_ulong(0)
-                        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-                        exe_name = "?"
-                        if pid.value:
-                            # PROCESS_QUERY_LIMITED_INFORMATION -- доступно даже без прав на
-                            # чужой процесс.
-                            h = kernel32.OpenProcess(0x1000, False, pid.value)
-                            if h:
-                                buf = ctypes.create_unicode_buffer(260)
-                                size = ctypes.c_ulong(260)
-                                if kernel32.QueryFullProcessImageNameW(
-                                        h, 0, buf, ctypes.byref(size)):
-                                    exe_name = os.path.basename(buf.value)
-                                kernel32.CloseHandle(h)
-                        notice_hwnd = holder[0]
-                        console_iconic = (bool(user32.IsIconic(console_hwnd))
-                                            if console_hwnd else "?")
-                        elapsed_ms = int((time.monotonic() - t0) * 1000)
-                        f.write("%6dms hwnd=%s pid=%s own=%s exe=%s is_console=%s "
-                                 "notice_hwnd=%s is_notice=%s console_iconic=%s\n"
-                                 % (elapsed_ms, hwnd, pid.value, pid.value == own_pid, exe_name,
-                                    hwnd == console_hwnd, notice_hwnd,
-                                    bool(notice_hwnd) and hwnd == notice_hwnd, console_iconic))
-                        f.flush()
-                        last_hwnd = hwnd
-                    time.sleep(0.05)
-        except Exception:
-            pass
-
-    threading.Thread(target=_worker, daemon=True).start()
-    return holder
-
-
 def _notice_window(message: str, button_label: str = "Продолжить", show_exit: bool = False,
                      link_text: str = None, link_command=None, footer_text: str = None,
                      _retry: bool = False) -> str:
@@ -988,7 +902,6 @@ def _notice_window(message: str, button_label: str = "Продолжить", sho
     рисуется, тот же принцип, что и у link_text/link_command."""
     import tkinter as tk
 
-    diag_notice_hwnd_holder = _diag_focus_poll_start() if not _retry else None
     _configure_dpi_awareness()
     root = tk.Tk()
     _apply_dpi_and_font_scale(root, _retry)
@@ -1044,15 +957,12 @@ def _notice_window(message: str, button_label: str = "Продолжить", sho
     if show_exit:
         btn_row = tk.Frame(frame, bg=_BG)
         btn_row.pack()
-        continue_btn = tk.Button(btn_row, text=button_label, command=lambda: _close("continue"),
-                                   font=("Segoe UI", 9), padx=_px(11), pady=_px(4))
+        continue_btn = _make_nav_button(btn_row, button_label, command=lambda: _close("continue"))
         continue_btn.pack(side="left", padx=(0, _px(10)))
-        tk.Button(btn_row, text="Выход", command=lambda: _close("exit"),
-                   font=("Segoe UI", 9), padx=_px(11), pady=_px(4)).pack(side="left")
+        _make_nav_button(btn_row, "Выход", command=lambda: _close("exit")).pack(side="left")
         continue_btn.focus_set()
     else:
-        btn = tk.Button(frame, text=button_label, command=lambda: _close("continue"),
-                         font=("Segoe UI", 9), padx=_px(11), pady=_px(4))
+        btn = _make_nav_button(frame, button_label, command=lambda: _close("continue"))
         btn.pack()
         btn.focus_set()
 
@@ -1063,9 +973,10 @@ def _notice_window(message: str, button_label: str = "Продолжить", sho
         return _notice_window(message, button_label, show_exit, link_text, link_command,
                                 footer_text, _retry=True)
 
-    # 2026-08-24, живая находка пользователя + диагностика (PHOTOARCHIVE_DIAG_FOCUS, см.
-    # _diag_focus_poll_start()): в модели ДО экрана «Выполнение» (2026-09, PROMPT_run_screen.md
-    # -- см. её текущий докстринг за актуальной моделью) после того как реальная обработка
+    # 2026-08-24, живая находка пользователя (диагностика, которой это было найдено, убрана
+    # после находки, см. REVIEW-HANDOFF.md, Раунд 206-8): в модели ДО экрана «Выполнение»
+    # (2026-09, PROMPT_run_screen.md -- см. её текущий докстринг за актуальной моделью) после
+    # того как реальная обработка
     # заканчивалась, рабочая консоль оставалась настоящим foreground-окном ОС, пока пользователь
     # сам не кликнет по этому нотису -- Tk просто
     # ПОКАЗЫВАЕТ новое окно (видно, поверх по Z-order), но не запрашивает для него реальный
@@ -1092,8 +1003,6 @@ def _notice_window(message: str, button_label: str = "Продолжить", sho
             user32.SetForegroundWindow(real_hwnd)
     except Exception:
         pass
-    if diag_notice_hwnd_holder is not None and real_hwnd:
-        diag_notice_hwnd_holder[0] = real_hwnd
 
     job = [None]
 
@@ -1424,15 +1333,12 @@ class _Wizard:
         nav = tk.Frame(root, bg=_BG, padx=_px(24), pady=_px(12), height=_px(60))
         nav.pack_propagate(False)
         nav.pack(fill="x")
-        self.back_btn = tk.Button(nav, text="Назад", font=("Segoe UI", 9),
-                                    command=self._on_back, padx=_px(11), pady=_px(4))
-        self.cancel_btn = tk.Button(nav, text="Выход", font=("Segoe UI", 9),
-                                      command=self._on_close, padx=_px(11), pady=_px(4))
+        self.back_btn = _make_nav_button(nav, "Назад", command=self._on_back)
+        self.cancel_btn = _make_nav_button(nav, "Выход", command=self._on_close)
         # Стиль совпадает с back_btn/cancel_btn (2026-08-22, по прямой просьбе пользователя) --
         # раньше "Далее"/"Начать" выделялась зелёным фоном+bold, единственная кнопка с акцентным
         # стилем в nav; теперь все три кнопки нижней панели визуально равноправны.
-        self.next_btn = tk.Button(nav, text="Далее", font=("Segoe UI", 9),
-                                    padx=_px(11), pady=_px(4))
+        self.next_btn = _make_nav_button(nav, "Далее")
         # Ни одна из трёх кнопок не .pack()-ается здесь -- _configure_nav() ниже целиком
         # управляет видимостью каждой (pack()/pack_forget()) под конкретный экран, единообразно
         # для back/cancel/next (экран 1 не показывает НИ одну из трёх -- см. render_mode_screen(),
@@ -1939,16 +1845,14 @@ class _Wizard:
         self._start_run_timer()
 
     def _render_run_buttons_running(self) -> None:
-        import tkinter as tk
         self._clear_run_buttons()
         # width фиксирован под самый длинный вариант ("Продолжить", 10 симв.) -- иначе кнопка
         # скачет по ширине при переключении Пауза<->Продолжить (живой отзыв, 2026-09-01).
-        self._run_pause_btn = tk.Button(
-            self._run_button_frame, text="Пауза", font=("Segoe UI", 9), width=11,
-            command=self._on_run_pause_toggle, padx=_px(11), pady=_px(4))
+        self._run_pause_btn = _make_nav_button(
+            self._run_button_frame, "Пауза", command=self._on_run_pause_toggle, width=11)
         self._run_pause_btn.pack(side="left")
-        tk.Button(self._run_button_frame, text="Прервать работу", font=("Segoe UI", 9),
-                   command=self._on_run_cancel_soft, padx=_px(11), pady=_px(4)).pack(
+        _make_nav_button(self._run_button_frame, "Прервать работу",
+                          command=self._on_run_cancel_soft).pack(
             side="left", padx=(_px(10), 0))
         # «Сохранить лог…» убрана (живой отзыв, 2026-09-01): панель-зеркало -- кольцевой
         # буфер (_RUN_MIRROR_MAX_LINES), кнопка отдавала бы обрезанный хвост, выглядящий как
@@ -2176,6 +2080,17 @@ class _Wizard:
         self._render_run_header_outcome(outcome, report_path, error_text, crashlog_path)
         self._render_run_buttons_outcome(outcome)
 
+    # REVIEW-HANDOFF.md, Раунд 206-10: dict-driven диспетчер вместо растущей if/elif-цепочки
+    # (тот же принцип, что уже даёт _RUN_OUTCOME_TITLES выше) -- каждый исход со своим телом
+    # заголовка несёт здесь имя метода, остальные (ok/warnings/interrupted) используют общий
+    # _render_run_body_default. Диспетчер сам по себе не меняет поведение ни одного исхода --
+    # чистый рефакторинг, тело каждой ветки перенесено байт-в-байт в свой метод.
+    _RUN_OUTCOME_BODY_METHOD = {
+        "failed": "_render_run_body_failed",
+        "nothing": "_render_run_body_nothing",
+        "aborted": "_render_run_body_aborted",
+    }
+
     def _render_run_header_outcome(self, outcome, report_path, error_text, crashlog_path) -> None:
         import tkinter as tk
         self._clear_run_header()
@@ -2193,33 +2108,43 @@ class _Wizard:
         tk.Label(self._run_header_frame, text=title, bg=_BG, fg=color,
                   font=("Segoe UI", 11, "bold"), anchor="w", wraplength=_px(_RUN_TEXT_WRAP),
                   justify="left").pack(fill="x")
-        if outcome == "failed":
-            msg = error_text or "Произошла непредвиденная ошибка."
-            if crashlog_path:
-                msg += (f"\n\nПодробности сохранены в {crashlog_path} — приложите этот файл, "
-                        "если сообщаете о проблеме.")
-            tk.Label(self._run_header_frame, text=msg, bg=_BG, fg=_TEXT, font=("Segoe UI", 9),
-                      anchor="w", justify="left", wraplength=_px(_RUN_TEXT_WRAP)).pack(
-                fill="x", pady=(_px(4), 0))
-            return
-        if outcome == "nothing":
-            # 182-2: не краш -- пояснение вместо «Обработано объектов: 0» (счётчик
-            # m._last_bare_launch_object_count не выставляется на None-ветках движка и был бы
-            # тут устаревшим значением от прошлого цикла), ссылки на отчёт нет (отчёта нет).
-            tk.Label(self._run_header_frame, text=_RUN_NOTHING_MESSAGE, bg=_BG, fg=_TEXT,
-                      font=("Segoe UI", 9), anchor="w", justify="left",
-                      wraplength=_px(_RUN_TEXT_WRAP)).pack(fill="x", pady=(_px(4), 0))
-            return
-        if outcome == "aborted":
-            # 183-1/183-2: сломалась сама обработка. Пояснение + указание на crash.log +
-            # ссылка на частичный отчёт (счётчик объектов не показываем -- на этом пути движок
-            # его не выставил, было бы устаревшее значение).
-            tk.Label(self._run_header_frame, text=_RUN_ABORTED_MESSAGE, bg=_BG, fg=_TEXT,
-                      font=("Segoe UI", 9), anchor="w", justify="left",
-                      wraplength=_px(_RUN_TEXT_WRAP)).pack(fill="x", pady=(_px(4), 0))
-            if report_path:
-                self._add_run_report_link("Частичный отчёт", report_path)
-            return
+        method_name = self._RUN_OUTCOME_BODY_METHOD.get(outcome, "_render_run_body_default")
+        getattr(self, method_name)(outcome, report_path, error_text, crashlog_path)
+
+    def _render_run_body_failed(self, outcome, report_path, error_text, crashlog_path) -> None:
+        import tkinter as tk
+        msg = error_text or "Произошла непредвиденная ошибка."
+        if crashlog_path:
+            msg += (f"\n\nПодробности сохранены в {crashlog_path} — приложите этот файл, "
+                    "если сообщаете о проблеме.")
+        tk.Label(self._run_header_frame, text=msg, bg=_BG, fg=_TEXT, font=("Segoe UI", 9),
+                  anchor="w", justify="left", wraplength=_px(_RUN_TEXT_WRAP)).pack(
+            fill="x", pady=(_px(4), 0))
+
+    def _render_run_body_nothing(self, outcome, report_path, error_text, crashlog_path) -> None:
+        # 182-2: не краш -- пояснение вместо «Обработано объектов: 0» (счётчик
+        # m._last_bare_launch_object_count не выставляется на None-ветках движка и был бы
+        # тут устаревшим значением от прошлого цикла), ссылки на отчёт нет (отчёта нет).
+        import tkinter as tk
+        tk.Label(self._run_header_frame, text=_RUN_NOTHING_MESSAGE, bg=_BG, fg=_TEXT,
+                  font=("Segoe UI", 9), anchor="w", justify="left",
+                  wraplength=_px(_RUN_TEXT_WRAP)).pack(fill="x", pady=(_px(4), 0))
+
+    def _render_run_body_aborted(self, outcome, report_path, error_text, crashlog_path) -> None:
+        # 183-1/183-2: сломалась сама обработка. Пояснение + указание на crash.log +
+        # ссылка на частичный отчёт (счётчик объектов не показываем -- на этом пути движок
+        # его не выставил, было бы устаревшее значение).
+        import tkinter as tk
+        tk.Label(self._run_header_frame, text=_RUN_ABORTED_MESSAGE, bg=_BG, fg=_TEXT,
+                  font=("Segoe UI", 9), anchor="w", justify="left",
+                  wraplength=_px(_RUN_TEXT_WRAP)).pack(fill="x", pady=(_px(4), 0))
+        if report_path:
+            self._add_run_report_link("Частичный отчёт", report_path)
+
+    def _render_run_body_default(self, outcome, report_path, error_text, crashlog_path) -> None:
+        """ok/warnings/interrupted -- единственные исходы без записи в _RUN_OUTCOME_BODY_METHOD,
+        попадают сюда через .get()-фоллбэк."""
+        import tkinter as tk
         count_label = ("Найдено объектов" if self.state["mode"] in ("view", "passport")
                         else "Обработано объектов")
         tk.Label(self._run_header_frame,
@@ -2242,7 +2167,6 @@ class _Wizard:
         link.bind("<Button-1>", lambda _e: _open_report_link(report_path))
 
     def _render_run_buttons_outcome(self, outcome) -> None:
-        import tkinter as tk
         self._clear_run_buttons()
         # 182-2 / 183-2: `nothing` и `aborted` -- «Главное меню» есть (не краш), но «Открыть
         # папку архива» нет (для `nothing` ничего не создано; для `aborted` частичный результат
@@ -2250,15 +2174,13 @@ class _Wizard:
         # Только режим «Создание архива» (build) -- «Просмотр»/«Паспорт»/«Пробный прогон» ничего
         # в TARGET не пишут, открывать там нечего (живой отзыв, 2026-09-01).
         if outcome not in ("failed", "nothing", "aborted") and self.state.get("mode") == "build":
-            tk.Button(self._run_button_frame, text="Открыть папку архива",
-                       font=("Segoe UI", 9), command=self._on_run_open_target_folder,
-                       padx=_px(11), pady=_px(4)).pack(side="left")
+            _make_nav_button(self._run_button_frame, "Открыть папку архива",
+                              command=self._on_run_open_target_folder).pack(side="left")
         if outcome != "failed":
-            tk.Button(self._run_button_frame, text="Главное меню", font=("Segoe UI", 9),
-                       command=self._on_run_menu, padx=_px(11), pady=_px(4)).pack(
+            _make_nav_button(self._run_button_frame, "Главное меню",
+                              command=self._on_run_menu).pack(
                 side="left", padx=(_px(10), 0))
-        tk.Button(self._run_button_frame, text="Выход", font=("Segoe UI", 9),
-                   command=self._on_run_exit, padx=_px(11), pady=_px(4)).pack(
+        _make_nav_button(self._run_button_frame, "Выход", command=self._on_run_exit).pack(
             side="left", padx=(_px(10), 0))
 
     def _on_run_open_target_folder(self) -> None:
