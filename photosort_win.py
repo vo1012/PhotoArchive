@@ -79,7 +79,7 @@ warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
 # blanket ignore of all warnings, so any other future PIL/library warning still surfaces.
 warnings.filterwarnings("ignore", message="Palette images with Transparency.*", category=UserWarning)
 
-__version__ = "0.6.11"          # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
+__version__ = "0.6.12"          # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
                                  # с RULES_VERSION ниже (та про совместимость архива, а не exe)
 RULES_VERSION = "2026-08-11"   # дата последнего изменения бизнес-правил -- см. RULES.md;
                                 # менять руками при изменении логики раскладки/дедупа/дат
@@ -6896,13 +6896,6 @@ def build_bydate_dest_dir(bydate_root: str, date_value, precision: str, place: s
     return os.path.join(bydate_root, str(year), f"{day_folder}{DUMP_TAG}")
 
 
-def build_mirror_dest_dir(root: str, rel_dir: str) -> str:
-    if not rel_dir:
-        return root
-    parts = [sanitize_windows_component(p) for p in rel_dir.split("/") if p]
-    return os.path.join(root, *parts) if parts else root
-
-
 def raw_dest_dir(item: "SourceItem", rec: "SourceRecord", cfg: "Config",
                   dest_path_by_read_path: dict, date_ctx: "DateContext") -> str:
     """Папка назначения для RAW-кандидата (те, что реально мирроятся -- см. decide()),
@@ -11197,21 +11190,6 @@ def _strip_surrounding_quotes(path: str) -> str:
     if len(path) >= 2 and path[0] == '"' and path[-1] == '"':
         return path[1:-1].strip()
     return path
-
-
-def interactive_input(input_fn=input):
-    # p.5.4: голый английский жаргон "SOURCE"/"TARGET" смущает нетехнического пользователя в
-    # интерактивном вводе -- переведено на русский без этих слов (согласовано с пользователем,
-    # см. SESSION-HANDOFF.txt). CLI-флаги --source/--target и photoarchive_config.yaml НЕ переименованы --
-    # это контракт для технических пользователей/скриптов, менять его отдельный вопрос.
-    source = input_fn(
-        "Откуда брать фото (папка, диск, файл-архив.zip, или all — все диски; "
-        "можно перетащить папку сюда мышкой): "
-    ).strip()
-    target = input_fn(
-        "Куда сложить архив (папка; можно перетащить папку сюда мышкой): "
-    ).strip()
-    return _strip_surrounding_quotes(source), _strip_surrounding_quotes(target)
 
 
 TARGET_OWN_STRUCTURE_NAMES = {"__служебные_файлы", "_unsorted", "albums", "bydate", "raw"}

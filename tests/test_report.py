@@ -1287,16 +1287,19 @@ def test_cluster_checklist_item_multi_folder_with_verify_link_uses_summary_not_p
     """Задача 6 (SESSION-HANDOFF.txt, пакет "боевой прогон D:\\"): живые примеры на боевом
     прогоне (32/19/13/8-кадровые кластеры) показали, что построчный список путей для случая
     "разные папки" читается непоследовательно рядом с компактной однопапочной веткой ниже --
-    с verify_link построчный список убирается вообще, остаётся ссылка на полную сверку."""
+    с verify_link построчный список убирается вообще, остаётся ссылка на полную сверку.
+    Страница-адресат самой ссылки удалена (REVIEW-HANDOFF.md Раунд 206-6, была мёртвым кодом в
+    проде) -- verify_link у этой функции остаётся обычным параметром, тест использует голую
+    строку вместо удалённой r.DEDUP_VERIFICATION_FILENAME."""
     cluster = [r"C:\T\dst\ByDate\2024\2024-06\a.jpg", r"C:\T\dst\ByDate\2024\2024-07\b.jpg"]
-    title, detail = r._cluster_checklist_item(cluster, verify_link=r.DEDUP_VERIFICATION_FILENAME)
+    title, detail = r._cluster_checklist_item(cluster, verify_link="dedup_verification.html")
     assert title == "Похожая серия из 2 кадров"
     assert "a.jpg" not in detail  # построчного списка путей больше нет
     assert "b.jpg" not in detail
     # #dedup-near -- Пакет A п.4 (SESSION-HANDOFF.txt): без фрагмента ссылка открывала верх
     # страницы (секцию точных дублей, если она есть), не секцию похожих серий, к которой
     # относится эта подпись.
-    assert (f'<a href="{r.DEDUP_VERIFICATION_FILENAME}#dedup-near" target="_blank" rel="noopener">'
+    assert ('<a href="dedup_verification.html#dedup-near" target="_blank" rel="noopener">'
             "полная сверка похожих серий →</a>") in detail
 
 
@@ -1305,102 +1308,8 @@ def test_cluster_checklist_item_folder_is_a_clickable_file_link():
     похожих серий -- file://-ссылка на реальную папку в TARGET, не только текст. Однопапочная
     ветка не меняется задачей 6 -- verify_link здесь не используется вообще."""
     cluster = [r"C:\T\dst\Albums\Отпуск\a.jpg", r"C:\T\dst\Albums\Отпуск\b.jpg"]
-    title, detail = r._cluster_checklist_item(cluster, verify_link=r.DEDUP_VERIFICATION_FILENAME)
+    title, detail = r._cluster_checklist_item(cluster, verify_link="dedup_verification.html")
     assert '<a href="file:///C:/T/dst/Albums/Отпуск" target="_blank" rel="noopener">Albums\\Отпуск</a>' in detail
-
-
-def test_render_near_dup_verification_section_lists_full_cluster_without_truncation():
-    # 2026-08-08 (альбомный редизайн, вёрстка): таблица вместо карточки-на-кластер --
-    # "Кадров в серии" колонка, не заголовок "Похожая серия из N кадров".
-    clusters = [[rf"C:\T\dst\Albums\A{i}\f.jpg" for i in range(7)]]  # 7 разных папок, >5
-    html_out = r._render_near_dup_verification_section(clusters)
-    assert "<td>7</td>" in html_out
-    for i in range(7):
-        assert f"A{i}\\f.jpg" in html_out  # ни один файл не обрезан "и ещё N"
-
-
-def test_render_near_dup_verification_section_empty_returns_nothing():
-    assert r._render_near_dup_verification_section([]) == ""
-
-
-def test_render_near_dup_verification_section_excludes_single_folder_clusters():
-    """REVIEW-HANDOFF.md, Раунд 52 (придирка 2): страница обещает "разные папки" (CHANGELOG.md,
-    задача 6) -- однопапочный кластер уже показан полностью прямо в основном отчёте
-    (компактная ветка _cluster_checklist_item()), дублировать его здесь не нужно."""
-    single_folder = [[r"C:\T\dst\Albums\A\f1.jpg", r"C:\T\dst\Albums\A\f2.jpg"]]
-    assert r._render_near_dup_verification_section(single_folder) == ""
-
-    multi_folder = [[r"C:\T\dst\Albums\A\f1.jpg", r"C:\T\dst\Albums\B\f2.jpg"]]
-    html_out = r._render_near_dup_verification_section(multi_folder)
-    assert "<td>2</td>" in html_out
-
-
-def test_render_dedup_verification_page_empty_when_only_single_folder_near_dup():
-    """Тот же принцип, что и у секции выше, применённый к гейту всей страницы -- если из
-    похожих серий есть только однопапочные (а точных дублей нет вовсе), страница не должна
-    материализоваться как почти пустая (только "назад к отчёту")."""
-    data = {
-        "appended": [], "skipped": [],
-        "near_dup_edges": [
-            {"dest": r"C:\T\dst\Albums\A\f1.jpg", "matched_dest": r"C:\T\dst\Albums\A\f2.jpg"},
-        ],
-    }
-    assert r._render_dedup_verification_page(data) == ""
-
-
-def test_render_dedup_verification_page_includes_near_dup_clusters_without_exact_dups():
-    """Страница должна строиться и без единого точного дубля, если есть хотя бы одна
-    многопапочная похожая серия -- задача 6 полагается на то, что страница существует и в
-    этом случае (иначе ссылка из _cluster_checklist_item() вела бы в никуда)."""
-    data = {
-        "appended": [], "skipped": [],
-        "near_dup_edges": [
-            {"dest": r"C:\T\dst\ByDate\2024\a.jpg", "matched_dest": r"C:\T\dst\Albums\B\b.jpg"},
-        ],
-    }
-    html_out = r._render_dedup_verification_page(data)
-    assert "Полная сверка похожих серий" in html_out
-    assert "Полная сверка дублей" not in html_out
-    assert "a.jpg" in html_out and "b.jpg" in html_out
-
-
-def test_render_dedup_verification_page_both_sections_have_distinct_anchors(tmp_path):
-    """Пакет A п.4 (SESSION-HANDOFF.txt, живая находка из реального report.html): когда на
-    странице есть И точные дубли, И похожие серии в разных папках, "Полная сверка дублей"
-    всегда идёт ПЕРВОЙ секцией (_render_dedup_verification_page()), "Полная сверка похожих
-    серий" -- ниже. Без #id/#fragment обе ссылки-подписи из основного отчёта вели бы на верх
-    страницы (секцию дублей), даже подпись "полная сверка похожих серий →"."""
-    data = {
-        "appended": [
-            {"timestamp": "2026-01-01 00:00:01", "source": r"F:\orig\a.jpg",
-             "dest": r"C:\T\dst\Albums\Отпуск\a.jpg", "reason": "appended_new", "flags": ""},
-            {"timestamp": "2026-01-01 00:00:01", "source": "s0",
-             "dest": r"C:\T\dst\ByDate\2024\2024-06\c.jpg", "reason": "appended_new", "flags": ""},
-            {"timestamp": "2026-01-01 00:00:01", "source": "s1",
-             "dest": r"C:\T\dst\ByDate\2024\2024-07\d.jpg", "reason": "appended_near_dup", "flags": ""},
-        ],
-        "skipped": [
-            {"timestamp": "2026-01-01 00:00:01", "source": r"F:\dup\a_copy.jpg",
-             "matched_with": r"C:\T\dst\Albums\Отпуск\a.jpg", "reason": "already_present"},
-        ],
-        "near_dup_edges": [
-            {"timestamp": "2026-01-01 00:00:01", "dest": r"C:\T\dst\ByDate\2024\2024-07\d.jpg",
-             "matched_dest": r"C:\T\dst\ByDate\2024\2024-06\c.jpg"},
-        ],
-    }
-    html_out = r._render_dedup_verification_page(data)
-    assert '<h1 id="dedup-exact">Полная сверка дублей</h1>' in html_out
-    assert '<h1 id="dedup-near">Полная сверка похожих серий</h1>' in html_out
-    # Порядок секций -- дубли первой, похожие серии второй -- ровно тот случай, где отсутствие
-    # якорей раньше молча ломало ссылку "похожие серии".
-    assert html_out.index('id="dedup-exact"') < html_out.index('id="dedup-near"')
-    # PROMPT_report_run_redesign.md (2026-08-14), прямое решение пользователя: для
-    # run_start-ветки (checklist_new is not None -- реальный путь ЛЮБОГО production-вызова
-    # с level=="target") generate_dedup_verification_page() больше не вызывается вовсе --
-    # единственные потребители ссылки (_render_recommendations()/_render_exact_dup_examples())
-    # убраны из этой ветки. Сквозная проверка через generate_report() ЗДЕСЬ больше не
-    # применима -- сама функция _render_dedup_verification_page() выше по-прежнему рабочая
-    # и корректно расставляет якоря, просто на неё сейчас никто не ссылается.
 
 
 def test_render_exact_dup_examples_empty_renders_nothing():
@@ -1496,161 +1405,6 @@ def test_cluster_exact_dup_full_missing_origin_degrades_to_empty_string():
     groups = r._cluster_exact_dup_full(data)
     _, items = groups[0]
     assert items[0][1] == ""
-
-
-def test_render_dedup_verification_page_groups_visually_by_folder():
-    """По прямой просьбе пользователя -- не сплошной поток, а разделение по папкам альбома
-    (отдельная карточка на папку)."""
-    data = {
-        "appended": [{"timestamp": "t", "source": r"F:\orig\a.jpg",
-                      "dest": r"C:\T\dst\Albums\Отпуск\a.jpg", "reason": "appended_new", "flags": ""}],
-        "skipped": [
-            {"source": r"F:\dup\a_copy.jpg", "matched_with": r"C:\T\dst\Albums\Отпуск\a.jpg",
-             "reason": "already_present"},
-        ],
-    }
-    html_out = r._render_dedup_verification_page(data)
-    assert html_out.count('<div class="card">') >= 2  # заголовочная карточка + минимум одна папка
-    assert "Albums\\Отпуск" in html_out
-    assert "скопировано из F:\\orig\\a.jpg" in html_out
-    assert "F:\\dup\\a_copy.jpg" in html_out
-    assert "1 дубль" in html_out
-
-
-def test_render_dedup_verification_page_lists_each_duplicate_on_its_own_line():
-    """Пункт B.3 ("большой разбор report.html", SESSION-HANDOFF.txt): каждый путь-дубль с
-    новой строки, визуально отделены -- не один сплошной comma-separated список."""
-    data = {
-        "appended": [{"timestamp": "t", "source": r"F:\orig\a.jpg",
-                      "dest": r"C:\T\dst\Albums\Отпуск\a.jpg", "reason": "appended_new", "flags": ""}],
-        "skipped": [
-            {"source": r"F:\dup1\a.jpg", "matched_with": r"C:\T\dst\Albums\Отпуск\a.jpg",
-             "reason": "already_present"},
-            {"source": r"F:\dup2\a.jpg", "matched_with": r"C:\T\dst\Albums\Отпуск\a.jpg",
-             "reason": "already_present"},
-        ],
-    }
-    html_out = r._render_dedup_verification_page(data)
-    assert "F:\\dup1\\a.jpg<br>F:\\dup2\\a.jpg" in html_out
-    assert "F:\\dup1\\a.jpg, F:\\dup2\\a.jpg" not in html_out
-
-
-def test_render_dedup_verification_page_empty_returns_nothing():
-    assert r._render_dedup_verification_page({"appended": [], "skipped": []}) == ""
-
-
-def test_render_dedup_verification_page_sorted_by_dup_count_descending():
-    """2026-08-08 (альбомный редизайн, вёрстка): сортировка по убыванию числа дублей внутри
-    карточки папки -- "b.jpg" (3 дубля) должен идти раньше "a.jpg" (2 дубля) в основной
-    таблице, хотя по алфавиту порядок обратный. Оба >1, чтобы не попасть под сворачивание
-    "без повторов" (см. отдельный тест ниже) -- проверяем чистый сорт, не взаимодействие с ним."""
-    data = {
-        "appended": [
-            {"timestamp": "t", "source": r"F:\orig\a.jpg",
-             "dest": r"C:\T\dst\Albums\Отпуск\a.jpg", "reason": "appended_new", "flags": ""},
-            {"timestamp": "t", "source": r"F:\orig\b.jpg",
-             "dest": r"C:\T\dst\Albums\Отпуск\b.jpg", "reason": "appended_new", "flags": ""},
-        ],
-        "skipped": [
-            {"source": r"F:\dup\a_copy1.jpg", "matched_with": r"C:\T\dst\Albums\Отпуск\a.jpg",
-             "reason": "already_present"},
-            {"source": r"F:\dup\a_copy2.jpg", "matched_with": r"C:\T\dst\Albums\Отпуск\a.jpg",
-             "reason": "already_present"},
-            {"source": r"F:\dup\b_copy1.jpg", "matched_with": r"C:\T\dst\Albums\Отпуск\b.jpg",
-             "reason": "already_present"},
-            {"source": r"F:\dup\b_copy2.jpg", "matched_with": r"C:\T\dst\Albums\Отпуск\b.jpg",
-             "reason": "already_present"},
-            {"source": r"F:\dup\b_copy3.jpg", "matched_with": r"C:\T\dst\Albums\Отпуск\b.jpg",
-             "reason": "already_present"},
-        ],
-    }
-    html_out = r._render_dedup_verification_page(data)
-    main_table = html_out.split("<details>")[0]
-    assert main_table.index(">b.jpg<") < main_table.index(">a.jpg<")
-
-
-def test_render_dedup_verification_page_collapses_single_dup_rows_under_details():
-    """Строки с ровно одним дублем (обычный случай, не путаница) сворачиваются под общий
-    `<details>` в конце карточки папки, не показываются сразу вместе с "настоящими" находками."""
-    data = {
-        "appended": [
-            {"timestamp": "t", "source": r"F:\orig\a.jpg",
-             "dest": r"C:\T\dst\Albums\Отпуск\a.jpg", "reason": "appended_new", "flags": ""},
-            {"timestamp": "t", "source": r"F:\orig\b.jpg",
-             "dest": r"C:\T\dst\Albums\Отпуск\b.jpg", "reason": "appended_new", "flags": ""},
-        ],
-        "skipped": [
-            {"source": r"F:\dup\a_copy.jpg", "matched_with": r"C:\T\dst\Albums\Отпуск\a.jpg",
-             "reason": "already_present"},
-            {"source": r"F:\dup\b_copy1.jpg", "matched_with": r"C:\T\dst\Albums\Отпуск\b.jpg",
-             "reason": "already_present"},
-            {"source": r"F:\dup\b_copy2.jpg", "matched_with": r"C:\T\dst\Albums\Отпуск\b.jpg",
-             "reason": "already_present"},
-        ],
-    }
-    html_out = r._render_dedup_verification_page(data)
-    main_table, _, rest = html_out.partition("<details>")
-    assert ">b.jpg<" in main_table
-    assert ">a.jpg<" not in main_table  # только 1 дубль -- свёрнут
-    assert "ещё 1 файл без повторов" in rest
-    assert ">a.jpg<" in rest
-
-
-def test_generate_dedup_verification_page_writes_sibling_file_and_links_back(tmp_path):
-    data = {
-        "appended": [{"timestamp": "t", "source": r"F:\orig\a.jpg",
-                      "dest": r"C:\T\dst\Albums\Отпуск\a.jpg", "reason": "appended_new", "flags": ""}],
-        "skipped": [
-            {"source": r"F:\dup\a_copy.jpg", "matched_with": r"C:\T\dst\Albums\Отпуск\a.jpg",
-             "reason": "already_present"},
-        ],
-    }
-    report_path = tmp_path / "report.html"
-    link = r.generate_dedup_verification_page(data, str(report_path))
-    assert link == r.DEDUP_VERIFICATION_FILENAME
-    verify_path = tmp_path / r.DEDUP_VERIFICATION_FILENAME
-    assert verify_path.exists()
-    assert "Отпуск" in verify_path.read_text(encoding="utf-8")
-
-
-def test_generate_dedup_verification_page_returns_none_without_exact_dups(tmp_path):
-    report_path = tmp_path / "report.html"
-    link = r.generate_dedup_verification_page({"appended": [], "skipped": []}, str(report_path))
-    assert link is None
-    assert not (tmp_path / r.DEDUP_VERIFICATION_FILENAME).exists()
-
-
-def test_generate_report_target_level_links_to_dedup_verification_page(tmp_path):
-    """Сквозная проверка -- generate_report(level="target") должен и написать соседний файл,
-    и дать на него ссылку из основного отчёта; level="workdir" -- ни того, ни другого (файлы
-    ещё не скопированы, сверять нечего). 2026-07-26: ссылка должна быть частью самой карточки
-    "Дубли — примеры" (сразу под ней), не в хвосте всей страницы -- живая находка
-    пользователя, что оторванная от карточки ссылка была необъяснима ("почему это примеры,
-    если рядом полная информация")."""
-    data = {
-        "appended": [{"timestamp": "2026-01-01 00:00:01", "source": r"F:\orig\a.jpg",
-                      "dest": r"C:\T\dst\Albums\Отпуск\a.jpg", "reason": "appended_new", "flags": ""}],
-        "skipped": [
-            {"timestamp": "2026-01-01 00:00:01", "source": r"F:\dup\a_copy.jpg",
-             "matched_with": r"C:\T\dst\Albums\Отпуск\a.jpg", "reason": "already_present"},
-        ],
-    }
-    out_path = tmp_path / "report.html"
-    r.generate_report(data, str(out_path), level="target")
-    html_out = out_path.read_text(encoding="utf-8")
-    assert r.DEDUP_VERIFICATION_FILENAME in html_out
-    assert "полная сверка построчно" in html_out
-    assert (tmp_path / r.DEDUP_VERIFICATION_FILENAME).exists()
-    # Ссылка должна идти СРАЗУ после карточки "Дубли", не в хвосте документа --
-    # проверяем расстояние в тексте, не через следующую секцию (Лист 3 здесь пустой -- нет
-    # near-dup/disputes/unreadable в этих минимальных данных, карточка вообще не рендерится).
-    card_pos = html_out.index("Дубли — примеры")
-    link_pos = html_out.index("полная сверка построчно")
-    assert card_pos < link_pos < card_pos + 600
-
-    out_path2 = tmp_path / "workdir_report.html"
-    r.generate_report(data, str(out_path2), level="workdir")
-    assert r.DEDUP_VERIFICATION_FILENAME not in out_path2.read_text(encoding="utf-8")
 
 
 def test_cluster_disputes_groups_by_folder_with_reason():
@@ -2846,78 +2600,6 @@ def test_deep_nested_albums_finds_max_depth_per_album_above_threshold():
 def test_deep_nested_albums_empty_when_nothing_deep():
     assert r._deep_nested_albums(Counter({"Albums/Отпуск": 5, "Albums/Отпуск/Пляж": 1})) == []
     assert r._deep_nested_albums(Counter()) == []
-
-
-class TestPassportVerificationPage:
-    """REVIEW-HANDOFF.md, Раунд 57: generate_passport_verification_page()/
-    passport_verification.html не имели вообще ни одного регресс-теста, несмотря на заявленные
-    в af50df1 "+4 новых теста" (`grep -c "def test_" tests/test_report.py` не менялся до/после
-    того коммита)."""
-
-    def test_writes_page_and_returns_link_for_multi_folder_exact_dup_group(self, tmp_path):
-        stats = _FakeAnalyzeStats()
-        stats.exact_dup_edges = [{"dest": "Albums/A/orig.jpg", "matched_dest": "Albums/B/copy.jpg"}]
-        out_path = tmp_path / "passport.html"
-        link = r.generate_passport_verification_page(stats, str(out_path))
-        assert link == r.PASSPORT_VERIFICATION_FILENAME
-        verify_path = tmp_path / r.PASSPORT_VERIFICATION_FILENAME
-        assert verify_path.exists()
-        html_out = verify_path.read_text(encoding="utf-8")
-        assert "Полная сверка" in html_out
-        assert "Точные дубли из 2 файлов" in html_out
-        assert "orig.jpg" in html_out and "copy.jpg" in html_out
-        assert "← назад к паспорту" in html_out
-
-    def test_returns_none_and_writes_nothing_for_single_folder_group(self, tmp_path):
-        # Both files in the SAME folder -- already shown in full by the "Целостность архива"
-        # preview itself (no truncation for a single-folder group), the separate page would be
-        # pure noise -- same filter as the equivalent regular-run verification page.
-        stats = _FakeAnalyzeStats()
-        stats.exact_dup_edges = [{"dest": "Albums/A/orig.jpg", "matched_dest": "Albums/A/copy.jpg"}]
-        out_path = tmp_path / "passport.html"
-        link = r.generate_passport_verification_page(stats, str(out_path))
-        assert link is None
-        assert not (tmp_path / r.PASSPORT_VERIFICATION_FILENAME).exists()
-
-    def test_returns_none_and_writes_nothing_when_no_duplicates_at_all(self, tmp_path):
-        stats = _FakeAnalyzeStats()
-        out_path = tmp_path / "passport.html"
-        link = r.generate_passport_verification_page(stats, str(out_path))
-        assert link is None
-        assert not (tmp_path / r.PASSPORT_VERIFICATION_FILENAME).exists()
-
-    def test_heading_and_footer_share_one_timestamp(self, tmp_path, monkeypatch):
-        """Задача 10 (SESSION-HANDOFF.txt, 2026-08-09): эта страница -- ОТДЕЛЬНЫЙ файл, свой
-        собственный _page_shell()/футер -- тоже получает "по состоянию на" в заголовке, тот же
-        принцип "один strftime() на страницу", что и у report.html/passport.html."""
-        calls = []
-
-        def _fake_strftime(fmt):
-            calls.append(fmt)
-            return f"2026-08-09 13:{20 + len(calls)}"
-        monkeypatch.setattr(r.time, "strftime", _fake_strftime)
-
-        stats = _FakeAnalyzeStats()
-        stats.exact_dup_edges = [{"dest": "Albums/A/orig.jpg", "matched_dest": "Albums/B/copy.jpg"}]
-        out_path = tmp_path / "passport.html"
-        r.generate_passport_verification_page(stats, str(out_path))
-        html_out = (tmp_path / r.PASSPORT_VERIFICATION_FILENAME).read_text(encoding="utf-8")
-
-        assert "<h2>Полная сверка — Паспорт архива</h2>" in html_out
-        heading_m = re.search(r'report-meta-date">по состоянию на ([\d\-]+ [\d:]+)</div>', html_out)
-        footer_m = re.search(r"Сформировано PhotoArchive[^·]*· ([\d\-]+ [\d:]+)</div>", html_out)
-        assert heading_m and footer_m, html_out
-        assert heading_m.group(1) == footer_m.group(1)
-
-    def test_multi_folder_near_dup_group_also_gets_its_own_section(self, tmp_path):
-        stats = _FakeAnalyzeStats()
-        stats.near_dup_edges = [{"dest": "ByDate/2024/2024-01/a.jpg",
-                                  "matched_dest": "Albums/Отпуск/b.jpg"}]
-        out_path = tmp_path / "passport.html"
-        link = r.generate_passport_verification_page(stats, str(out_path))
-        assert link == r.PASSPORT_VERIFICATION_FILENAME
-        html_out = (tmp_path / r.PASSPORT_VERIFICATION_FILENAME).read_text(encoding="utf-8")
-        assert "Похожая серия из 2 файлов" in html_out
 
 
 def test_generate_passport_report_flags_deep_nested_album(tmp_path):

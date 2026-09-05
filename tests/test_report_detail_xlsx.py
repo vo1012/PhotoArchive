@@ -29,6 +29,89 @@ def _unreadable(source, error, ts="2026-01-01 00:00:01"):
     return {"timestamp": ts, "source": source, "error": error}
 
 
+class TestSeriesPsCommandsLengthCap:
+    """REVIEW-HANDOFF.md, Раунд 207 [ЗАМЕЧАНИЕ] 207-1: без ограничения длины гигантский кластер
+    (серийная съёмка/burst на большом архиве, ~350-400+ членов при типичной длине пути) даёт
+    команду длиннее жёсткого лимита ячейки .xlsx (32767 UTF-16 code units) -- openpyxl/Excel
+    молча обрезают значение при реальной записи, обрезка может прийтись на середину
+    'литерала...' (нечётное число кавычек) -- вся команда становится невыполнимой в PowerShell
+    целиком, не "открылись первые N файлов"."""
+
+    def test_small_cluster_unaffected_by_cap(self):
+        """Обычный маленький кластер -- байт-в-байт то же поведение, что и до фикса."""
+        paths = [r"D:\SOURCE\A\a.jpg", r"D:\SOURCE\A\b.jpg"]
+        cmds = rx._series_ps_commands(paths)
+        assert cmds[paths[0]] == cmds[paths[1]] == \
+            "Start-Process 'D:\\SOURCE\\A\\a.jpg'; Start-Process 'D:\\SOURCE\\A\\b.jpg'"
+
+    def test_huge_cluster_stays_under_hard_excel_cell_limit(self):
+        """32767 -- жёсткий лимит формата .xlsx на длину строки в ячейке (не openpyxl-специфика).
+        Команда обязана оставаться короче него -- иначе именно на этой правке ловится живая
+        находка ревизора."""
+        paths = [rf"D:\SOURCE\LongFolderNameForRealisticDepth\Sub\Sub2\IMG_{i:05d}.JPG"
+                  for i in range(500)]
+        command = rx._series_ps_commands(paths)[paths[0]]
+        assert len(command) < 32767
+        assert len(command) <= rx._PS_COMMAND_CHAR_BUDGET
+
+    def test_huge_cluster_command_has_even_quote_count_before_comment(self):
+        """Обрезка -- только по ЦЕЛЫМ путям, никогда не рвёт Start-Process '...'-литерал
+        посередине. Нечётное число кавычек в исполняемой части означало бы незакрытый
+        литерал -- вся строка невыполнима в PowerShell (живая находка ревизора, Раунд 207)."""
+        paths = [rf"D:\SOURCE\LongFolderNameForRealisticDepth\Sub\Sub2\IMG_{i:05d}.JPG"
+                  for i in range(500)]
+        command = rx._series_ps_commands(paths)[paths[0]]
+        executable_part = command.split("; #")[0]
+        assert executable_part.count("'") % 2 == 0
+
+    def test_huge_cluster_notes_omitted_count_as_trailing_comment(self):
+        """Остаток кластера, не поместившийся в бюджет, назван PowerShell-комментарием
+        (после "#" до конца строки) -- сама команда остаётся синтаксически рабочей и открывает
+        первую часть кластера, пользователь явно видит текстом, что кластер не поместился
+        целиком (вместо молчаливого битого обрезка от Excel)."""
+        paths = [rf"D:\SOURCE\LongFolderNameForRealisticDepth\Sub\Sub2\IMG_{i:05d}.JPG"
+                  for i in range(500)]
+        command = rx._series_ps_commands(paths)[paths[0]]
+        assert "; #" in command
+        assert "не поместились" in command
+        n_start_process = command.count("Start-Process")
+        assert 0 < n_start_process < len(paths)
+
+    def test_huge_cluster_survives_real_xlsx_round_trip_unchanged(self, tmp_path):
+        """Проверка исполнением, не теоретическая: реальная запись через openpyxl + чтение
+        обратно не обрезает команду (в отличие от состояния до фикса, где 40998-символьная
+        команда после round-trip'а становилась 32767-символьной с нечётным числом кавычек)."""
+        paths = [rf"D:\SOURCE\LongFolderNameForRealisticDepth\Sub\Sub2\IMG_{i:05d}.JPG"
+                  for i in range(500)]
+        command = rx._series_ps_commands(paths)[paths[0]]
+        out_path = tmp_path / "roundtrip.xlsx"
+        rx._write_flat_xlsx(["PS"], [40], [[command]], colors=[None], out_path=str(out_path))
+        stored = load_workbook(str(out_path)).active.cell(row=2, column=1).value
+        assert stored == command
+
+    def test_one_oversized_outlier_does_not_discard_the_rest_of_cluster(self):
+        """REVIEW-HANDOFF.md, Раунд 208 [ПРИДИРКА] 208-1: один аномально длинный путь в
+        алфавитно РАННЕЙ позиции (сортировка "/" раньше "\\") раньше отбрасывал (`break`) ВЕСЬ
+        остаток кластера, даже прекрасно помещающийся -- живая находка ревизора, проверено
+        исполнением. Пропускать нужно ТОЛЬКО непомещающийся элемент (`continue`), не всё, что
+        после него."""
+        huge_path = "D:/" + ("x" * 40000) + ".jpg"
+        normal_path = r"D:\SOURCE\a.jpg"
+        command = rx._series_ps_commands([huge_path, normal_path])[normal_path]
+        assert "Start-Process 'D:\\SOURCE\\a.jpg'" in command
+        assert huge_path not in command
+        assert "и ещё 1 файлов не поместились" in command
+
+    def test_all_members_individually_exceed_budget_falls_back_to_comment_only(self):
+        """Настоящий крайний случай (не 208-1) -- КАЖДЫЙ путь по отдельности длиннее бюджета,
+        буквально нечего включить -- команда честно схлопывается в чистый комментарий (валидная
+        пустая инструкция в PowerShell), не падает и не производит незакрытый литерал."""
+        huge_paths = ["D:/" + ("x" * 40000) + f"_{i}.jpg" for i in range(2)]
+        command = rx._series_ps_commands(huge_paths)[huge_paths[0]]
+        assert command.startswith("#")
+        assert "Start-Process" not in command
+
+
 class TestBuildDetailRows:
     def test_normal_appended_row_has_no_note_and_is_copied(self):
         rows = rx._build_detail_rows({"appended": [
@@ -72,6 +155,61 @@ class TestBuildDetailRows:
         assert by_name["a.jpg"]["series_id"] == by_name["b.jpg"]["series_id"] == 1
         assert "похожая серия" in by_name["a.jpg"]["note"]
         assert "похожая серия" in by_name["b.jpg"]["note"]
+
+    def test_near_dup_same_folder_dests_get_identical_powershell_command(self):
+        """Столбец "Открыть файл (PowerShell)" в детализации обычного прогона (2026-09-05,
+        живая находка пользователя -- была только в Паспорте). Живой отзыв пользователя,
+        тем же днём: команда должна открывать ВСЮ серию сразу, а не один файл -- у ВСЕХ
+        членов одного кластера одна и та же строка (копипаст с любой строки открывает всю
+        серию)."""
+        data = {
+            "appended": [
+                _appended(r"D:\SOURCE\a.jpg", r"D:\TARGET\ByDate\2024\a.jpg"),
+                _appended(r"D:\SOURCE\b.jpg", r"D:\TARGET\ByDate\2024\b.jpg"),
+            ],
+            "near_dup_edges": [
+                {"timestamp": "2026-01-01 00:00:01", "source": r"D:\SOURCE\b.jpg",
+                 "dest": r"D:\TARGET\ByDate\2024\b.jpg",
+                 "matched_dest": r"D:\TARGET\ByDate\2024\a.jpg",
+                 "category": "appended_near_dup", "hamming": "3"},
+            ],
+        }
+        rows = rx._build_detail_rows(data)
+        by_name = {row["name"]: row for row in rows}
+        expected = ("Start-Process 'D:\\TARGET\\ByDate\\2024\\a.jpg'; "
+                    "Start-Process 'D:\\TARGET\\ByDate\\2024\\b.jpg'")
+        assert by_name["a.jpg"]["ps_command"] == expected
+        assert by_name["b.jpg"]["ps_command"] == expected
+
+    def test_near_dup_cross_folder_dests_still_get_same_command(self):
+        """Развилка, поставленная пользователем 2026-09-05: серию НЕ дробим по папкам --
+        Start-Process открывает каждый файл СВОЕЙ программой (не Проводник), расположение
+        файла не мешает визуальному сравнению. Разные папки -- команда всё равно одна на
+        обоих, открывает обоих."""
+        data = {
+            "appended": [
+                _appended(r"D:\SOURCE\a.jpg", r"D:\TARGET\Albums\A\a.jpg"),
+                _appended(r"D:\SOURCE\b.jpg", r"D:\TARGET\ByDate\2024\b.jpg"),
+            ],
+            "near_dup_edges": [
+                {"timestamp": "2026-01-01 00:00:01", "source": r"D:\SOURCE\b.jpg",
+                 "dest": r"D:\TARGET\ByDate\2024\b.jpg",
+                 "matched_dest": r"D:\TARGET\Albums\A\a.jpg",
+                 "category": "appended_near_dup", "hamming": "3"},
+            ],
+        }
+        rows = rx._build_detail_rows(data)
+        by_name = {row["name"]: row for row in rows}
+        expected = ("Start-Process 'D:\\TARGET\\Albums\\A\\a.jpg'; "
+                    "Start-Process 'D:\\TARGET\\ByDate\\2024\\b.jpg'")
+        assert by_name["a.jpg"]["ps_command"] == expected
+        assert by_name["b.jpg"]["ps_command"] == expected
+
+    def test_ordinary_appended_row_without_series_has_no_command(self):
+        rows = rx._build_detail_rows({"appended": [
+            _appended(r"D:\SOURCE\a.jpg", r"D:\TARGET\a.jpg"),
+        ]})
+        assert rows[0]["ps_command"] == ""
 
     def test_tier_b_or_c_date_sets_approximate_date_note(self):
         """PROMPT_report_detail_xlsx.md, "Примечание": «дата приблизительная» -- дата ЕСТЬ, но
@@ -122,6 +260,7 @@ class TestBuildDetailRows:
         assert row["series_id"] == 0
         assert "DVD" in row["note"]
         assert "4 файла" in row["note"]
+        assert row["ps_command"] == ""
 
     def test_dvd_unit_dest_collision_suffix_shown_as_final_name(self):
         """_unique_dvd_dest_name() суффиксирует папку при коллизии двух физически разных
@@ -174,6 +313,23 @@ class TestBuildDetailRows:
         assert row["note"] == "дубликат"
         assert row["color"] == rx._COLOR_DUPLICATE
 
+    def test_skipped_duplicate_powershell_command_opens_both_files(self):
+        """Дубликат обычного прогона -- не кластер self-scan, а ровно одна пара: новый файл
+        (ещё на SOURCE) vs то, с чем он совпал (уже в TARGET). Команда открывает ОБА -- сценарий
+        "сравнить дубли", ради которого пользователь спросил про отсутствие этой колонки."""
+        rows = rx._build_detail_rows({"skipped": [
+            _skipped(r"D:\SOURCE\dup.jpg", r"D:\TARGET\a.jpg", "already_present"),
+        ]})
+        assert rows[0]["ps_command"] == \
+            "Start-Process 'D:\\SOURCE\\dup.jpg'; Start-Process 'D:\\TARGET\\a.jpg'"
+
+    def test_skipped_duplicate_quote_in_either_path_escaped_doubled(self):
+        rows = rx._build_detail_rows({"skipped": [
+            _skipped(r"D:\SOURCE\O'Brien.jpg", r"D:\TARGET\a.jpg", "already_present"),
+        ]})
+        assert rows[0]["ps_command"] == \
+            "Start-Process 'D:\\SOURCE\\O''Brien.jpg'; Start-Process 'D:\\TARGET\\a.jpg'"
+
     def test_identical_at_destination_is_also_duplicate(self):
         rows = rx._build_detail_rows({"skipped": [
             _skipped(r"D:\SOURCE\dup.jpg", r"D:\TARGET\a.jpg", "identical_at_destination"),
@@ -194,6 +350,8 @@ class TestBuildDetailRows:
         assert "RAW не сохранён" in row["note"]
         assert row["color"] == rx._COLOR_RAW_SKIPPED
         assert row["color"] not in (rx._COLOR_DUPLICATE, rx._COLOR_PROBLEM)
+        assert row["ps_command"] == \
+            "Start-Process 'D:\\SOURCE\\a.cr2'; Start-Process 'D:\\TARGET\\Albums\\a.jpg'"
 
     def test_disputed_row_is_copied_yes_with_unsorted_note(self):
         rows = rx._build_detail_rows({"disputes": [
@@ -205,6 +363,7 @@ class TestBuildDetailRows:
         assert "спорный (_Unsorted)" in row["note"]
         assert "похоже на иконку" in row["note"]  # _dispute_reason_label(), переиспользован
         assert row["color"] is None  # без отдельного цвета -- решение пользователя 2026-08-15
+        assert row["ps_command"] == ""  # не пара "дубликат", открывать не с чем сравнивать
 
     def test_disputed_row_without_recognized_extension_falls_back_to_other(self):
         rows = rx._build_detail_rows({"disputes": [
@@ -221,6 +380,7 @@ class TestBuildDetailRows:
         assert row["dest_or_dup"] == ""
         assert row["note"] == "не прочитано: unsupported_container"
         assert row["color"] == rx._COLOR_PROBLEM
+        assert row["ps_command"] == ""
 
     def test_rows_sorted_by_folder_then_name(self):
         data = {"appended": [
@@ -259,7 +419,7 @@ class TestGenerateDetailXlsx:
         header = [c.value for c in ws[1]]
         assert header == rx._COLUMN_HEADERS
         assert ws[1][0].font.bold is True
-        assert ws.auto_filter.ref == f"A1:I{ws.max_row}"
+        assert ws.auto_filter.ref == f"A1:J{ws.max_row}"
         assert ws.freeze_panes == "A2"
 
     def test_many_same_color_rows_all_get_the_color(self, tmp_path):
@@ -298,6 +458,17 @@ class TestGenerateDetailXlsx:
         assert names == ["a.jpg", "b.jpg", "a.jpg"]  # внутри папки -- по имени
         # write_only больше не пишет row_dimensions -- их нет/дефолтны, это ожидаемо
         assert ws.row_dimensions[3].outline_level == 0
+
+    def test_powershell_column_uses_small_font_when_populated(self, tmp_path):
+        data = {"skipped": [
+            _skipped(r"D:\SOURCE\dup.jpg", r"D:\TARGET\a.jpg", "already_present"),
+        ]}
+        rx.generate_detail_xlsx(data, str(tmp_path / "report.html"))
+        wb = load_workbook(str(tmp_path / rx.DETAIL_XLSX_FILENAME))
+        ws = wb.active
+        ps_cell = ws.cell(row=2, column=rx._DETAIL_PS_COMMAND_COL + 1)
+        assert ps_cell.value.startswith("Start-Process ")
+        assert ps_cell.font.size == rx._SMALL_FONT_SIZE
 
     def test_duplicate_and_problem_rows_get_distinct_visible_font_colors(self, tmp_path):
         out_path = tmp_path / "report.html"
@@ -470,46 +641,57 @@ class TestBuildPassportDetailRows:
         assert group_by_name["b1.jpg"] == group_by_name["b2.jpg"]
         assert group_by_name["a1.jpg"] != group_by_name["b1.jpg"]
 
-    def test_same_folder_dup_pair_gets_powershell_command(self):
-        """SESSION-HANDOFF.txt, 2026-09-04 ("серии: РЕШЕНИЕ ПРИНЯТО"): подгруппа >=2 файлов В
-        ОДНОЙ папке -- готовая Start-Process-команда на каждый member этой подгруппы."""
+    def test_same_folder_dup_pair_gets_identical_powershell_command(self):
+        """SESSION-HANDOFF.txt, 2026-09-04 ("серии: РЕШЕНИЕ ПРИНЯТО") + правка 2026-09-05
+        (живой отзыв пользователя): команда открывает ВСЮ серию, у обоих членов одна и та же
+        строка (не по одному файлу на member)."""
         stats = _passport_stats(exact_dup_edges=[
             {"dest": "Albums/A/orig.jpg", "matched_dest": "Albums/A/copy.jpg"},
         ])
         rows = rx._build_passport_detail_rows(stats, target_path=r"D:\TARGET")
         by_name = {row["name"]: row for row in rows}
-        assert by_name["orig.jpg"]["ps_command"] == "Start-Process 'D:\\TARGET\\Albums\\A\\orig.jpg'"
-        assert by_name["copy.jpg"]["ps_command"] == "Start-Process 'D:\\TARGET\\Albums\\A\\copy.jpg'"
+        expected = ("Start-Process 'D:\\TARGET\\Albums\\A\\copy.jpg'; "
+                    "Start-Process 'D:\\TARGET\\Albums\\A\\orig.jpg'")
+        assert by_name["orig.jpg"]["ps_command"] == expected
+        assert by_name["copy.jpg"]["ps_command"] == expected
 
-    def test_cross_folder_cluster_member_alone_in_folder_gets_no_command(self):
-        """Тот же файл в альбоме и в ByDate (by-design, не одна серия для просмотра) --
-        каждая папка несёт ровно одного member'а кластера -- пустая ячейка для обоих."""
+    def test_cross_folder_cluster_still_gets_one_shared_command(self):
+        """Развилка, поставленная пользователем 2026-09-05, решена в пользу НЕ дробить серию по
+        папкам: тот же файл в альбоме и в ByDate -- Start-Process открывает КАЖДЫЙ своей
+        программой (не Проводник), расположение не мешает сравнить -- оба члена получают одну
+        и ту же команду, открывающую обоих."""
         stats = _passport_stats(exact_dup_edges=[
             {"dest": "Albums/A/orig.jpg", "matched_dest": "ByDate/2024/orig.jpg"},
         ])
         rows = rx._build_passport_detail_rows(stats)
-        assert all(row["ps_command"] == "" for row in rows)
+        assert len(rows) == 2
+        commands = {row["ps_command"] for row in rows}
+        assert len(commands) == 1  # обе строки несут одну и ту же команду
+        command = commands.pop()
+        assert command.count("Start-Process") == 2
+        assert "Albums" in command and "ByDate" in command
 
-    def test_three_way_cluster_two_same_folder_one_elsewhere(self):
-        """Смешанный случай: 2 из 3 членов кластера делят папку -- те двое получают команду,
-        третий (единственный в своей папке) -- нет."""
+    def test_three_way_cluster_all_members_get_same_full_command(self):
+        """Кластер из 3 файлов в 2 разных папках -- ВСЕ трое получают одну и ту же команду,
+        открывающую всех троих (не только тех, что делят папку)."""
         stats = _passport_stats(exact_dup_edges=[
             {"dest": "Albums/A/orig.jpg", "matched_dest": "Albums/A/copy1.jpg"},
             {"dest": "Albums/A/orig.jpg", "matched_dest": "ByDate/2024/copy2.jpg"},
         ])
         rows = rx._build_passport_detail_rows(stats)
-        by_name = {row["name"]: row for row in rows}
-        assert by_name["orig.jpg"]["ps_command"] != ""
-        assert by_name["copy1.jpg"]["ps_command"] != ""
-        assert by_name["copy2.jpg"]["ps_command"] == ""
+        by_name = {row["name"]: row["ps_command"] for row in rows}
+        assert by_name["orig.jpg"] == by_name["copy1.jpg"] == by_name["copy2.jpg"]
+        assert by_name["orig.jpg"].count("Start-Process") == 3
 
-    def test_near_dup_same_folder_also_gets_command(self):
+    def test_near_dup_cluster_also_gets_shared_command(self):
         """Решение пользователя: столбец применяется к ОБЕИМ категориям, не только "дубликат"."""
         stats = _passport_stats(near_dup_edges=[
             {"dest": "ByDate/2024/a.jpg", "matched_dest": "ByDate/2024/b.jpg"},
         ])
         rows = rx._build_passport_detail_rows(stats)
-        assert all(row["ps_command"] != "" for row in rows)
+        commands = {row["ps_command"] for row in rows}
+        assert commands == {rows[0]["ps_command"]}
+        assert rows[0]["ps_command"] != ""
 
     def test_single_quote_in_path_escaped_doubled(self):
         """Одинарная кавычка в имени файла ломает PowerShell-литерал '...' без экранирования --
@@ -519,8 +701,10 @@ class TestBuildPassportDetailRows:
         ])
         rows = rx._build_passport_detail_rows(stats, target_path=r"D:\TARGET")
         by_name = {row["name"]: row for row in rows}
-        assert by_name["O'Brien.jpg"]["ps_command"] == \
-            "Start-Process 'D:\\TARGET\\Albums\\A\\O''Brien.jpg'"
+        expected = ("Start-Process 'D:\\TARGET\\Albums\\A\\O''Brien.jpg'; "
+                    "Start-Process 'D:\\TARGET\\Albums\\A\\copy.jpg'")
+        assert by_name["O'Brien.jpg"]["ps_command"] == expected
+        assert by_name["copy.jpg"]["ps_command"] == expected
 
     def test_dump_item_paths_get_own_category_no_color_no_group(self):
         """Живая находка пользователя, 2026-08-24: "N файлов лежат не внутри альбома/даты"
@@ -563,7 +747,9 @@ class TestGeneratePassportDetailXlsx:
         # openpyxl округляет "" до None на реальном сохранении/чтении файла (не наблюдалось
         # раньше -- предыдущие проверки этого файла сверяли только строящиеся dict'ы, не
         # реально записанный .xlsx) -- сама ячейка пуста, что и требовалось для "нет команды".
-        assert row == [r"D:\TARGET", "Foto.zip", "архив", 0, None, "запаролен"]
+        # "Открыть файл (PowerShell)" -- ПОСЛЕДНЯЯ колонка (2026-09-05, не перекрывает
+        # "Примечание" переполнением текста).
+        assert row == [r"D:\TARGET", "Foto.zip", "архив", 0, "запаролен", None]
 
     def test_powershell_column_uses_small_font_when_populated(self, tmp_path):
         stats = _passport_stats(exact_dup_edges=[
@@ -624,16 +810,6 @@ class TestGeneratePassportReportWiresDetailXlsxButton:
         html_out = out_path.read_text(encoding="utf-8")
         assert f'href="{rx.PASSPORT_DETAIL_XLSX_FILENAME}"' in html_out
         assert (tmp_path / rx.PASSPORT_DETAIL_XLSX_FILENAME).exists()
-
-    def test_old_verification_page_no_longer_written(self, tmp_path):
-        """PROMPT_report_detail_xlsx.md, решение 2026-08-16: "HTML Паспорта -- только числа,
-        все пути -- в xlsx" -- generate_passport_verification_page() больше не вызывается из
-        generate_passport_report(), тем же принципом, что и у обычного прогона."""
-        stats = _FakeAnalyzeStats()
-        stats.exact_dup_edges = [{"dest": "Albums/A/orig.jpg", "matched_dest": "Albums/B/copy.jpg"}]
-        out_path = tmp_path / "passport.html"
-        r.generate_passport_report(stats, str(out_path))
-        assert not (tmp_path / r.PASSPORT_VERIFICATION_FILENAME).exists()
 
 
 class TestPassportArchivesAndBrokenAttnText:
