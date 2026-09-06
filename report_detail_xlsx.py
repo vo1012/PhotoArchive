@@ -50,6 +50,67 @@ from report import (
 
 DETAIL_XLSX_FILENAME = "report_detail.xlsx"
 
+
+class ReportDetailFileLocked(OSError):
+    """Готовый xlsx записан во ВРЕМЕННЫЙ файл (`<out_path>.new`), но подменить им целевой
+    `out_path` не удалось -- тот открыт в другой программе (обычно Excel держит эксклюзивную
+    блокировку; на Windows os.replace() даёт PermissionError либо OSError winerror 5/32/33).
+
+    Ключевое: xlsx УЖЕ полностью собран и лежит на диске -- повторная попытка это один
+    `os.replace(tmp_path, final_path)`, без пересборки/пересканирования (см. retry_replace()).
+    Несёт оба пути атрибутами `final_path`/`tmp_path`.
+
+    Ловится в report.generate_report()/generate_passport_report(): HTML-отчёт пишется как
+    обычно, прогон завершается исходом `warnings` (не `failed`), окно программы предлагает
+    кнопку «Обновить детализацию». Прочие OSError (нет места, длинный путь) НЕ оборачиваются."""
+
+    def __init__(self, final_path: str, tmp_path: str):
+        super().__init__(f"{os.path.basename(final_path)} открыт в другой программе")
+        self.final_path = final_path
+        self.tmp_path = tmp_path
+
+
+def _atomic_replace_or_raise(tmp_path: str, final_path: str) -> None:
+    """os.replace() свежезаписанного `tmp_path` -> `final_path`. Первый прогон (final нет) --
+    обычное переименование. Дальше -- атомарная подмена. Единственный реальный сбой --
+    `final_path` открыт в другой программе -> ReportDetailFileLocked (tmp остаётся на диске
+    целым, годным для retry_replace()). Прочие OSError -> чистим tmp и пробрасываем.
+
+    Раунд 213, п.6: если пользователь так и не нажмёт «Обновить детализацию», `<final>.new`
+    останется в __служебные_файлы\\ до следующего build/passport-прогона -- тот перезапишет
+    его свежими данными (wb.save() усекает) и, если файл к тому времени свободен, os.replace()
+    его израсходует. Самозаживает; лишний файл между прогонами признан приемлемым."""
+    try:
+        os.replace(_winlong(tmp_path), _winlong(final_path))
+    except PermissionError as e:
+        raise ReportDetailFileLocked(final_path, tmp_path) from e
+    except OSError as e:
+        if getattr(e, "winerror", None) in (5, 32, 33):  # access / sharing / lock violation
+            raise ReportDetailFileLocked(final_path, tmp_path) from e
+        try:
+            os.remove(_winlong(tmp_path))
+        except OSError:
+            pass
+        raise
+
+
+def retry_replace(tmp_path: str, final_path: str) -> bool:
+    """Повторная попытка подменить `final_path` уже готовым `tmp_path` (после того, как
+    пользователь закрыл файл в Excel). True -- получилось (или tmp уже нет: значит подменили
+    раньше и final актуален). False -- всё ещё занят. Никогда не бросает.
+
+    Вызывается с ГЛАВНОГО потока по кнопке «Обновить детализацию» окна «Работа завершена» --
+    мгновенно, без движка."""
+    if not os.path.isfile(_winlong(tmp_path)):
+        return True
+    try:
+        _atomic_replace_or_raise(tmp_path, final_path)
+        return True
+    except ReportDetailFileLocked:
+        return False
+    except OSError:
+        return False
+
 _COLUMN_HEADERS = [
     "Путь к исходной папке", "Имя файла", "Расширение", "Тип медиа", "Копировано",
     "Куда / с чем дуп", "Итоговое имя файла", "№ серии", "Примечание",
@@ -474,7 +535,19 @@ def _write_flat_xlsx(headers: list, widths: list, values: list, colors: list,
     # openpyxl.Workbook.save() открывает файл сам (zipfile.ZipFile), без "\\?\"-префикса
     # падает FileNotFoundError на TARGET глубже 260 символов -- тот же случай, что уже
     # решён для report.html в report.py:_write() (_winlong()).
-    wb.save(_winlong(out_path))
+    #
+    # 2026-09-06: пишем во ВРЕМЕННЫЙ файл рядом, потом os.replace() на целевой. `.new`
+    # практически никогда не залочен (необычное имя, пользователю нет причины его открывать),
+    # поэтому wb.save() штатно проходит целиком -- никаких брошенных write-only lxml-потоков
+    # (раньше при залоченном out_path они всплывали в stderr как "Exception ignored in
+    # generator" и попадали в панель-зеркало окна). Залочен обычно бывает только сам out_path
+    # (открыт в Excel) -- это ловит os.replace() уже с ПОЛНОСТЬЮ готовым .new на диске, отсюда
+    # мгновенный retry_replace() без пересборки. Гипотетический лок самого `.new` (Раунд 213,
+    # п.5) даст голый OSError -> экран «Сбой», как и любой прогон до этого фикса на залоченном
+    # целевом -- регресса нет, вероятность ничтожна, отдельный путь не заводим.
+    tmp_path = out_path + ".new"
+    wb.save(_winlong(tmp_path))
+    _atomic_replace_or_raise(tmp_path, out_path)
 
 
 # ============================================================================

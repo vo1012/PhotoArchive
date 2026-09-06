@@ -11,6 +11,8 @@ import os
 import sys
 import types
 
+import pytest
+
 import gui_menu as g
 import photosort_win as m
 
@@ -99,10 +101,8 @@ class TestRunWorkerThread:
         assert bus.events == [("done", "C:\\r.html", "ok")]
 
     def test_build_stopped_for_space_reports_done_warnings(self, monkeypatch):
-        """Раунд 189, ответ на REVIEW-HANDOFF.md (вне формата) "outcome=warnings не
-        реализован": m._bare_launch_run_build(outcome=...) заполняет
-        {"stopped_for_space": True} через её необязательный out-параметр -- воркер должен
-        прочитать это и слать "warnings", не "ok" (архив собрался, но не полностью)."""
+        """Раунд 189: m._bare_launch_run_build(outcome=...) заполняет {"stopped_for_space":
+        True} -> воркер шлёт "warnings", не "ok"."""
         def _fake_build(sources, target, input_fn, log, outcome=None):
             if outcome is not None:
                 outcome["stopped_for_space"] = True
@@ -324,12 +324,19 @@ class TestHandleRunEvent:
         wiz._handle_run_event(("log", "hello"))
         assert calls == [("log", "hello")]
 
+    def test_detail_locked_event_routes_to_enter_detail_lock_wait(self):
+        wiz, calls = self._make_wizard()
+        wiz._enter_detail_lock_wait = lambda path: calls.append(("detail_wait", path))
+        wiz._handle_run_event(("detail_locked", "C:\\t\\report_detail.xlsx"))
+        assert calls == [("detail_wait", "C:\\t\\report_detail.xlsx")]
+
     def test_done_event_finishes_worker_then_renders_outcome(self):
         wiz, calls = self._make_wizard()
         wiz._handle_run_event(("done", "C:\\r.html", "ok"))
         # метка времени финиша в зеркало -> снятие bus/stdio -> отрисовка исхода
         assert calls == [
-            ("end_marker",), ("finish",), ("outcome", "ok", {"report_path": "C:\\r.html"}),
+            ("end_marker",), ("finish",),
+            ("outcome", "ok", {"report_path": "C:\\r.html"}),
         ]
 
     def test_error_event_finishes_worker_then_renders_failed_outcome(self):
@@ -347,8 +354,52 @@ class TestHandleRunEvent:
         wiz, calls = self._make_wizard()
         wiz._handle_run_event(("done", None, "nothing"))
         assert calls == [
-            ("end_marker",), ("finish",), ("outcome", "nothing", {"report_path": None}),
+            ("end_marker",), ("finish",),
+            ("outcome", "nothing", {"report_path": None}),
         ]
+
+
+class TestFadeRebuild:
+    """_fade_rebuild(): плавный переход на экран «Выполнение» (2026-09-06). Гасит окно до
+    прозрачности, пока невидимо -- делает пересборку/ресайз, плавно возвращает. Здесь
+    дисплея/tk.Tk() нет -- проверяем, что work_fn выполняется РОВНО ОДИН раз и что сбой
+    анимации (`-alpha` недоступен) её не срывает."""
+
+    class _FakeRoot:
+        def __init__(self, alpha_raises=False):
+            self.alpha_raises = alpha_raises
+            self.alphas = []
+
+        def attributes(self, *a):
+            if len(a) == 2 and a[0] == "-alpha":
+                if self.alpha_raises:
+                    raise RuntimeError("no compositing")
+                self.alphas.append(a[1])
+
+        def update_idletasks(self):
+            pass
+
+    def test_work_fn_runs_exactly_once(self, monkeypatch):
+        monkeypatch.setattr(g.time, "sleep", lambda _s: None)
+        root = self._FakeRoot()
+        calls = []
+        g._fade_rebuild(root, lambda: calls.append(1))
+        assert calls == [1]
+        assert min(root.alphas) == 0.0        # окно гасло до прозрачности
+        assert root.alphas[0] == 1.0 and root.alphas[-1] == 1.0  # старт и финиш -- видимо
+
+    def test_work_fn_runs_even_if_alpha_unavailable(self, monkeypatch):
+        monkeypatch.setattr(g.time, "sleep", lambda _s: None)
+        calls = []
+        g._fade_rebuild(self._FakeRoot(alpha_raises=True), lambda: calls.append(1))
+        assert calls == [1]
+
+    def test_alpha_restored_to_1_even_if_work_fn_raises(self, monkeypatch):
+        monkeypatch.setattr(g.time, "sleep", lambda _s: None)
+        root = self._FakeRoot()
+        with pytest.raises(ValueError):
+            g._fade_rebuild(root, lambda: (_ for _ in ()).throw(ValueError("boom")))
+        assert root.alphas[-1] == 1.0  # окно не осталось прозрачным
 
 
 class TestDrainBusCostAxis:
@@ -377,6 +428,9 @@ class _FakeWidget:
 
     def pack(self, *a, **kw):
         return self
+
+    def pack_forget(self, *a, **kw):
+        self.packed = False
 
     def pack_propagate(self, *a, **kw):
         if a:
@@ -423,6 +477,56 @@ def _button_texts(created):
 
 def _label_texts(created):
     return [kw.get("text") for name, kw in created if name == "Label"]
+
+
+class TestDetailLockWait:
+    """2026-09-06: xlsx-детализация открыта в другой программе -> экран «Выполнение» ждёт
+    «Продолжить» на той же кнопке «Пауза» (своя команда, механизм паузы не задет),
+    «Прервать работу» прячется (на этапе отчётов прерывать нечего)."""
+
+    def _wiz(self, monkeypatch):
+        created = _inject_recording_tkinter(monkeypatch)
+        wiz = g._Wizard()
+        wiz._run_header_frame = _FakeWidget()
+        wiz._run_pause_btn = _FakeWidget()
+        wiz._run_cancel_btn = _FakeWidget()
+        wiz._run_pause_var = types.SimpleNamespace(set=lambda v: None)
+        wiz._run_bus = m.RunEventBus()
+        wiz._stop_run_timer = lambda: None
+        wiz._run_started_at = 100.0
+        return wiz, created
+
+    def test_enter_swaps_continue_command_hides_cancel_shows_message(self, monkeypatch):
+        wiz, created = self._wiz(monkeypatch)
+        wiz._run_cancel_btn.packed = True
+        wiz._enter_detail_lock_wait(r"D:\T\report_detail.xlsx")
+        assert wiz._run_detail_wait is True
+        assert wiz._run_paused is False  # нормальная пауза НЕ задета
+        assert not wiz._run_bus.pause_event.is_set()
+        assert wiz._run_pause_btn.kw.get("text") == "Продолжить"
+        assert wiz._run_pause_btn.kw.get("command") == wiz._on_detail_continue
+        assert wiz._run_cancel_btn.packed is False  # «Прервать работу» спрятана
+        labels = _label_texts(created)
+        assert any("Работа приостановлена" in (t or "") for t in labels)
+        assert any("report_detail.xlsx" in (t or "") for t in labels)
+        assert any("таблица создана не будет" in (t or "") for t in labels)
+
+    def test_continue_sets_detail_resume_shifts_clock(self, monkeypatch):
+        wiz, _created = self._wiz(monkeypatch)
+        wiz._enter_detail_lock_wait(r"D:\T\report_detail.xlsx")
+        wiz._detail_wait_started_at = wiz._detail_wait_started_at - 5  # «ждали» 5 с
+        wiz._on_detail_continue()
+        assert wiz._run_detail_wait is False
+        assert wiz._run_bus.detail_resume.is_set()
+        assert wiz._run_started_at >= 104.0  # отсчёт сдвинут на ~время ожидания
+        assert wiz._run_pause_btn.kw.get("text") == "Завершаю…"
+
+    def test_enter_is_idempotent(self, monkeypatch):
+        wiz, created = self._wiz(monkeypatch)
+        wiz._enter_detail_lock_wait(r"D:\T\report_detail.xlsx")
+        n = len(created)
+        wiz._enter_detail_lock_wait(r"D:\T\report_detail.xlsx")  # повторное событие
+        assert len(created) == n  # шапку второй раз не строим
 
 
 class TestRenderRunOutcome:
@@ -522,3 +626,125 @@ class TestRenderRunOutcome:
         assert "aborted" in g._RUN_OUTCOME_TITLES
         title, _c = g._RUN_OUTCOME_TITLES["aborted"]
         assert title and title != g._RUN_OUTCOME_TITLES["interrupted"][0]
+
+
+class TestWorkerGcQuiescing:
+    """2026-09-06, разбор крахов tcl86t.dll 0x80000003 (Tcl_Panic "async handler deleted by
+    the wrong thread"): циклический GC не должен собирать tkinter-обёртки на воркер-потоке.
+    _start_worker() приглушает GC (collect на главном потоке + freeze + disable),
+    _finish_worker() возвращает как было, _drain_bus() периодически коллектит с главного
+    потока. Настоящего tk.Tk() нет -- root/поток заглушены, проверяется состояние gc."""
+
+    import gc as _gc
+
+    def _restore(self):
+        self._gc.enable()
+        self._gc.unfreeze()
+        sys.stdout, sys.stderr = self._orig_stdio
+
+    def _stub_wizard(self, monkeypatch):
+        self._orig_stdio = (sys.stdout, sys.stderr)
+        _inject_fake_tkinter(monkeypatch)
+        wiz = g._Wizard()
+
+        class _FakeRoot:
+            def after(self, *_a, **_kw):
+                return "job-id"
+        wiz.root = _FakeRoot()
+
+        started = []
+
+        class _FakeThread:
+            def __init__(self, *a, **kw):
+                self.kw = kw
+
+            def start(self):
+                started.append(True)
+
+            def join(self, timeout=None):
+                pass
+        monkeypatch.setattr(g.threading, "Thread", _FakeThread)
+        return wiz, started
+
+    def test_start_worker_disables_and_freezes_gc(self, monkeypatch):
+        try:
+            assert self._gc.isenabled()  # обычное состояние до
+            wiz, started = self._stub_wizard(monkeypatch)
+            wiz._start_worker("view", "C:\\s", "C:\\t", print)
+            assert started == [True]
+            assert not self._gc.isenabled()      # автосборка снята на все потоки
+            assert wiz._gc_frozen is True
+            assert wiz._gc_was_enabled is True
+            assert wiz._drain_ticks == 0
+        finally:
+            self._restore()
+
+    def test_finish_worker_re_enables_and_unfreezes_gc(self, monkeypatch):
+        try:
+            wiz, _started = self._stub_wizard(monkeypatch)
+            wiz._run_thread = None
+            wiz._run_timer_job = [None]
+            wiz._start_worker("view", "C:\\s", "C:\\t", print)
+            assert not self._gc.isenabled()
+            wiz._finish_worker()
+            assert self._gc.isenabled()          # вернулось как было
+            assert wiz._gc_frozen is False
+            assert wiz._run_state == "outcome"
+        finally:
+            self._restore()
+
+    def test_finish_worker_collects_before_unfreeze(self, monkeypatch):
+        """Раунд 211, п.6: финальный gc.collect() -- ДО gc.unfreeze(), чтобы сборка обошла
+        только мусор прогона, а не весь замороженный на старте живой граф."""
+        try:
+            wiz, _started = self._stub_wizard(monkeypatch)
+            wiz._run_thread = None
+            wiz._run_timer_job = [None]
+            wiz._start_worker("view", "C:\\s", "C:\\t", print)
+            order = []
+            monkeypatch.setattr(g.gc, "collect", lambda *a, **kw: order.append("collect"))
+            monkeypatch.setattr(g.gc, "unfreeze", lambda: order.append("unfreeze"))
+            monkeypatch.setattr(g.gc, "enable", lambda: order.append("enable"))
+            wiz._finish_worker()
+            assert order == ["collect", "unfreeze", "enable"]
+        finally:
+            self._restore()
+
+    def test_finish_worker_keeps_gc_disabled_if_it_was_disabled_before(self, monkeypatch):
+        try:
+            self._gc.disable()                   # эмулируем «GC уже был выключен»
+            wiz, _started = self._stub_wizard(monkeypatch)
+            wiz._run_thread = None
+            wiz._run_timer_job = [None]
+            wiz._start_worker("view", "C:\\s", "C:\\t", print)
+            assert wiz._gc_was_enabled is False
+            wiz._finish_worker()
+            assert not self._gc.isenabled()      # НЕ включаем то, что не мы выключали
+            assert wiz._gc_frozen is False
+        finally:
+            self._restore()
+
+    def test_drain_bus_collects_from_main_thread_on_cadence(self, monkeypatch):
+        _inject_fake_tkinter(monkeypatch)
+        wiz = g._Wizard()
+        wiz._handle_run_event = lambda item: None
+        wiz._run_bus = m.RunEventBus()
+        wiz._run_state = "running"
+
+        class _FakeRoot:
+            def after(self, *_a, **_kw):
+                return "job-id"
+        wiz.root = _FakeRoot()
+
+        collects = []
+        monkeypatch.setattr(g.gc, "collect", lambda *a, **kw: collects.append(a))
+
+        n = g._RUN_GC_COLLECT_EVERY_TICKS
+        for _ in range(n - 1):
+            wiz._drain_bus()
+        assert collects == []                    # ещё не время
+        wiz._drain_bus()                         # n-й тик
+        assert len(collects) == 1
+        for _ in range(n):
+            wiz._drain_bus()
+        assert len(collects) == 2                # ровно раз в n тиков

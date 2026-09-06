@@ -74,3 +74,26 @@ def test_generation_progress_shows_event_count_on_large_run(monkeypatch, tmp_pat
     m._finalize_target_report(str(tmp_path), "target", any_succeeded=True, total_processed=4100,
                                open_browser=False, log=logs.append, interrupted=False)
     assert any("4100 записей" in s for s in logs), logs
+
+
+def test_detail_not_written_logs_a_line(monkeypatch, tmp_path):
+    """2026-09-06: report.generate_report(on_detail_locked=...) -> True (детализация не
+    записана: файл оставался открыт) -> строка в лог, прогон при этом завершается штатно."""
+    _patch_report(monkeypatch)
+    got = {}
+    monkeypatch.setattr(m.report, "generate_report",
+                         lambda *a, **k: (got.__setitem__("cb", k.get("on_detail_locked")), True)[1])
+    logs = []
+    m._finalize_target_report(str(tmp_path), "target", any_succeeded=True, total_processed=3,
+                               open_browser=False, log=logs.append, interrupted=False)
+    assert got["cb"] is m._detail_lock_wait  # колбэк проброшен в report.generate_report()
+    assert any("Детализированная таблица" in s and "не записана" in s for s in logs), logs
+
+
+def test_detail_written_no_warning_line(monkeypatch, tmp_path):
+    _patch_report(monkeypatch)
+    monkeypatch.setattr(m.report, "generate_report", lambda *a, **k: False)
+    logs = []
+    m._finalize_target_report(str(tmp_path), "target", any_succeeded=True, total_processed=3,
+                               open_browser=False, log=logs.append, interrupted=False)
+    assert not any("не записана" in s for s in logs), logs
