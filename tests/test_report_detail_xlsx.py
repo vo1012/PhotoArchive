@@ -3,8 +3,10 @@
 проводка кнопки «Детализированный отчёт» через report.generate_report(). Плюс (тем же днём,
 "Открыто на момент записи" спеки) -- Паспорт архива: _build_passport_detail_rows()/
 generate_passport_detail_xlsx(), через report.generate_passport_report()."""
+import os
 from types import SimpleNamespace
 
+import pytest
 from openpyxl import load_workbook
 
 import report as r
@@ -485,6 +487,131 @@ class TestGenerateDetailXlsx:
         assert rgb_by_name["broken.jpg"] == "FF" + rx._COLOR_PROBLEM.lstrip("#")
         assert rgb_by_name["dup.jpg"] == "FF" + rx._COLOR_DUPLICATE.lstrip("#")
         assert rgb_by_name["broken.jpg"] != rgb_by_name["dup.jpg"]
+
+
+class TestDetailXlsxFileLocked:
+    """2026-09-06: xlsx пишется во временный `<final>.new` (свежее имя -> save() всегда
+    проходит, никаких брошенных write-only потоков), затем os.replace() на целевой. Залочен
+    может быть только целевой -> os.replace() -> ReportDetailFileLocked(final, tmp), .new
+    остаётся целым для retry_replace(). Прочие OSError -> чистим .new, пробрасываем."""
+
+    def _replace_raises(self, monkeypatch, exc):
+        real = os.replace
+
+        def _boom(src, dst, *a, **kw):
+            if str(dst).endswith(".new"):   # tmp-запись самого save() не трогаем
+                return real(src, dst, *a, **kw)
+            raise exc
+        monkeypatch.setattr(rx.os, "replace", _boom)
+
+    def test_permission_error_on_replace_becomes_locked_with_paths(self, monkeypatch, tmp_path):
+        self._replace_raises(monkeypatch, PermissionError(13, "Permission denied"))
+        data = {"appended": [_appended(r"D:\SOURCE\a.jpg", r"D:\TARGET\a.jpg")]}
+        with pytest.raises(rx.ReportDetailFileLocked) as ei:
+            rx.generate_detail_xlsx(data, str(tmp_path / "report.html"))
+        final = tmp_path / rx.DETAIL_XLSX_FILENAME
+        assert ei.value.final_path == str(final)
+        assert ei.value.tmp_path == str(final) + ".new"
+        assert (tmp_path / (rx.DETAIL_XLSX_FILENAME + ".new")).is_file()  # готовый xlsx ждёт
+
+    def test_sharing_violation_oserror_on_replace_becomes_locked(self, monkeypatch, tmp_path):
+        e = OSError("sharing violation")
+        e.winerror = 32
+        self._replace_raises(monkeypatch, e)
+        data = {"appended": [_appended(r"D:\SOURCE\a.jpg", r"D:\TARGET\a.jpg")]}
+        with pytest.raises(rx.ReportDetailFileLocked):
+            rx.generate_detail_xlsx(data, str(tmp_path / "report.html"))
+
+    def test_other_oserror_on_replace_not_swallowed_and_tmp_cleaned(self, monkeypatch, tmp_path):
+        """Нет места (errno 28) при подмене -- настоящая ошибка, пробрасываем; .new подчищаем."""
+        self._replace_raises(monkeypatch, OSError(28, "No space left on device"))
+        data = {"appended": [_appended(r"D:\SOURCE\a.jpg", r"D:\TARGET\a.jpg")]}
+        with pytest.raises(OSError) as ei:
+            rx.generate_detail_xlsx(data, str(tmp_path / "report.html"))
+        assert not isinstance(ei.value, rx.ReportDetailFileLocked)
+        assert not (tmp_path / (rx.DETAIL_XLSX_FILENAME + ".new")).exists()
+
+    def test_normal_write_leaves_no_tmp_and_a_real_xlsx(self, tmp_path):
+        data = {"appended": [_appended(r"D:\SOURCE\a.jpg", r"D:\TARGET\a.jpg")]}
+        rx.generate_detail_xlsx(data, str(tmp_path / "report.html"))
+        assert (tmp_path / rx.DETAIL_XLSX_FILENAME).is_file()
+        assert not (tmp_path / (rx.DETAIL_XLSX_FILENAME + ".new")).exists()
+
+    def test_retry_replace_success_after_lock_cleared(self, monkeypatch, tmp_path):
+        final = tmp_path / rx.DETAIL_XLSX_FILENAME
+        tmp = str(final) + ".new"
+        self._replace_raises(monkeypatch, PermissionError(13, "denied"))
+        with pytest.raises(rx.ReportDetailFileLocked):
+            rx.generate_detail_xlsx({"appended": [_appended(r"D:\S\a.jpg", r"D:\T\a.jpg")]},
+                                     str(tmp_path / "report.html"))
+        assert os.path.isfile(tmp)
+        monkeypatch.undo()                                   # «пользователь закрыл файл»
+        assert rx.retry_replace(tmp, str(final)) is True
+        assert final.is_file() and not os.path.exists(tmp)   # .new израсходован
+        assert rx.retry_replace(tmp, str(final)) is True     # уже подменён -> True, не падает
+
+    def test_retry_replace_still_locked_returns_false(self, monkeypatch, tmp_path):
+        final = tmp_path / rx.DETAIL_XLSX_FILENAME
+        tmp = str(final) + ".new"
+        (tmp_path / (rx.DETAIL_XLSX_FILENAME + ".new")).write_text("x")
+        self._replace_raises(monkeypatch, PermissionError(13, "denied"))
+        assert rx.retry_replace(tmp, str(final)) is False
+
+    def test_generate_report_no_callback_gives_up_disabled_html_returns_true(
+            self, monkeypatch, tmp_path):
+        """on_detail_locked=None (CLI/текст): xlsx не записан -> True, кнопка неактивна с
+        заметкой «Не записана», ссылки на устаревший файл нет."""
+        self._replace_raises(monkeypatch, PermissionError(13, "Permission denied"))
+        data = {"appended": [_appended(r"D:\SOURCE\a.jpg", r"D:\TARGET\a.jpg")]}
+        out_path = tmp_path / "report.html"
+        not_written = r.generate_report(data, str(out_path), level="target",
+                                         run_start="2026-01-01 00:00:00")
+        assert not_written is True
+        html_out = out_path.read_text(encoding="utf-8")
+        assert 'disabled aria-disabled="true">Детализированный отчёт' in html_out
+        assert "Не записана:" in html_out
+        assert f'href="{rx.DETAIL_XLSX_FILENAME}"' not in html_out
+
+    def test_generate_report_callback_retry_ok_writes_active_html_returns_false(
+            self, monkeypatch, tmp_path):
+        """on_detail_locked вернул True (пользователь закрыл файл, retry прошёл) -> кнопка
+        активна, без заметки, generate_report() -> False."""
+        seen = {}
+
+        def _cb(final, tmp):
+            seen["final"], seen["tmp"] = final, tmp
+            monkeypatch.undo()  # «файл закрыли»
+            return rx.retry_replace(tmp, final)
+
+        self._replace_raises(monkeypatch, PermissionError(13, "denied"))
+        data = {"appended": [_appended(r"D:\SOURCE\a.jpg", r"D:\TARGET\a.jpg")]}
+        out_path = tmp_path / "report.html"
+        not_written = r.generate_report(data, str(out_path), level="target",
+                                         run_start="2026-01-01 00:00:00", on_detail_locked=_cb)
+        assert not_written is False
+        assert seen["final"] == str(tmp_path / rx.DETAIL_XLSX_FILENAME)
+        html_out = out_path.read_text(encoding="utf-8")
+        assert f'href="{rx.DETAIL_XLSX_FILENAME}"' in html_out
+        assert "Не записана:" not in html_out
+        assert (tmp_path / rx.DETAIL_XLSX_FILENAME).is_file()
+
+    def test_generate_report_returns_false_when_replace_fine(self, tmp_path):
+        data = {"appended": [_appended(r"D:\SOURCE\a.jpg", r"D:\TARGET\a.jpg")]}
+        not_written = r.generate_report(data, str(tmp_path / "report.html"), level="target",
+                                         run_start="2026-01-01 00:00:00")
+        assert not_written is False
+
+    def test_generate_passport_report_no_callback_returns_true_disabled_html(
+            self, monkeypatch, tmp_path):
+        self._replace_raises(monkeypatch, PermissionError(13, "Permission denied"))
+        stats = _FakeAnalyzeStats()
+        stats.exact_dup_edges = [{"dest": "Albums/A/x.jpg", "matched_dest": "Albums/A/y.jpg"}]
+        out_path = tmp_path / "passport.html"
+        not_written = r.generate_passport_report(stats, str(out_path), target_path=r"D:\TARGET")
+        assert not_written is True
+        html_out = out_path.read_text(encoding="utf-8")             # passport.html записан
+        assert "Не записана:" in html_out
+        assert f'href="{rx.PASSPORT_DETAIL_XLSX_FILENAME}"' not in html_out
 
 
 class TestGenerateReportWiresDetailXlsxButton:

@@ -70,6 +70,7 @@ CLI/config-путь (main()) этим не затронут -- там выбор
 Логотип -- реальный, см. _render_logo()/assets/render_logo_masters.py (2026-08-22). Палитра --
 токены лендинга (#F0F2EC/#24544A/#A85A2A), не только для логотипа, для всего интерфейса."""
 
+import gc
 import os
 import sys
 import threading
@@ -273,6 +274,12 @@ _FULL_COMMENT_WRAP = _CONTENT_INNER_WIDTH - 24
 _RUN_MIRROR_COLUMNS = m._GUI_MIRROR_COLUMNS
 _RUN_MIRROR_ROWS = 12
 _RUN_MIRROR_MAX_LINES = 5000  # кольцевой буфер, ТЗ §5/§8.4 -- не безграничный рост на долгом прогоне.
+# Циклический GC приглушён на время воркер-прогона (см. _start_worker()) -- чтобы мусор-циклы,
+# которые за многочасовой прогон плодит движок, не копились без предела, _drain_bus() раз в
+# столько своих тиков (тик = 100мс) делает полную сборку С ГЛАВНОГО потока (там вызов в Tk из
+# dealloc безопасен). ~15с: даже разовая паузa полной сборки на большой куче незаметна на
+# такой каденции. Ручка на случай подёргивания UI на реальном большом архиве.
+_RUN_GC_COLLECT_EVERY_TICKS = 150
 # Моноширинный шрифт панели-зеркала И закреплённой status-строки -- один и тот же, чтобы
 # колонки обеих совпадали по ширине (2026-09-01, живой отзыв: status-строку "крупнее и
 # заметнее"; заодно и сама панель читаемее на ТВ).
@@ -1090,6 +1097,49 @@ def _ensure_new_wizard_window_normal(root) -> None:
         pass
 
 
+def _fade_rebuild(root, work_fn) -> None:
+    """2026-09-06, живой отзыв: при переходе на экран «Выполнение» окно очищается, пересобирает
+    содержимое и МЕНЯЕТ размер (556 -> _RUN_CONTENT_WIDTH=820) + пере-центрируется. Tk на
+    Windows не буферизует перерисовку toplevel -> в открывшейся при росте области мелькает
+    чёрный кадр (WM_SETREDRAW не помог -- geometry() форсит отрисовку в обход). Решение по
+    просьбе пользователя («красиво плавно закрыть и открыть заново»): гасим окно до
+    прозрачности (`-alpha`), пока невидимо -- делаем всю пересборку/ресайз, плавно возвращаем.
+    Слоёное (alpha) окно композитится DWM -> сырых GDI-артефактов не показывает, а при alpha~0
+    и показывать нечего. ~2x110мс, ощущается как намеренный переход.
+
+    work_fn -- ноль-аргументная пересборка экрана. Гарантированно выполняется даже если
+    анимация/`-alpha` недоступны (тогда просто без плавности). Вызывается синхронно из
+    _cap_and_show(), до mainloop() -- блокировка на ~0.2с здесь безопасна."""
+    steps, total = 7, 0.11
+
+    def _set_alpha(a):
+        try:
+            root.attributes("-alpha", max(0.0, min(1.0, a)))
+            root.update_idletasks()
+        except Exception:
+            pass
+
+    try:
+        for i in range(steps, -1, -1):
+            _set_alpha(i / steps)
+            time.sleep(total / steps)
+    except Exception:
+        pass
+    try:
+        work_fn()
+    finally:
+        try:
+            for i in range(steps + 1):
+                _set_alpha(i / steps)
+                time.sleep(total / steps)
+        except Exception:
+            pass
+        try:
+            root.attributes("-alpha", 1.0)
+        except Exception:
+            pass
+
+
 def _set_crisp_taskbar_icon(root, ico_path: str, prev_hicon=None):
     """2026-08-23, живая находка пользователя: иконка мастера в панели задач выглядела заметно
     размытой при запуске (Шаг 1-2), но становилась чёткой сразу после Шага 3, когда появлялась
@@ -1226,6 +1276,8 @@ class _Wizard:
         self._run_mirror_line_count = 0
         self._run_orig_stdout = None
         self._run_orig_stderr = None
+        self._run_detail_wait = False  # True, пока экран «Выполнение» ждёт закрытия файла
+        self._detail_wait_started_at = None  # для сдвига «Прошло» на время ожидания
         # Виджеты экрана 4, созданные ОДИН раз в render_run_screen() -- в отличие от экранов
         # 1-3 (каждый render_*_screen() зовёт _clear_content() и строит заново), панель-зеркало
         # переживает переход «идёт» -> «готово»/«прервано»/«сбой» (§3.2-3.4 ТЗ: "Панель-зеркало
@@ -1238,8 +1290,13 @@ class _Wizard:
         self._run_timer_var = None
         self._run_status_var = None
         self._run_pause_btn = None
+        self._run_cancel_btn = None
         self._run_timer_job = [None]
         self._run_drain_job = [None]
+        self._drain_ticks = 0
+        self._gc_was_enabled = True  # см. _start_worker()/_finish_worker(): циклический GC
+        self._gc_frozen = False      # приглушается на время воркер-прогона (Tcl_Panic из GC
+                                     # на воркер-потоке -- см. крах tcl86t.dll 0x80000003)
 
     def build_shell(self, _retry: bool = False) -> None:
         import tkinter as tk
@@ -1760,49 +1817,59 @@ class _Wizard:
         зовёт _clear_content() заново, только пересобирает header/buttons внутри уже
         существующих рамок, оставляя панель-зеркало (скроллбэк) нетронутой (§3.2-3.4 ТЗ)."""
         import tkinter as tk
-        self._clear_content()
-        mode = self.state["mode"]
-        self.step_var.set(f"Шаг 3 из 3: Выполнение (Режим: {m._BARE_LAUNCH_MODE_LABELS[mode]})")
-        self._run_state = "running"
-        self._run_paused = False
+        # _fade_rebuild: очистка content + пересборка виджетов + рост окна 556->820 +
+        # пере-центрирование -> без этого в открывшейся области мелькает чёрный кадр (Tk на
+        # Windows не буферизует toplevel, живой отзыв 2026-09-06). Гасим окно на плавный
+        # переход, всю перестройку делаем пока невидимо (см. _fade_rebuild()).
+        def _build():
+            self._clear_content()
+            mode = self.state["mode"]
+            self.step_var.set(
+                f"Шаг 3 из 3: Выполнение (Режим: {m._BARE_LAUNCH_MODE_LABELS[mode]})")
+            self._run_state = "running"
+            self._run_paused = False
 
-        self._run_header_frame = tk.Frame(self.content, bg=_BG, height=_px(_RUN_HEADER_HEIGHT))
-        self._run_header_frame.pack_propagate(False)
-        self._run_header_frame.pack(fill="x")
+            self._run_header_frame = tk.Frame(self.content, bg=_BG,
+                                               height=_px(_RUN_HEADER_HEIGHT))
+            self._run_header_frame.pack_propagate(False)
+            self._run_header_frame.pack(fill="x")
 
-        mirror_wrap = tk.Frame(self.content, bg=_BG)
-        mirror_wrap.pack(fill="both", expand=True, pady=(_px(10), _px(6)))
-        scrollbar = tk.Scrollbar(mirror_wrap)
-        scrollbar.pack(side="right", fill="y")
-        # wrap="char" (не "none"): длинную строку лучше перенести, чем обрезать за краем окна
-        # (живой отзыв 2026-09-01). Движок и так форматирует под _RUN_MIRROR_COLUMNS (=120, см.
-        # _console_tag_line_budget() и т.п.), перенос срабатывает лишь на редких длинных.
-        mirror = tk.Text(mirror_wrap, width=_RUN_MIRROR_COLUMNS, height=_RUN_MIRROR_ROWS,
-                           font=("Consolas", _RUN_MONO_SIZE), bg="#FFFFFF", fg=_TEXT,
-                           wrap="char", yscrollcommand=scrollbar.set)
-        mirror.pack(side="left", fill="both", expand=True)
-        scrollbar.config(command=mirror.yview)
-        self._run_mirror = mirror
-        self._run_mirror_line_count = 0
-        self._make_mirror_readonly_copyable(mirror)
+            mirror_wrap = tk.Frame(self.content, bg=_BG)
+            mirror_wrap.pack(fill="both", expand=True, pady=(_px(10), _px(6)))
+            scrollbar = tk.Scrollbar(mirror_wrap)
+            scrollbar.pack(side="right", fill="y")
+            # wrap="char" (не "none"): длинную строку лучше перенести, чем обрезать за краем
+            # окна (живой отзыв 2026-09-01). Движок и так форматирует под _RUN_MIRROR_COLUMNS
+            # (=120, см. _console_tag_line_budget() и т.п.), перенос срабатывает лишь на редких.
+            mirror = tk.Text(mirror_wrap, width=_RUN_MIRROR_COLUMNS, height=_RUN_MIRROR_ROWS,
+                               font=("Consolas", _RUN_MONO_SIZE), bg="#FFFFFF", fg=_TEXT,
+                               wrap="char", yscrollcommand=scrollbar.set)
+            mirror.pack(side="left", fill="both", expand=True)
+            scrollbar.config(command=mirror.yview)
+            self._run_mirror = mirror
+            self._run_mirror_line_count = 0
+            self._make_mirror_readonly_copyable(mirror)
 
-        self._run_button_frame = tk.Frame(self.content, bg=_BG)
-        self._run_button_frame.pack(fill="x")
+            self._run_button_frame = tk.Frame(self.content, bg=_BG)
+            self._run_button_frame.pack(fill="x")
 
-        self._render_run_header_running()
-        self._render_run_buttons_running()
+            self._render_run_header_running()
+            self._render_run_buttons_running()
 
-        # Нижняя панель мастера («Назад»/«Выход»/«Начать») экрану 4 не нужна -- у него свои
-        # кнопки в _run_button_frame внутри content; прятать (живой отзыв 2026-09-01). Новый
-        # цикл в меню строит окно с нуля -- восстанавливать nav обратно не требуется.
-        self.nav.pack_forget()
-        self.root.unbind("<Return>")
-        self.root.bind("<Escape>", lambda _e: self._on_close())
-        # Экран 4 шире прочих -- _RUN_CONTENT_WIDTH (панель-зеркало 80 моноширинных колонок),
-        # высота как у экранов 1-3 фиксированной константой (_RUN_SCREEN_HEIGHT). DPI-cap для
-        # всех экранов посчитан ЗАРАНЕЕ в build_shell() (_precap_dpi_scale_for_all_screens())
-        # -- реактивная пересборка в _cap_and_show() здесь уже не срабатывает.
-        self._apply_fixed_content_size(_RUN_SCREEN_HEIGHT, width_nominal=_RUN_CONTENT_WIDTH)
+            # Нижняя панель мастера («Назад»/«Выход»/«Начать») экрану 4 не нужна -- у него свои
+            # кнопки в _run_button_frame внутри content; прятать (живой отзыв 2026-09-01). Новый
+            # цикл в меню строит окно с нуля -- восстанавливать nav обратно не требуется.
+            self.nav.pack_forget()
+            self.root.unbind("<Return>")
+            self.root.bind("<Escape>", lambda _e: self._on_close())
+            # Экран 4 шире прочих -- _RUN_CONTENT_WIDTH (панель-зеркало 120 моноширинных
+            # колонок), высота фиксированной константой (_RUN_SCREEN_HEIGHT). DPI-cap для всех
+            # экранов посчитан ЗАРАНЕЕ в build_shell() (_precap_dpi_scale_for_all_screens()) --
+            # реактивная пересборка в _cap_and_show() здесь уже не срабатывает.
+            self._apply_fixed_content_size(_RUN_SCREEN_HEIGHT,
+                                            width_nominal=_RUN_CONTENT_WIDTH)
+
+        _fade_rebuild(self.root, _build)
 
     def _clear_run_header(self) -> None:
         for w in self._run_header_frame.winfo_children():
@@ -1844,6 +1911,59 @@ class _Wizard:
                   padx=_px(6), pady=_px(3)).pack(fill="x", pady=(_px(8), 0))
         self._start_run_timer()
 
+    def _enter_detail_lock_wait(self, final_path: str) -> None:
+        """Событие ("detail_locked", path) с воркера: xlsx-детализация не записалась, целевой
+        файл открыт в другой программе. Экран «Выполнение» ждёт «Продолжить» -- НЕ через
+        механизм паузы (у той своя timer/offset-логика), а своей командой на той же кнопке
+        («Пауза»->«Продолжить», _on_detail_continue). «Прервать работу» прячется -- на этапе
+        формирования отчётов прерывать нечего (всё уже скопировано). «Прошло» замирает; на
+        «Продолжить» точка отсчёта сдвигается на время ожидания."""
+        import os
+        import tkinter as tk
+        if self._run_detail_wait:
+            return
+        self._run_detail_wait = True
+        self._detail_wait_started_at = time.time()
+        self._stop_run_timer()
+        if self._run_pause_var is not None:
+            self._run_pause_var.set("Работа приостановлена")
+        if self._run_pause_btn is not None:
+            self._run_pause_btn.config(text="Продолжить", command=self._on_detail_continue)
+        if self._run_cancel_btn is not None:
+            self._run_cancel_btn.pack_forget()
+        name = os.path.basename(final_path)
+        self._clear_run_header()
+        self._run_header_frame.pack_propagate(True)
+        tk.Label(self._run_header_frame, text="Работа приостановлена", bg=_BG, fg=_ORANGE,
+                  font=("Segoe UI", 11, "bold"), anchor="w").pack(fill="x")
+        tk.Label(self._run_header_frame,
+                  text=f"Осталось записать детализированную таблицу, но файл {name} открыт в "
+                       "другой программе. Закройте его и нажмите «Продолжить».",
+                  bg=_BG, fg=_TEXT, font=("Segoe UI", 10), anchor="w", justify="left",
+                  wraplength=_px(_RUN_TEXT_WRAP)).pack(fill="x", pady=(_px(6), 0))
+        tk.Label(self._run_header_frame,
+                  text="Если нажать «Продолжить», не закрыв файл — таблица создана не будет. "
+                       "На архив и HTML-отчёт это не влияет.",
+                  bg=_BG, fg=_ORANGE, font=("Segoe UI", 10, "bold"), anchor="w",
+                  justify="left", wraplength=_px(_RUN_TEXT_WRAP)).pack(fill="x", pady=(_px(8), 0))
+
+    def _on_detail_continue(self) -> None:
+        """«Продолжить» на паузе «Работа приостановлена»: воркер делает одну попытку записи и
+        завершает прогон (исход «Работа завершена» либо «Работа прервана», если «Прервать
+        работу» жали раньше). Кнопки/шапку пересоберёт событие done."""
+        self._run_detail_wait = False
+        if self._detail_wait_started_at is not None and self._run_started_at is not None:
+            self._run_started_at += time.time() - self._detail_wait_started_at
+        self._detail_wait_started_at = None
+        if self._run_pause_var is not None:
+            self._run_pause_var.set("")
+        if self._run_pause_btn is not None:
+            try:
+                self._run_pause_btn.config(text="Завершаю…", state="disabled")
+            except Exception:
+                pass
+        self._run_bus.detail_resume.set()
+
     def _render_run_buttons_running(self) -> None:
         self._clear_run_buttons()
         # width фиксирован под самый длинный вариант ("Продолжить", 10 симв.) -- иначе кнопка
@@ -1851,9 +1971,10 @@ class _Wizard:
         self._run_pause_btn = _make_nav_button(
             self._run_button_frame, "Пауза", command=self._on_run_pause_toggle, width=11)
         self._run_pause_btn.pack(side="left")
-        _make_nav_button(self._run_button_frame, "Прервать работу",
-                          command=self._on_run_cancel_soft).pack(
-            side="left", padx=(_px(10), 0))
+        # ref держим -- _enter_detail_lock_wait() прячет её (прерывать нечего, всё скопировано)
+        self._run_cancel_btn = _make_nav_button(self._run_button_frame, "Прервать работу",
+                                                 command=self._on_run_cancel_soft)
+        self._run_cancel_btn.pack(side="left", padx=(_px(10), 0))
         # «Сохранить лог…» убрана (живой отзыв, 2026-09-01): панель-зеркало -- кольцевой
         # буфер (_RUN_MIRROR_MAX_LINES), кнопка отдавала бы обрезанный хвост, выглядящий как
         # «весь лог». Настоящая запись -- в архиве (__служебные_файлы\logs\) + HTML-отчёт;
@@ -1921,7 +2042,27 @@ class _Wizard:
         -- виджеты уже на экране, дренаж очереди сразу обновляет их. m._run_event_bus/sys.stdout/
         sys.stderr снимаются в _finish_worker() (гарантированная точка -- см. её докстринг), не
         здесь в try/finally -- жизнь воркера растянута на много оборотов Tk mainloop(), обычный
-        Python try/finally одного кадра стека тут неприменим."""
+        Python try/finally одного кадра стека тут неприменим.
+
+        Приглушение циклического GC на время прогона (2026-09-06, разбор крахов tcl86t.dll
+        0x80000003 = Tcl_Panic "async handler deleted by the wrong thread"): движок в воркер-
+        потоке аллоцирует массированно -> генерационный GC срабатывает НА ВОРКЕРЕ. Если он
+        соберёт ссылочный цикл, содержащий tkinter-обёртку (tk.StringVar/tk.Menu/замыкание
+        _tick брошенного прошлого _Wizard -- у run_bare_launch() новый _Wizard на каждый цикл
+        меню), её __del__/dealloc дёрнет Tcl API НЕ ИЗ ТОГО ПОТОКА, где создан интерпретатор ->
+        аварийный abort всего процесса, БЕЗ crash.log (падает C-библиотека). Наблюдение
+        пользователя: почти всегда на ПОВТОРНОМ запуске после «Главное меню».
+          gc.collect() здесь -- на ГЛАВНОМ потоке (владеет Tcl) -- добивает мусор прошлого
+        цикла безопасно; gc.freeze() уводит всё живое (вкл. виджеты этого экрана) в вечное
+        поколение; gc.disable() снимает автосборку на всех потоках до конца прогона. Обратно --
+        _finish_worker() (гарантированная точка). Память за долгий прогон держит периодический
+        gc.collect() с главного потока в _drain_bus()."""
+        self._gc_was_enabled = gc.isenabled()
+        gc.collect()
+        gc.freeze()
+        gc.disable()
+        self._gc_frozen = True
+        self._drain_ticks = 0
         bus = m.RunEventBus()
         self._run_bus = bus
         self._run_orig_stdout = sys.stdout
@@ -1940,6 +2081,27 @@ class _Wizard:
         последнее, что собирался, в очередь и вот-вот завершится сам -- дальше он больше не
         читает/не пишет ни bus, ни sys.stdout/stderr."""
         self._stop_run_timer()
+        # Дождаться реального завершения воркер-потока перед re-enable GC: событие done/error --
+        # его ПОСЛЕДНЕЕ действие в очередь, дальше только разматывание кадра, join near-instant.
+        # Иначе тонкое окно, где GC уже включён, а воркер ещё делает хвостовую аллокацию.
+        if self._run_thread is not None:
+            self._run_thread.join(timeout=5)
+        if self._gc_frozen:
+            # collect() ДО unfreeze() (Раунд 211, п.6): замороженные объекты сборка не
+            # обходит -> проходит только по не-замороженному = мусор-циклы прогона
+            # (накопленные под gc.disable()), а не по всему живому графу с момента
+            # _start_worker (~230мс на большой куче -> подскок на переходе к экрану исхода).
+            # Главный поток -- вызов в Tk из dealloc безопасен.
+            # Цена (Раунд 212, п.4): объекты, что были живы на _start_worker (и потому
+            # заморожены), но стали мусором за прогон, здесь НЕ собираются -- их подметёт
+            # автосборка после gc.enable() либо gc.collect() следующего _start_worker(). Таких
+            # немного (набор пережил старт мастера), автосборка включена -- отложенное
+            # освобождение, не утечка.
+            gc.collect()
+            gc.unfreeze()
+            if self._gc_was_enabled:
+                gc.enable()
+            self._gc_frozen = False
         m._run_event_bus = None
         if self._run_orig_stdout is not None:
             sys.stdout = self._run_orig_stdout
@@ -1962,7 +2124,13 @@ class _Wizard:
                 self._handle_run_event(bus.queue.get_nowait())
         except _queue.Empty:
             pass
+        # Периодическая полная сборка мусора с ГЛАВНОГО потока -- см. _RUN_GC_COLLECT_EVERY_TICKS.
+        # На done/error _handle_run_event() уже позвал _finish_worker() (re-enable GC), тут
+        # _run_state == "outcome" -- эта ветка не сработает, лишней сборки в конце нет.
         if self._run_state == "running":
+            self._drain_ticks += 1
+            if self._drain_ticks % _RUN_GC_COLLECT_EVERY_TICKS == 0:
+                gc.collect()
             try:
                 self._run_drain_job[0] = self.root.after(100, self._drain_bus)
             except tk.TclError:
@@ -1975,6 +2143,10 @@ class _Wizard:
                 self._run_status_var.set(item[1])
         elif kind == "log":
             self._append_run_log_line(item[1])
+        elif kind == "detail_locked":
+            # Движок встал на паузу «Работа приостановлена»: xlsx-детализация не записалась,
+            # целевой файл открыт в другой программе. item[1] -- путь к целевому файлу.
+            self._enter_detail_lock_wait(item[1])
         elif kind == "done":
             _, report_path, outcome = item
             self._append_run_end_marker()
@@ -2070,13 +2242,11 @@ class _Wizard:
         есть, кнопка «Главное меню» есть, пояснение указывает на crash.log. Приходит из
         m._AbortedRunReport (подкласс _InterruptedRunReport). См. §3.8 ТЗ.
 
-        `warnings` (Раунд 189, ответ на "outcome=warnings не реализован"): архив собрался, но
-        остановился по нехватке места на TARGET (any_stopped_for_space). _run_worker_thread()
-        читает это из необязательного out-параметра m._bare_launch_run_build(outcome=...) (её
-        сигнатуру для текстового режима/CLI это не меняет, см. её докстринг) и зовёт
-        `bus.done(report_path, "warnings")` вместо `"ok"`. Сам отчёт по-прежнему честно
-        отражает нехватку места в содержании (report.py не тронут) -- этот заголовок только не
-        молчит об этом на экране «Выполнение»."""
+        `warnings` (Раунд 189): архив собрался, но остановился по нехватке места на TARGET
+        (any_stopped_for_space) -- _run_worker_thread() зовёт `bus.done(report_path,
+        "warnings")` вместо `"ok"`. Заголовок «Готово, но были замечания — откройте отчёт».
+        (xlsx-детализация, открытая в Excel, `warnings` НЕ вызывает -- обрабатывается паузой
+        «Работа приостановлена» ещё во время прогона, см. _enter_detail_lock_wait().)"""
         self._render_run_header_outcome(outcome, report_path, error_text, crashlog_path)
         self._render_run_buttons_outcome(outcome)
 
@@ -2227,10 +2397,17 @@ class _Wizard:
 
 def _run_worker_thread(bus, mode: str, source, target, log) -> None:
     """Тело воркер-потока (§2.1 ТЗ) -- НИКОГДА не трогает tkinter, только зовёт существующие
-    m._bare_launch_run_*() (сигнатуры совместимы -- build получает необязательный `outcome=`,
-    см. её докстринг) и кладёт события через bus (thread-safe -- queue.Queue).
+    m._bare_launch_run_*() и кладёт события через bus (thread-safe -- queue.Queue).
     _ensure_target_unlocked() уже отработала на главном потоке ДО старта этого потока (см.
-    _run_wizard()) -- сюда попадают, только когда сборка реально может начаться."""
+    _run_wizard()) -- сюда попадают, только когда сборка реально может начаться.
+
+    xlsx-детализация открыта в другой программе -> движок (report.generate_report/
+    generate_passport_report -> m._detail_lock_wait) сам ставит паузу через bus, воркер здесь
+    блокируется до «Продолжить» -- отдельного события/исхода не требуется, прогон завершается
+    обычным done("ok")."""
+    # outcome -- out-dict для {"stopped_for_space": ...} (Раунд 189). Текстовый режим/CLI его
+    # не передают, сигнатура _bare_launch_run_build() для них не меняется.
+    run_outcome = {}
     try:
         if mode == "view":
             report_path = m._bare_launch_run_view([source], log=log)
@@ -2240,13 +2417,8 @@ def _run_worker_thread(bus, mode: str, source, target, log) -> None:
             report_path = m._bare_launch_run_dryrun(
                 [source], target, input_fn=_auto_yes_input_fn, log=log)
         else:
-            # outcome (Раунд 189, ответ на "outcome=warnings не реализован"): out-параметр,
-            # заполняется {"stopped_for_space": ...} на успехе -- см. докстринг
-            # m._bare_launch_run_build(). Текстовый режим/CLI его не передают, сигнатура для
-            # них не меняется.
-            build_outcome = {}
             report_path = m._bare_launch_run_build(
-                [source], target, input_fn=_auto_yes_input_fn, log=log, outcome=build_outcome)
+                [source], target, input_fn=_auto_yes_input_fn, log=log, outcome=run_outcome)
         if report_path is None:
             # REVIEW-HANDOFF.md Раунд 182, замечание 182-2: ни один источник не дал ни одного
             # успеха (см. докстринг каждой _bare_launch_run_*() в photosort_win.py) -- это НЕ
@@ -2256,12 +2428,9 @@ def _run_worker_thread(bus, mode: str, source, target, log) -> None:
             # на crash.log нет, кнопка «Главное меню» на месте (в отличие от `failed`).
             bus.done(None, "nothing")
             return
-        if mode == "build" and build_outcome.get("stopped_for_space"):
-            # REVIEW-HANDOFF.md Раунд 182 (вне формата): архив собрался, но остановился по
-            # нехватке места на TARGET -- отчёт уже честно отражает это в содержании
-            # (run_stats["stopped_for_space"], report.py не тронут), теперь и заголовок экрана
-            # «Выполнение» не молчит об этом ("ok" был бы неточен -- часть SOURCE не попала
-            # в архив).
+        if run_outcome.get("stopped_for_space"):
+            # Раунд 182: архив собрался, но остановился по нехватке места на TARGET -- "ok"
+            # был бы неточен, заголовок «Готово, но были замечания».
             bus.done(report_path, "warnings")
         else:
             bus.done(report_path, "ok")

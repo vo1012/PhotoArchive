@@ -79,7 +79,7 @@ warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
 # blanket ignore of all warnings, so any other future PIL/library warning still surfaces.
 warnings.filterwarnings("ignore", message="Palette images with Transparency.*", category=UserWarning)
 
-__version__ = "0.6.12"          # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
+__version__ = "0.6.13"          # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
                                  # с RULES_VERSION ниже (та про совместимость архива, а не exe)
 RULES_VERSION = "2026-08-11"   # дата последнего изменения бизнес-правил -- см. RULES.md;
                                 # менять руками при изменении логики раскладки/дедупа/дат
@@ -253,16 +253,35 @@ UNRAR_BIN = tool_binary("unrar", "UnRAR.exe")
 # Ctrl-C: терминальный CTRL_C_EVENT больше не доходил до exiftool/ffmpeg/7z-list, а
 # `Popen.wait()` блокировался в `WaitForSingleObject` до таймаута (до 120с). Замена --
 # `STARTUPINFO` с `STARTF_USESHOWWINDOW | SW_HIDE`: новое окно консоли (когда родитель без
-# консоли, GUI-путь) создаётся скрытым => вспышки нет; когда консоль родителя ЕСТЬ (CLI),
-# ребёнок наследует её как обычно, отдельного окна не создаётся, Ctrl-C доходит. STARTUPINFO
-# существует только на Windows -> вне Windows None (обычный default, no-op). subprocess на
-# Windows копирует переданный STARTUPINFO перед использованием (bpo-34044), общий модульный
-# экземпляр безопасен.
+# консоли, GUI-путь) создаётся скрытым; когда консоль родителя ЕСТЬ (CLI), ребёнок наследует
+# её как обычно, отдельного окна не создаётся, Ctrl-C доходит. STARTUPINFO существует только
+# на Windows -> вне Windows None (обычный default, no-op). subprocess на Windows копирует
+# переданный STARTUPINFO перед использованием (bpo-34044), общий модульный экземпляр безопасен.
+#
+# 2026-09-06, живой отзыв: одного SW_HIDE на Win11 conhost не всегда хватает -- краткая
+# вспышка чёрного окна всё же проскакивала при первом спавне на GUI-пути. Дополнительно к
+# STARTUPINFO ставим `CREATE_NO_WINDOW`, но ТОЛЬКО на GUI-воркер-пути -- см.
+# _hidden_child_creationflags() ниже (на CLI-пути флаг рвал бы Ctrl-C, поэтому не безусловно).
 _NO_WINDOW_STARTUPINFO = (
     subprocess.STARTUPINFO(dwFlags=subprocess.STARTF_USESHOWWINDOW,
                            wShowWindow=subprocess.SW_HIDE)
     if os.name == "nt" else None
 )
+
+
+def _hidden_child_creationflags() -> int:
+    """2026-09-06, живой отзыв: на Windows 11 `STARTF_USESHOWWINDOW | SW_HIDE` (см.
+    _NO_WINDOW_STARTUPINFO) НЕ всегда успевает предотвратить кратковременную вспышку чёрного
+    окна conhost при спавне консольного ребёнка (exiftool/ffmpeg/7z) из процесса без консоли.
+    `CREATE_NO_WINDOW` убирает её гарантированно, но рвёт группу процессов консоли -> ломает
+    терминальный Ctrl-C на CLI-пути (Раунд 184, 184-4). Компромисс: ставим флаг ТОЛЬКО когда
+    активен GUI-воркер (`_run_event_bus` выставлен gui_menu перед стартом потока) -- там
+    консоли нет вовсе (windowed-сборка, голый запуск) и отмена идёт через `cancel_event`, не
+    Ctrl-C. На всех прочих путях (CLI из терминала, текстовое меню, dev) -> 0, поведение
+    STARTUPINFO не меняется."""
+    if os.name == "nt" and _run_event_bus is not None:
+        return subprocess.CREATE_NO_WINDOW
+    return 0
 
 # ============================================================================
 # PROGRESS  (А.4/Задача 4: экранная индикация длительных фаз, без файлового heartbeat)
@@ -646,6 +665,12 @@ class RunEventBus:
         self.queue = queue.Queue()
         self.pause_event = threading.Event()
         self.cancel_event = threading.Event()
+        # 2026-09-06: пауза «Работа приостановлена» на этапе записи xlsx-детализации, когда
+        # целевой файл открыт в другой программе -- ОТДЕЛЬНО от pause_event (у той своя
+        # timer-freeze/offset-логика в _on_run_pause_toggle, переплетение ломало нормальную
+        # паузу). Кнопка визуально та же, но команда/event свои. detail_locked_pause()/
+        # wait_detail_resume() ниже.
+        self.detail_resume = threading.Event()  # снимается кнопкой «Продолжить» на паузе
         self.cancel_hard = False  # выставляется вызывающим ПЕРЕД cancel_event.set() -- решает,
         # какое исключение поднимет _cooperative_checkpoint() (_HardExit vs _InterruptedRunReport)
         # REVIEW-HANDOFF.md Раунд 182, замечание 182-1: активный дочерний распаковщик 7z/UnRAR
@@ -689,6 +714,25 @@ class RunEventBus:
     def error(self, text, crashlog_path=None):
         self.queue.put(("error", text, crashlog_path))
 
+    def detail_locked_pause(self, final_path):
+        """Вызывается с ВОРКЕРА (_detail_lock_wait): xlsx-детализация не записалась, целевой
+        файл открыт в другой программе. Шлём событие экрану «Выполнение», сбрасываем
+        detail_resume и блокируемся в wait_detail_resume()."""
+        self.detail_resume.clear()
+        self.queue.put(("detail_locked", final_path))
+
+    def wait_detail_resume(self):
+        """Блокирует воркер, пока пользователь не нажмёт «Продолжить» на паузе «Работа
+        приостановлена» (снимет detail_resume). Крестик окна (cancel_hard) -> _HardExit, чтобы
+        thread.join(10) главного потока не ждал вхолостую. Мягкая «Прервать работу» СЮДА
+        приводит уже штатным путём (она сначала останавливает конвейер, потом идёт
+        формирование отчётов -> при заблокированном xlsx та же пауза; исход «Работа прервана»
+        сформируется после), поэтому cancel_event БЕЗ cancel_hard эту паузу НЕ пропускает."""
+        while not self.detail_resume.is_set():
+            if self.cancel_event.is_set() and self.cancel_hard:
+                raise _HardExit()
+            time.sleep(0.05)
+
 
 class _BusTeeStream:
     """Заменяет sys.stdout/sys.stderr на время GUI-воркера (PROMPT_run_screen.md §2.4) --
@@ -722,6 +766,26 @@ _run_event_bus = None  # RunEventBus текущего GUI-воркер-прог�
 # тестах -- ProgressReporter и _cooperative_checkpoint() читают этот global (не параметр), тем
 # же приёмом, что _console_freed_for_gui/_last_bare_launch_object_count выше. Выставляется
 # gui_menu.run_bare_launch() в try/finally вокруг воркера (PROMPT_run_screen.md §2.4).
+
+
+def _detail_lock_wait(final_path: str, tmp_path: str) -> bool:
+    """Колбэк `on_detail_locked` для report.generate_report()/generate_passport_report():
+    xlsx-детализация открыта в другой программе (готовый xlsx лежит в `<final>.new`).
+
+    GUI-воркер-путь (`_run_event_bus` выставлен): ставит паузу «Работа приостановлена» на
+    экране «Выполнение», ждёт «Продолжить», делает ОДНУ попытку os.replace готового `.new`.
+    True -- файл закрыли, детализация записана; False -- «Продолжить» нажали, не закрыв файл
+    (прогон завершится без таблицы, `.new` останется до следующего прогона).
+
+    CLI/текстовый режим (`_run_event_bus is None`): интерактивно ждать закрытия негде -> сразу
+    False (строка в лог у вызывающего)."""
+    bus = _run_event_bus
+    if bus is None:
+        return False
+    bus.detail_locked_pause(final_path)
+    bus.wait_detail_resume()  # блокирует до «Продолжить» / _HardExit на крестик
+    import report_detail_xlsx
+    return report_detail_xlsx.retry_replace(tmp_path, final_path)
 
 
 def _configure_windows_stdio_at_startup(has_cli_args: bool) -> None:
@@ -952,7 +1016,8 @@ def _run_subprocess_cooperative(cmd, timeout, log=print) -> int:
     no-op вне Windows и обычная пауза-по-пробелу в текстовом режиме, то есть поведение
     эквивалентно прежнему `subprocess.run()` (плюс возможность паузы, которой раньше не было)."""
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            startupinfo=_NO_WINDOW_STARTUPINFO)  # 183-3/184-4, см. _NO_WINDOW_STARTUPINFO
+                            startupinfo=_NO_WINDOW_STARTUPINFO,  # 183-3/184-4
+                            creationflags=_hidden_child_creationflags())  # см. её докстринг
     bus = _run_event_bus
     if bus is not None:
         bus.register_child(proc)
@@ -2965,6 +3030,7 @@ def ffprobe_json(path: str) -> dict:
                 "-show_format", "-show_streams", path,
             ],
             capture_output=True, timeout=60, startupinfo=_NO_WINDOW_STARTUPINFO,  # 183-3/184-4
+            creationflags=_hidden_child_creationflags(),
         )
         import json
         return json.loads(out.stdout.decode("utf-8", "replace") or "{}")
@@ -3018,6 +3084,7 @@ def video_phash_3frames(path: str, duration: float):
                         "-frames:v", "1", "-q:v", "3", frame_path,
                     ],
                     capture_output=True, timeout=30, startupinfo=_NO_WINDOW_STARTUPINFO,  # 183-3/184-4
+                    creationflags=_hidden_child_creationflags(),
                 )
                 if os.path.exists(frame_path):
                     ph, _, _ = image_phash_and_size(frame_path)
@@ -3104,6 +3171,7 @@ def exiftool_batch(paths, batch_size=200, log=print):
                 [EXIFTOOL_BIN, "-j", "-n", "-charset", "filename=utf8"] + EXIF_TAGS
                 + ["-@", argfile_path],
                 capture_output=True, timeout=120, startupinfo=_NO_WINDOW_STARTUPINFO,  # 183-3/184-4
+                creationflags=_hidden_child_creationflags(),
             )
             data = json.loads(out.stdout.decode("utf-8", "replace") or "[]")
             # Match by position, not by the echoed SourceFile string: exiftool's JSON
@@ -3435,6 +3503,7 @@ def _list_7z(path: str) -> ArchiveInfo:
         out = subprocess.run(
             [SEVENZIP_BIN, "l", "-slt", path],
             capture_output=True, timeout=120, startupinfo=_NO_WINDOW_STARTUPINFO,  # 183-3/184-4
+            creationflags=_hidden_child_creationflags(),
         )
         text = out.stdout.decode("utf-8", "replace")
     except Exception:
@@ -3505,6 +3574,7 @@ def _list_rar(path: str) -> ArchiveInfo:
         out = subprocess.run(
             [UNRAR_BIN, "lt", "-p-", path],
             capture_output=True, timeout=120, startupinfo=_NO_WINDOW_STARTUPINFO,  # 183-3/184-4
+            creationflags=_hidden_child_creationflags(),
         )
         text = out.stdout.decode("utf-8", "replace")
     except Exception:
@@ -11162,7 +11232,8 @@ def _detect_tool_version(binary: str, args: list) -> str:
     binary is missing/times out (mirrors check_bundled_tools() not treating this as fatal)."""
     try:
         out = subprocess.run([binary] + args, capture_output=True, timeout=10,
-                             startupinfo=_NO_WINDOW_STARTUPINFO)  # 183-3/184-4
+                             startupinfo=_NO_WINDOW_STARTUPINFO,  # 183-3/184-4
+                             creationflags=_hidden_child_creationflags())
     except Exception:
         return "?"
     text = (out.stdout or b"").decode("utf-8", "replace") + (out.stderr or b"").decode("utf-8", "replace")
@@ -11596,7 +11667,11 @@ def _finalize_target_report(target: str, level: str, any_succeeded: bool, total_
     прерван до того, как хоть один RunResult успел вернуться "успешным" по обычной логике
     (result.failed==False), хотя частичные данные уже могли записаться в CSV TARGET (RunLogs
     пишет построчно по ходу работы). Без этого снятия гейта отчёт о прерывании молча не
-    формировался бы ровно в том случае, который эта функция и должна покрыть."""
+    формировался бы ровно в том случае, который эта функция и должна покрыть.
+
+    report_detail.xlsx открыт в другой программе: report.generate_report(on_detail_locked=
+    _detail_lock_wait) на GUI-пути ставит паузу «Работа приостановлена», ждёт «Продолжить»;
+    закрыл файл -> таблица записана, нет -> прогон завершается без неё + строка в лог."""
     if not any_succeeded and not interrupted:
         return None
     photosort_dir = os.path.join(target, "__служебные_файлы")  # см. Config.photosort_dir
@@ -11636,9 +11711,15 @@ def _finalize_target_report(target: str, level: str, any_succeeded: bool, total_
         _scale = f" ({_n_events} записей)" if _n_events > 3000 else ""
         _log_and_bus_status(
             f"  [{_total_steps}/{_total_steps}] собираю страницу и детализированную таблицу{_scale}…", log)
-        report.generate_report(data, out_path, level=level, run_stats=run_stats,
-                                run_start=run_start, target_path=target, interrupted=interrupted,
-                                app_version=__version__, source_paths=source_paths)
+        detail_not_written = report.generate_report(
+            data, out_path, level=level, run_stats=run_stats,
+            run_start=run_start, target_path=target, interrupted=interrupted,
+            app_version=__version__, source_paths=source_paths,
+            on_detail_locked=_detail_lock_wait)
+        if detail_not_written:
+            log("Детализированная таблица (report_detail.xlsx) не записана — файл оставался "
+                "открыт в другой программе. Архив и HTML-отчёт сохранены; закройте файл, "
+                "свежая версия появится при следующем прогоне.")
     if not interrupted:
         log(f"Отчёт: {out_path}")
     if level == "workdir":
@@ -12440,7 +12521,10 @@ def _bare_launch_run_passport(target: str, log=print) -> str:
     подкоманда "analyze-passport", объединена с "analyze" тем же днём чуть позже). Имя не
     переименовано вслед за этим -- функция по-прежнему в первую очередь про шаг [4],
     переименование ради одного дополнительного вызывающего было бы чисто косметическим
-    churn."""
+    churn.
+
+    passport_detail.xlsx открыт в другой программе: generate_passport_report(on_detail_locked=
+    _detail_lock_wait) на GUI-пути ставит паузу «Работа приостановлена», ждёт «Продолжить»."""
     with _prevent_sleep():
         stats = run_passport(target, log=log)
     if stats is None:
@@ -12452,9 +12536,15 @@ def _bare_launch_run_passport(target: str, log=print) -> str:
         log(f"ОШИБКА: не удалось создать {photosort_dir}: {e}")
         return None
     out_path = os.path.join(photosort_dir, "passport.html")
-    report.generate_passport_report(stats, out_path, target_path=target,
-                                     interrupted=stats.interrupted, app_version=__version__)
+    detail_not_written = report.generate_passport_report(
+        stats, out_path, target_path=target,
+        interrupted=stats.interrupted, app_version=__version__,
+        on_detail_locked=_detail_lock_wait)
     log(f"Паспорт архива: {out_path}")
+    if detail_not_written:
+        log("Детализированная таблица (passport_detail.xlsx) не записана — файл оставался "
+            "открыт в другой программе. HTML-паспорт сохранён; закройте файл, свежая версия "
+            "появится при следующем прогоне.")
     if stats.walk_aborted:
         raise _AbortedRunReport(out_path)  # 183-2, см. _bare_launch_run_view()
     # см. _bare_launch_run_view() -- счётчик выставляем ДО проверки на прерывание, иначе на
@@ -12575,11 +12665,17 @@ def _bare_launch_run_dryrun(sources: list, target: str, input_fn=input, log=prin
         # 1-3). run_start захвачен безусловно в начале функции (см. выше) -- корректен и для
         # пустого TARGET (_split_rows_by_time() тогда просто не находит "старой" истории,
         # все строки уходят в "этот прогон", что и требуется).
-        report.generate_report(combined_rows, out_path, level="workdir", run_stats=merged,
-                                run_start=run_start,
-                                interrupted=any_interrupted,
-                                app_version=__version__, target_path=target,
-                                source_paths=expanded)
+        if report.generate_report(combined_rows, out_path, level="workdir", run_stats=merged,
+                                   run_start=run_start,
+                                   interrupted=any_interrupted,
+                                   app_version=__version__, target_path=target,
+                                   source_paths=expanded, on_detail_locked=_detail_lock_wait):
+            # report_detail.xlsx пробного прогона (в WORKDIR) был открыт в другой программе --
+            # редкость (WORKDIR не на виду). Пауза «Работа приостановлена» / «Продолжить» --
+            # тот же путь, что у [3]/[4] (_detail_lock_wait). «Продолжить» без закрытия ->
+            # HTML записан, таблицы нет.
+            log("Детализированная таблица (report_detail.xlsx) не записана — файл оставался "
+                "открыт в другой программе.")
     log(f"Отчёт: {out_path}")
     if any_walk_aborted:
         raise _AbortedRunReport(out_path)  # 183-2, см. _bare_launch_run_view()
@@ -12908,12 +13004,14 @@ def main():
     # without CREATE_NEW_PROCESS_GROUP AND without a console-detaching creation flag, so on the
     # CLI path (after AttachConsole(ATTACH_PARENT_PROCESS)) the child inherits this process's
     # console and Ctrl-C's CTRL_C_EVENT/SIGINT reaches those children together with this
-    # process -- no separate Popen+kill needed here. 184-4: раньше тут стоял
+    # process -- no separate Popen+kill needed here. 184-4: раньше тут БЕЗУСЛОВНО стоял
     # creationflags=CREATE_NO_WINDOW, который эту связь рвал (свой невидимый console у ребёнка);
-    # заменён на startupinfo=_NO_WINDOW_STARTUPINFO (STARTF_USESHOWWINDOW|SW_HIDE), который
-    # гасит вспышку окна на windowed-сборке БЕЗ отвязки от консоли родителя -- см.
-    # _NO_WINDOW_STARTUPINFO. Исключение -- _run_subprocess_cooperative() для 7z/UnRAR (Popen,
-    # тот же startupinfo): там своё явное kill() на отмену, см. 182-1.
+    # на CLI-пути заменён на startupinfo=_NO_WINDOW_STARTUPINFO (STARTF_USESHOWWINDOW|SW_HIDE).
+    # 2026-09-06: CREATE_NO_WINDOW вернулся, но ТОЛЬКО на GUI-воркер-пути
+    # (_hidden_child_creationflags() -> флаг лишь когда _run_event_bus выставлен) -- там консоли
+    # нет и Ctrl-C неактуален, а SW_HIDE вспышку не всегда успевал погасить. На CLI-пути
+    # (_run_event_bus is None) по-прежнему только STARTUPINFO. Исключение -- _run_subprocess_
+    # cooperative() для 7z/UnRAR (Popen, те же флаги): там своё явное kill() на отмену, см. 182-1.
     # bare_launch: единый признак голого запуска, переиспользуется ниже для паузы перед
     # выходом (_pause_before_exit(), через _should_pause_before_exit() -- раньше пересчитывался
     # как len(sys.argv) <= 1 в 4 местах по отдельности. (2026-07-19: раньше тем же флагом ещё

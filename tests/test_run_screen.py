@@ -61,6 +61,44 @@ class TestRunEventBus:
         a.cancel_event.set()
         assert not b.cancel_event.is_set()
 
+    def test_detail_locked_pause_emits_event_and_clears_resume(self):
+        """2026-09-06: xlsx-детализация открыта в другой программе -> событие экрану + сброс
+        detail_resume (НЕ pause_event -- изолированный механизм, см. RunEventBus.__init__)."""
+        bus = m.RunEventBus()
+        bus.detail_resume.set()
+        bus.detail_locked_pause(r"D:\T\report_detail.xlsx")
+        assert bus.queue.get_nowait() == ("detail_locked", r"D:\T\report_detail.xlsx")
+        assert not bus.detail_resume.is_set()
+        assert not bus.pause_event.is_set()  # нормальная пауза не задета
+
+    def test_wait_detail_resume_returns_on_continue(self):
+        import threading
+        bus = m.RunEventBus()
+        threading.Timer(0.1, bus.detail_resume.set).start()
+        bus.wait_detail_resume()  # не должен зависнуть
+
+    def test_wait_detail_resume_hard_exit_on_hard_cancel(self):
+        bus = m.RunEventBus()
+        bus.cancel_hard = True
+        bus.cancel_event.set()
+        with pytest.raises(m._HardExit):
+            bus.wait_detail_resume()
+
+    def test_wait_detail_resume_ignores_soft_cancel(self):
+        """Мягкая «Прервать работу» (cancel_event без cancel_hard) СЮДА приводит уже штатным
+        путём (конвейер остановлен -> формирование отчётов -> та же пауза), исход «Работа
+        прервана» соберётся после -> эту паузу soft-cancel не пропускает."""
+        import threading
+        bus = m.RunEventBus()
+        bus.cancel_event.set()  # cancel_hard остаётся False
+        threading.Timer(0.15, bus.detail_resume.set).start()
+        bus.wait_detail_resume()  # ждёт detail_resume, не выходит по soft-cancel
+
+    def test_detail_lock_wait_returns_false_without_bus(self, monkeypatch):
+        """CLI/текстовый режим (_run_event_bus is None) -> сразу False, интерактивно ждать негде."""
+        monkeypatch.setattr(m, "_run_event_bus", None)
+        assert m._detail_lock_wait(r"D:\T\x.xlsx", r"D:\T\x.xlsx.new") is False
+
 
 class TestNonTwoLinePhaseToStatus:
     """2026-09-01, живой отзыв: не-two_line фазы («Оцениваю объём работы», индексация архива,
@@ -129,11 +167,13 @@ class TestNonTwoLinePhaseToStatus:
 
 
 class TestNoWindowFlag:
-    """REVIEW-HANDOFF.md Раунд 183, замечание 183-3 + Раунд 184, замечание 184-4: все вызовы
-    bundled-инструментов несут startupinfo=_NO_WINDOW_STARTUPINFO (STARTF_USESHOWWINDOW|
-    SW_HIDE), иначе на windowed-сборке мелькает окно консоли. Не creationflags=CREATE_NO_WINDOW
-    (184-4): тот отвязывал ребёнка от консоли родителя -> на CLI-пути Ctrl-C переставал
-    доходить до exiftool/ffmpeg/7z, а Popen.wait() блокировался до таймаута."""
+    """REVIEW-HANDOFF.md Раунд 183/184 + живой отзыв 2026-09-06: все вызовы bundled-
+    инструментов несут startupinfo=_NO_WINDOW_STARTUPINFO (STARTF_USESHOWWINDOW|SW_HIDE) И
+    creationflags=_hidden_child_creationflags(). Последний даёт CREATE_NO_WINDOW ТОЛЬКО на
+    GUI-воркер-пути (_run_event_bus выставлен) -- там консоли нет и Ctrl-C неактуален, а
+    SW_HIDE на Win11 вспышку не всегда успевал погасить. На CLI-пути (_run_event_bus is None)
+    -> 0, ребёнок остаётся в группе процессов консоли родителя (184-4: иначе Ctrl-C не доходит
+    до exiftool/ffmpeg/7z, Popen.wait() висит до таймаута)."""
 
     def test_no_window_startupinfo_constant_exists_and_is_none_off_windows(self):
         assert hasattr(m, "_NO_WINDOW_STARTUPINFO")
@@ -143,12 +183,26 @@ class TestNoWindowFlag:
             si = m._NO_WINDOW_STARTUPINFO
             assert si.dwFlags & subprocess.STARTF_USESHOWWINDOW
             assert si.wShowWindow == subprocess.SW_HIDE
-            # 184-4: НЕ должно быть флага, отвязывающего от консоли родителя
-            assert not hasattr(m, "_NO_WINDOW") or m._NO_WINDOW == 0
 
-    def test_no_subprocess_call_uses_creationflags(self):
-        """184-4: ни один subprocess.run/Popen больше НЕ передаёт creationflags= (был
-        CREATE_NO_WINDOW, отвязывавший ребёнка от консоли родителя) -- только startupinfo=."""
+    def test_hidden_child_creationflags_zero_off_gui_worker_path(self, monkeypatch):
+        """CLI/текстовый режим/dev (_run_event_bus is None) -- флаг 0, консоль родителя не
+        рвётся (184-4)."""
+        monkeypatch.setattr(m, "_run_event_bus", None)
+        assert m._hidden_child_creationflags() == 0
+
+    def test_hidden_child_creationflags_no_window_on_gui_worker_path(self, monkeypatch):
+        """GUI-воркер активен (_run_event_bus выставлен) -- CREATE_NO_WINDOW на Windows, 0 вне."""
+        monkeypatch.setattr(m, "_run_event_bus", object())
+        got = m._hidden_child_creationflags()
+        if os.name == "nt":
+            assert got == subprocess.CREATE_NO_WINDOW
+        else:
+            assert got == 0  # вне Windows creationflags всё равно должен быть 0
+
+    def test_all_creationflags_go_through_the_helper(self):
+        """ast-скан: creationflags= на subprocess-вызове -- только вызов
+        _hidden_child_creationflags(), не голая константа CREATE_NO_WINDOW (та отвязала бы
+        ребёнка от консоли на CLI-пути, 184-4)."""
         import ast
         import inspect
         tree = ast.parse(inspect.getsource(m))
@@ -159,11 +213,19 @@ class TestNoWindowFlag:
             f = node.func
             is_sp = (isinstance(f, ast.Attribute) and f.attr in ("run", "Popen")
                      and isinstance(f.value, ast.Name) and f.value.id == "subprocess")
-            if is_sp and any(kw.arg == "creationflags" for kw in node.keywords):
-                offenders.append(getattr(node, "lineno", "?"))
-        assert not offenders, f"creationflags= на subprocess-вызове (строки {offenders})"
+            if not is_sp:
+                continue
+            for kw in node.keywords:
+                if kw.arg != "creationflags":
+                    continue
+                ok = (isinstance(kw.value, ast.Call)
+                      and isinstance(kw.value.func, ast.Name)
+                      and kw.value.func.id == "_hidden_child_creationflags")
+                if not ok:
+                    offenders.append(getattr(node, "lineno", "?"))
+        assert not offenders, f"creationflags= не через хелпер (строки {offenders})"
 
-    def test_run_subprocess_cooperative_passes_startupinfo(self, monkeypatch):
+    def test_run_subprocess_cooperative_passes_startupinfo_and_zero_flags_on_cli(self, monkeypatch):
         captured = {}
         real_popen = subprocess.Popen
 
@@ -175,9 +237,8 @@ class TestNoWindowFlag:
         monkeypatch.setattr(m, "_run_event_bus", None)
         m._run_subprocess_cooperative([sys.executable, "-c", "pass"], timeout=30,
                                        log=lambda *a, **k: None)
-        assert "startupinfo" in captured
         assert captured["startupinfo"] is m._NO_WINDOW_STARTUPINFO
-        assert "creationflags" not in captured  # 184-4
+        assert captured["creationflags"] == 0  # CLI-путь: консоль родителя не рвём (184-4)
 
     def test_all_bundled_subprocess_calls_carry_startupinfo(self):
         """ast-скан: ни один subprocess.run/Popen в photosort_win.py не остаётся без

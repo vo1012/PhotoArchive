@@ -2909,7 +2909,7 @@ def _render_analyze_sheet2(model: dict) -> str:
     return "".join(parts)
 
 
-def _detail_report_button_html(href: str = None) -> str:
+def _detail_report_button_html(href: str = None, locked: bool = False) -> str:
     """Кнопка «Детализированный отчёт» -- переиспользуется в двух местах: Раздел 1 «Что
     скопировано» обычного/dry-run прогона (_render_run_copied(), report_detail.xlsx) и
     «Целостность архива» Паспорта (_render_passport_integrity(), passport_detail.xlsx,
@@ -2918,12 +2918,23 @@ def _detail_report_button_html(href: str = None) -> str:
     PROMPT_report_detail_xlsx.md) -- данных нет (генератор вернул None). `href` задан -- обычная
     ссылка на `.xlsx`-файл рядом с report.html/passport.html -- открытие в отдельном окне/
     приложении -- штатное поведение перехода по ссылке на `.xlsx`, без JS/скачивания через код
-    отчёта."""
-    if href:
+    отчёта.
+
+    locked=True (2026-09-06): детализация НЕ записана этим прогоном -- целевой xlsx был открыт
+    в другой программе, и пользователь на паузе «Работа приостановлена» нажал «Продолжить», не
+    закрыв файл (см. _run_worker_thread/_detail_lock_wait в photosort_win.py). Кнопка неактивна
+    + заметка: закрыть файл, свежая версия появится при следующем прогоне (готовый .new уже
+    лежит рядом, следующий build/passport-прогон его подменит)."""
+    if href and not locked:
         return (f'<p><a class="btn" href="{html.escape(href)}" target="_blank" '
                 f'rel="noopener">Детализированный отчёт</a></p>')
-    return ('<p><button class="btn" type="button" disabled aria-disabled="true">'
-            'Детализированный отчёт</button></p>')
+    btn = ('<p><button class="btn" type="button" disabled aria-disabled="true">'
+           'Детализированный отчёт</button>')
+    if locked:
+        btn += ('<br><span class="muted">Не записана: файл детализации был открыт в другой '
+                'программе во время сборки. Закройте его — свежая версия появится при '
+                'следующем прогоне.</span>')
+    return btn + '</p>'
 
 
 def _build_run_copied_model(model_new: dict, run_stats: dict, level: str) -> dict:
@@ -3077,7 +3088,7 @@ def _build_run_copied_model(model_new: dict, run_stats: dict, level: str) -> dic
 
 
 def _render_run_copied(model_new: dict, run_stats: dict, level: str,
-                        detail_xlsx_href: str = None) -> str:
+                        detail_xlsx_href: str = None, detail_xlsx_locked: bool = False) -> str:
     """Раздел 1 «Что скопировано» -- PROMPT_report_run_redesign.md, Промпт 1/3 (2026-08-14).
     Визуально похож на _render_analyze_sheet1()/_render_analyze_sheet2() (headline-плитки +
     проза "из них..." + пирог/hbar-графики), но данные -- ТОЛЬКО model_new
@@ -3110,7 +3121,7 @@ def _render_run_copied(model_new: dict, run_stats: dict, level: str,
 
     if model["empty"]:
         parts.append(f'<p>{model["zero_message"]}</p>')
-        parts.append(_detail_report_button_html(detail_xlsx_href))
+        parts.append(_detail_report_button_html(detail_xlsx_href, locked=detail_xlsx_locked))
         parts.append("</div>")
         return "".join(parts)
 
@@ -3147,7 +3158,7 @@ def _render_run_copied(model_new: dict, run_stats: dict, level: str,
         parts.append(model["video_duration_html"])
 
     # 1.5 кнопка "Детализированный отчёт" -- в конце этого (первого) блока.
-    parts.append(_detail_report_button_html(detail_xlsx_href))
+    parts.append(_detail_report_button_html(detail_xlsx_href, locked=detail_xlsx_locked))
     parts.append("</div>")
 
     counts = model["counts"]
@@ -4455,7 +4466,8 @@ def _generate_from_model(model: dict, out_path: str, level: str, program_name: s
                           target_path: str = None, interrupted: bool = False,
                           verify_link: str = None,
                           app_version: str = None, source_paths: list = None,
-                          model_new: dict = None, detail_xlsx_href: str = None) -> None:
+                          model_new: dict = None, detail_xlsx_href: str = None,
+                          detail_xlsx_locked: bool = False) -> None:
     # model_new (PROMPT_report_run_redesign.md, Промпт 1/3, Фаза 0 2026-08-14):
     # build_model_from_rows() на строках ТОЛЬКО этого прогона (_split_rows_by_time()), не
     # кумулятивная model -- питает Раздел 1 "Что скопировано" (_render_run_copied() ниже) и,
@@ -4558,7 +4570,8 @@ def _generate_from_model(model: dict, out_path: str, level: str, program_name: s
             _render_this_run(run_stats, level, verify_link=verify_link if level == "target" else None,
                               generated_at=generated_at, source_paths=source_paths,
                               target_path=target_path)
-            + _render_run_copied(model_new, run_stats, level, detail_xlsx_href=detail_xlsx_href)
+            + _render_run_copied(model_new, run_stats, level, detail_xlsx_href=detail_xlsx_href,
+                                  detail_xlsx_locked=detail_xlsx_locked)
             + _render_run_not_copied(run_stats, checklist_new, level)
             + _render_run_auto_decisions(checklist_new, level)
             # 2026-08-16, речь пользователя: только предпросмотр (--dry-run/[2] до сборки) --
@@ -4603,7 +4616,8 @@ def generate_report(data: dict, out_path: str, level: str = "target",
                      program_name: str = "PhotoArchive", run_stats: dict = None,
                      run_start: str = None, target_path: str = None,
                      interrupted: bool = False,
-                     app_version: str = None, source_paths: list = None) -> None:
+                     app_version: str = None, source_paths: list = None,
+                     on_detail_locked=None) -> bool:
     """level: "target" (полный archive-прогон) | "workdir" ([2]/--dry-run) — оба читают
     dict[str, list[dict]] (CSV TARGET или CollectingRunLogs.rows). Для
     analyze/analyze-full/analyze-quick см. generate_report_from_analyze_stats().
@@ -4641,7 +4655,17 @@ def generate_report(data: dict, out_path: str, level: str = "target",
     interrupted (Ctrl+C-пакет): работа прервана пользователем (KeyboardInterrupt) во время
     [3]/CLI archive -- см. photosort_win.py _run_impl()/_RunState.interrupted. Данные в data
     в этом случае неполные (только то, что успело записаться в CSV до прерывания) -- баннер
-    в начале отчёта (_render_interrupted_banner()) делает это явным, не молчаливым."""
+    в начале отчёта (_render_interrupted_banner()) делает это явным, не молчаливым.
+
+    on_detail_locked(final_path, tmp_path) -> bool: колбэк на случай, когда report_detail.xlsx
+    открыт в другой программе (готовый xlsx лежит в `<final>.new`). Вызывающий код
+    (photosort_win._detail_lock_wait) на GUI-пути ставит паузу «Работа приостановлена», ждёт
+    «Продолжить», делает ОДНУ попытку os.replace готового .new и возвращает True (записан) либо
+    False (пользователь нажал «Продолжить», не закрыв файл). None (CLI/текстовый режим) -> сразу
+    как False. HTML пишется в любом случае; при False кнопка «Детализированный отчёт» неактивна
+    с заметкой.
+
+    Возвращает True, если детализация в итоге НЕ записана (для строки в лог у вызывающего)."""
     model = build_model_from_rows(data)
     checklist_new = None
     model_new = None
@@ -4672,14 +4696,24 @@ def generate_report(data: dict, out_path: str, level: str = "target",
     # (не на уровне модуля) -- report_detail_xlsx.py импортирует хелперы ИЗ report.py, импорт
     # на уровне модуля с обеих сторон был бы циклическим.
     detail_xlsx_href = None
+    detail_not_written = False
     if checklist_new is not None:
-        from report_detail_xlsx import generate_detail_xlsx
-        detail_xlsx_href = generate_detail_xlsx(data_new, out_path)
+        from report_detail_xlsx import (
+            DETAIL_XLSX_FILENAME, ReportDetailFileLocked, generate_detail_xlsx)
+        try:
+            detail_xlsx_href = generate_detail_xlsx(data_new, out_path)
+        except ReportDetailFileLocked as e:
+            if on_detail_locked and on_detail_locked(e.final_path, e.tmp_path):
+                detail_xlsx_href = DETAIL_XLSX_FILENAME  # закрыл файл -> записан
+            else:
+                detail_not_written = True  # «Продолжить» без закрытия / CLI
     _generate_from_model(model, out_path, level, program_name, run_stats=run_stats,
                           checklist_new=checklist_new,
                           target_path=target_path, interrupted=interrupted,
                           app_version=app_version, source_paths=source_paths,
-                          model_new=model_new, detail_xlsx_href=detail_xlsx_href)
+                          model_new=model_new, detail_xlsx_href=detail_xlsx_href,
+                          detail_xlsx_locked=detail_not_written)
+    return detail_not_written
 
 
 def generate_report_from_analyze_stats(stats, out_path: str, level: str = "analyze",
@@ -4914,7 +4948,8 @@ def _passport_broken_attn(n: int, n_unreadable: int) -> str:
     return base
 
 
-def _render_passport_integrity(stats, detail_xlsx_href: str = None) -> str:
+def _render_passport_integrity(stats, detail_xlsx_href: str = None,
+                                detail_xlsx_locked: bool = False) -> str:
     exact_clusters = _cluster_passport_edges(stats.exact_dup_edges)
     near_clusters = _cluster_passport_edges(stats.near_dup_edges)
     if exact_clusters:
@@ -5021,7 +5056,7 @@ def _render_passport_integrity(stats, detail_xlsx_href: str = None) -> str:
         '<p class="subtitle">Каждый пункт проверен заново, прямо сейчас — не как отчёт о том, '
         'что программа когда-то сделала, а как факт о текущем состоянии.</p>'
         f'<ul class="integrity-list">{"".join(items)}</ul>'
-        f'{_detail_report_button_html(detail_xlsx_href)}</div>'
+        f'{_detail_report_button_html(detail_xlsx_href, locked=detail_xlsx_locked)}</div>'
     )
 
 
@@ -5121,7 +5156,7 @@ def _render_passport_charts(stats) -> str:
 def generate_passport_report(stats, out_path: str, target_path: str = None,
                               program_name: str = "PhotoArchive",
                               interrupted: bool = False,
-                              app_version: str = None) -> None:
+                              app_version: str = None, on_detail_locked=None) -> bool:
     """[4] Паспорт архива (photosort_win.py:run_passport()) -- отдельный формат "с нуля", НЕ
     наследует _generate_from_model()/Sheet1-3 (SESSION-HANDOFF.txt, design-сессия 2026-07-31):
     паспорт не про "что сделал этот прогон" (нечего делать, read-only), а про "насколько цел
@@ -5136,7 +5171,10 @@ def generate_passport_report(stats, out_path: str, target_path: str = None,
 
     interrupted (2026-08-07, Ctrl+C-пакет): _generate_from_model() не участвует в этом рендере
     (см. выше), баннер прерывания здесь прикладывается вручную, тем же принципом ("самая первая
-    строка отчёта", см. _generate_from_model())."""
+    строка отчёта", см. _generate_from_model()).
+
+    on_detail_locked -- см. generate_report(): колбэк на случай, когда passport_detail.xlsx
+    открыт в другой программе. Возвращает True, если детализация в итоге НЕ записана."""
     # Задача 10 (SESSION-HANDOFF.txt, 2026-08-09): один вызов strftime() на страницу,
     # переиспользуется в заголовке _render_passport_summary() и в футере _page_shell() ниже.
     generated_at = time.strftime("%Y-%m-%d %H:%M")
@@ -5151,9 +5189,19 @@ def generate_passport_report(stats, out_path: str, target_path: str = None,
     # production-пути. Локальный импорт (не на уровне модуля) -- report_detail_xlsx.py
     # импортирует хелперы ИЗ report.py, импорт на уровне модуля с обеих сторон был бы
     # циклическим (тот же приём, что уже использует generate_report()).
-    from report_detail_xlsx import generate_passport_detail_xlsx
-    detail_xlsx_href = generate_passport_detail_xlsx(stats, out_path, target_path)
-    body += _render_passport_integrity(stats, detail_xlsx_href)
+    from report_detail_xlsx import (
+        PASSPORT_DETAIL_XLSX_FILENAME, ReportDetailFileLocked, generate_passport_detail_xlsx)
+    detail_not_written = False
+    try:
+        detail_xlsx_href = generate_passport_detail_xlsx(stats, out_path, target_path)
+    except ReportDetailFileLocked as e:
+        if on_detail_locked and on_detail_locked(e.final_path, e.tmp_path):
+            detail_xlsx_href = PASSPORT_DETAIL_XLSX_FILENAME
+        else:
+            detail_xlsx_href = None
+            detail_not_written = True
+    body += _render_passport_integrity(stats, detail_xlsx_href,
+                                        detail_xlsx_locked=detail_not_written)
     # 2026-08-15, по прямой просьбе пользователя: тот же RAW-свободный сплит фото/видео, что
     # уже использует _render_analyze_sheet2()/_render_sheet2() -- раньше здесь была диаграмма
     # на stats.dates_by_year, который молча включает RAW (см. photosort_win.py, там же, где
@@ -5183,3 +5231,4 @@ def generate_passport_report(stats, out_path: str, target_path: str = None,
                  'показаны такими же ветками, что и папки.')
     _write(out_path, _page_shell(f"{program_name} — паспорт архива", body, app_version=app_version,
                                   generated_at=generated_at))
+    return detail_not_written
