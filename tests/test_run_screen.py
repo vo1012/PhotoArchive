@@ -597,6 +597,55 @@ class TestRealPipelineSoftCancelViaBus:
         html = open(report_path, encoding="utf-8").read()
         assert "прервана пользователем" not in html.lower()
 
+    def test_cancel_during_phase1_index_archive_raises_interrupted_not_bare_keyboard_interrupt(
+            self, tmp_path, monkeypatch):
+        """Живая находка пользователя (2026-09-07): «Прервать работу» на [2] пробном прогоне,
+        когда в TARGET уже есть архив -> отмена срабатывает в Фазе 1 (index_archive(),
+        «Просматриваю уже собранный архив»), которая идёт ДО try/except основного цикла
+        _run_impl(). Голый KeyboardInterrupt улетал из воркер-потока мимо всех обработчиков
+        _run_worker_thread() (не Exception/_HardExit/_InterruptedRunReport) -- поток падал с
+        трейсбеком (photosort_win.py:996), экран «Выполнение» без исхода. Должно быть штатное
+        _InterruptedRunReport с частичным отчётом, как у отмены в основном цикле."""
+        source = tmp_path / "source"
+        source.mkdir()
+        _make_jpeg(source / "a.jpg")
+        _make_jpeg(source / "b.jpg")
+
+        target = tmp_path / "target"
+        (target / "__служебные_файлы" / "logs").mkdir(parents=True)
+        existing = target / "2020-01 Отпуск"
+        existing.mkdir()
+        for i in range(5):
+            _make_jpeg(existing / f"old_{i}.jpg")
+
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        monkeypatch.setattr(m, "WORKDIR", str(workdir))
+
+        bus = m.RunEventBus()
+        bus.cancel_event.set()  # cancel_hard остаётся False -- мягкая «Прервать работу»
+        monkeypatch.setattr(m, "_run_event_bus", bus)
+
+        # index_archive()'s собственный _cooperative_checkpoint() гейтован на os.name=="nt"
+        # (на Linux-CI до него не доходит) -- симулируем срабатывание отмены точно в Фазе 1,
+        # как это происходит на Windows при клике «Прервать работу» во время
+        # «Просматриваю уже собранный архив».
+        def _index_archive_cancelled(cfg, conn, log=print):
+            m._cooperative_checkpoint(log=log)  # видит cancel_event -> KeyboardInterrupt
+        monkeypatch.setattr(m, "index_archive", _index_archive_cancelled)
+
+        raised = None
+        try:
+            m._bare_launch_run_dryrun(
+                [str(source)], str(target),
+                input_fn=lambda *a, **k: "y", log=lambda *a, **k: None)
+        except m._InterruptedRunReport as e:
+            raised = e
+        assert raised is not None, "ожидался _InterruptedRunReport, не голый KeyboardInterrupt"
+        assert raised.report_path is not None
+        html = open(raised.report_path, encoding="utf-8").read()
+        assert "прервана пользователем" in html.lower()
+
 
 class TestBusTeeStream:
     def test_write_splits_on_newlines_into_separate_log_events(self):
