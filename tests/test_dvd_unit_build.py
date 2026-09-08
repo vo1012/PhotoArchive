@@ -253,6 +253,137 @@ def test_dvd_video_ts_duplicate_within_same_run_not_recopied(tmp_path):
     assert len(albums) == 1  # only one VIDEO_TS folder physically written, not two
 
 
+def _make_disc(root, name, payload=b"v" * 200):
+    vts = root / name / "VIDEO_TS"
+    vts.mkdir(parents=True)
+    (vts / "VTS_01_0.VOB").write_bytes(payload)
+    (vts / "VIDEO_TS.IFO").write_bytes(b"i" * 40)
+
+
+def test_rerun_with_hash_cache_off_does_not_recopy_dvd_unit(tmp_path):
+    """Накопитель B (находка ревизора): реестр `dvd_units` пишется/читается ТОЛЬКО при
+    archive_hash_cache=True. С archive_hash_cache=False повторный прогон того же источника
+    заводил рядом «VIDEO_TS (2)» -- обычные файлы от этого защищены (index_archive() хеширует
+    архив с нуля каждый прогон). _index_archive_dvd_units() даёт юнитам ту же не-кэш-страховку.
+    """
+    source = tmp_path / "source"
+    _make_disc(source, "Disc1")
+    target = tmp_path / "target"
+    target.mkdir()
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    cfg = m.Config(source=str(source), target=str(target), dry_run=False, sample_limit=0,
+                    workdir=str(workdir), archive_hash_cache=False)
+
+    stats1, *_ = _run(cfg)
+    assert stats1["dvd_units_copied"][0]["name"] == "Disc1"
+
+    stats2, *_ = _run(cfg)
+    assert stats2["dvd_units_copied"] == []
+    assert stats2["dvd_units_skipped_duplicate"][0]["name"] == "Disc1"
+    assert [p.name for p in (target / "Albums" / "Disc1").iterdir()] == ["VIDEO_TS"]
+    assert sorted(p.name for p in (target / "Albums" / "Disc1" / "VIDEO_TS").iterdir()) \
+        == ["VIDEO_TS.IFO", "VTS_01_0.VOB"]
+
+
+def test_rerun_after_archive_cache_db_deleted_does_not_recopy_dvd_unit(tmp_path):
+    """Та же дыра, но кэш ВКЛючён (дефолт), а пользователь вручную удалил archive_cache.db
+    (или юнит скопирован до появления таблицы dvd_units). _index_archive_dvd_units() ловит
+    юнит с диска независимо от состояния кэша."""
+    source = tmp_path / "source"
+    _make_disc(source, "Disc1")
+    target = tmp_path / "target"
+    target.mkdir()
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    cfg = m.Config(source=str(source), target=str(target), dry_run=False, sample_limit=0,
+                    workdir=str(workdir))  # archive_hash_cache=True (default)
+
+    _run(cfg)
+    cache_db = target / "__служебные_файлы" / "archive_cache.db"
+    assert cache_db.exists()
+    cache_db.unlink()
+
+    stats2, *_ = _run(cfg)
+    assert stats2["dvd_units_copied"] == []
+    assert stats2["dvd_units_skipped_duplicate"][0]["name"] == "Disc1"
+    assert [p.name for p in (target / "Albums" / "Disc1").iterdir()] == ["VIDEO_TS"]
+
+
+def test_cache_off_with_residual_dvd_units_rows_still_dedups(tmp_path):
+    """Раунд 218 находка 218-1: прогон 1 с кэшем пишет строки в dvd_units; прогон 2 с
+    archive_hash_cache=False, а .db НЕ удалён. _run_impl() эти строки НЕ грузит в реестр
+    (гейт st.archive_cache_on), а ранний `return {}` по «в таблице есть строки» бросил бы
+    обход -> тот же DVD копировался вторым как VIDEO_TS (2), ровно центр накопителя B.
+    Фикс: ранний return только при archive_hash_cache=True."""
+    source = tmp_path / "source"
+    _make_disc(source, "Disc1")
+    target = tmp_path / "target"
+    target.mkdir()
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+
+    # прогон 1 -- кэш включён (дефолт), пишет dvd_units
+    _run(m.Config(source=str(source), target=str(target), dry_run=False, sample_limit=0,
+                   workdir=str(workdir)))
+    cache_db = target / "__служебные_файлы" / "archive_cache.db"
+    import sqlite3
+    with sqlite3.connect(cache_db) as _c:
+        assert _c.execute("SELECT count(*) FROM dvd_units").fetchone()[0] >= 1
+
+    # прогон 2 -- кэш ВЫКЛючен, .db на месте с остаточными строками
+    stats2, *_ = _run(m.Config(source=str(source), target=str(target), dry_run=False,
+                                sample_limit=0, workdir=str(workdir), archive_hash_cache=False))
+
+    assert stats2["dvd_units_copied"] == []
+    assert stats2["dvd_units_skipped_duplicate"][0]["name"] == "Disc1"
+    assert [p.name for p in (target / "Albums" / "Disc1").iterdir()] == ["VIDEO_TS"]
+
+
+def test_cache_off_two_different_discs_still_kept_separate(tmp_path):
+    """Страховка не должна схлопывать РАЗНЫЕ диски: _index_archive_dvd_units() сверяет
+    fingerprint содержимого, не имя папки."""
+    source1 = tmp_path / "s1"
+    _make_disc(source1, "Disc", payload=b"a" * 200)
+    source2 = tmp_path / "s2"
+    _make_disc(source2, "Disc", payload=b"b" * 200)  # другое содержимое
+    target = tmp_path / "target"
+    target.mkdir()
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+
+    _run(m.Config(source=str(source1), target=str(target), dry_run=False, sample_limit=0,
+                   workdir=str(workdir), archive_hash_cache=False))
+    stats2, *_ = _run(m.Config(source=str(source2), target=str(target), dry_run=False,
+                                sample_limit=0, workdir=str(workdir), archive_hash_cache=False))
+
+    assert stats2["dvd_units_copied"][0]["n_files"] == 2  # второй диск реально скопирован
+    assert stats2["dvd_units_skipped_duplicate"] == []
+
+
+def test_index_archive_dvd_units_no_dvd_returns_empty_without_hashing(tmp_path, monkeypatch):
+    """Ось стоимости: при архиве без единой папки VIDEO_TS -- ни одного sha256_file()."""
+    target = tmp_path / "target"
+    (target / "Albums" / "Свадьба").mkdir(parents=True)
+    (target / "ByDate" / "2020-01").mkdir(parents=True)
+    from PIL import Image
+    Image.new("RGB", (64, 48)).save(target / "Albums" / "Свадьба" / "p.jpg", "JPEG")
+    Image.new("RGB", (64, 48)).save(target / "ByDate" / "2020-01" / "q.jpg", "JPEG")
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    cfg = m.Config(source=str(tmp_path / "src"), target=str(target), dry_run=False,
+                    sample_limit=0, workdir=str(workdir))
+
+    calls = []
+    real = m.sha256_file
+    monkeypatch.setattr(m, "sha256_file", lambda *a, **k: calls.append(a) or real(*a, **k))
+
+    found = m._index_archive_dvd_units(cfg, log=lambda *a, **k: None)
+
+    assert found == {}
+    assert calls == []
+
+
 def test_dry_run_does_not_copy_dvd_files(tmp_path):
     source = tmp_path / "source"
     disc = source / "Disc1"

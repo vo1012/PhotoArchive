@@ -79,7 +79,7 @@ warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
 # blanket ignore of all warnings, so any other future PIL/library warning still surfaces.
 warnings.filterwarnings("ignore", message="Palette images with Transparency.*", category=UserWarning)
 
-__version__ = "0.6.13"          # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
+__version__ = "0.6.14"          # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
                                  # с RULES_VERSION ниже (та про совместимость архива, а не exe)
 RULES_VERSION = "2026-08-11"   # дата последнего изменения бизнес-правил -- см. RULES.md;
                                 # менять руками при изменении логики раскладки/дедупа/дат
@@ -2940,6 +2940,9 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+_EMPTY_CONTENT_SHA = hashlib.sha256(b"").hexdigest()  # sha256 файла из 0 байт
+
+
 # read-once (2026-09-03, боевой прогон «как ускорить анализ по сетевой шаре»): _analyze_one_item()
 # читал КАЖДЫЙ файл-изображение по сети ДВАЖДЫ -- один раз целиком под sha256
 # (sha256_file_with_retry), второй раз целиком под perceptual hash (Image.open внутри
@@ -3007,18 +3010,20 @@ def hamming(hash_a: str, hash_b: str) -> int:
         ha = imagehash.hex_to_hash(hash_a)
         hb = imagehash.hex_to_hash(hash_b)
         return ha - hb
-    except Exception as e:
+    except Exception:
         # REVIEW-HANDOFF.md round 13, ticket 2c: hash_a/hash_b can come from a persistent
         # sqlite hash cache spanning years of runs -- if the hash format ever changes (e.g.
         # imagehash upgrade between .exe builds), dedup could silently stop finding
         # duplicates across the whole archive with zero trace. Warn once per process (not
         # per call -- a format mismatch fires on every comparison, would otherwise flood the
-        # log) instead of staying fully silent.
+        # log) instead of staying fully silent. Класс исключения в строку не идёт (накопитель
+        # G) -- всегда ValueError от imagehash, пользователю repr бесполезен и выглядит
+        # тревожно.
         if not _hamming_format_warned:
             _hamming_format_warned = True
-            log_line(f"ВНИМАНИЕ: hamming() не смог разобрать формат хеша ({e!r}) -- "
-                     f"near-dup поиск может молча пропускать дубликаты (сообщение выводится "
-                     f"один раз за прогон)")
+            log_line("Замечание: не удалось разобрать формат сохранённого хеша похожести -- "
+                     "поиск похожих кадров может пропустить часть совпадений. На содержимое "
+                     "файлов это не влияет. (Сообщение выводится один раз за прогон.)")
         return 999
 
 
@@ -3145,8 +3150,15 @@ def parse_exif_date(s):
         return None
 
 
-def exiftool_batch(paths, batch_size=200, log=print):
+def exiftool_batch(paths, batch_size=200, log=print, warn_state=None):
     """Returns dict: path -> tag dict (raw exiftool JSON entry).
+
+    warn_state (накопитель F): set, живущий один прогон (создаёт _walk_with_exif_prefetch()).
+    Если exiftool систематически падает (AV-лок, битый бинарник), except-ветка ниже
+    срабатывает на КАЖДОМ чанке -- на архиве 30k это сотни одинаковых «Замечаний» подряд.
+    С warn_state полное пояснение печатается один раз за прогон, дальше молча. None (по
+    умолчанию -- standalone-вызовы: analyze_batch() fallback, end-of-run retry, тесты) --
+    предупреждает на каждый вызов, как раньше (там это один-два чанка, не стена).
     Paths go through an -@ argfile, not raw argv: exiftool.exe on Windows does its own
     wildcard-expansion of command-line arguments (no shell globbing on Windows, so exiftool
     does it itself) and mis-parses non-ASCII bytes in the process -- any path with Cyrillic
@@ -3214,11 +3226,15 @@ def exiftool_batch(paths, batch_size=200, log=print):
             # конкретный тир: resolve_date() до mtime пробует дату из имени файла/папки/медиану
             # соседей -- в смешанной папке большинство файлов получат ВЕРНУЮ дату, часть уйдёт
             # в раздел недатированных, часть -- в раздел дат на проверку.
-            log_line(f"Замечание: у части файлов ({len(chunk)} шт.) не удалось прочитать "
-                     f"съёмочные данные (EXIF). На содержимое файлов это не влияет -- "
-                     f"снижается только точность даты: её определяем по имени файла, названию "
-                     f"папки или по дате файла на диске. Такие файлы перечислены в отчёте.",
-                     log=log)
+            if warn_state is None or "exif_batch_fail" not in warn_state:
+                log_line(f"Замечание: у части файлов ({len(chunk)} шт.) не удалось прочитать "
+                         f"съёмочные данные (EXIF). На содержимое файлов это не влияет -- "
+                         f"снижается только точность даты: её определяем по имени файла, "
+                         f"названию папки или по дате файла на диске. Такие файлы перечислены "
+                         f"в отчёте. (Если повторится в этом прогоне -- молча.)",
+                         log=log)
+            if warn_state is not None:
+                warn_state.add("exif_batch_fail")
             continue
         finally:
             if argfile_path:
@@ -4079,6 +4095,38 @@ def _cleanup_own_tmp_extract_entries(cfg: "Config", log=print) -> None:
     безусловной, без разбора чья именно папка -- ровно та гонка, что нашёл ревизор)."""
     _sweep_tmp_extract_dir(cfg.tmp_extract, log=log)
     _sweep_stale_dry_run_pid_dirs(log=log)
+
+
+def _prune_empty_dispute_dirs(cfg: "Config", log=print) -> None:
+    """Убрать ПУСТЫЕ папки под _Unsorted в конце реальной сборки (живая находка пользователя
+    2026-09-07). atomic_copy() создаёт всю цепочку папок назначения ДО копирования файла
+    (_makedirs_iterative), поэтому неудавшееся размещение спорного файла (диск полон, файл не
+    прочитался, длинный путь назначения, сбой хеш-verify) оставляет за собой пустой каркас;
+    вдобавок старые версии программы (< 2026-08) создавали зеркало _Unsorted даже в пробном
+    прогоне, ничего не копируя.
+
+    os.rmdir физически не удаляет НЕПУСТУЮ папку -> всё, где есть хоть один файл или ещё-непустая
+    подпапка, нетронуто, включая добавленное пользователем вручную при разборе _Unsorted (см.
+    RULES.md/FAQ: _Unsorted -- карантин, разбирается руками). topdown=False -> лист удаляется
+    раньше родителя, освободившийся родитель убирается тем же проходом. Сам верхний уровень
+    _Unsorted/ не трогаем (ensure_target_layout() его ожидает). Только реальная сборка --
+    dry_run в TARGET ничего не пишет и сюда не зовётся."""
+    dispute = cfg.dispute
+    if not os.path.isdir(winlong(dispute)):
+        return
+    dispute_norm = os.path.normcase(os.path.abspath(dispute))
+    removed = 0
+    for dirpath, _dirnames, _filenames in os.walk(winlong(dispute), topdown=False):
+        stripped = _strip_winlong(dirpath)
+        if os.path.normcase(os.path.abspath(stripped)) == dispute_norm:
+            continue  # верхний уровень _Unsorted/ оставляем всегда
+        try:
+            os.rmdir(winlong(stripped))
+            removed += 1
+        except OSError:
+            pass  # непустая (файлы / ещё-непустые подпапки) -- так и задумано
+    if removed:
+        log(f"  _Unsorted: убрано пустых папок — {removed}")
 
 # ============================================================================
 # WALKER  (from pipeline/walker.py)
@@ -6014,8 +6062,15 @@ def _log_item_skipped(it, exc, log=print) -> None:
     (Раунд 183, 183-1): при сборке файл ещё и кладётся в _Unsorted, при диагностике только
     отмечается в отчёте -- «сохранён» верно не для всех путей."""
     disp = getattr(it, "origin_display", None) or getattr(it, "read_path", None) or repr(it)
-    log_line(f"ВНИМАНИЕ: не удалось обработать {disp}: {exc!r} -- файл отмечен в отчёте, "
-             f"обработка продолжается со следующего", log=log)
+    # Накопитель G: repr исключения (аргументы/команда, ~сотни символов) в строку не идёт --
+    # выглядит как трейсбек в зеркале экрана «Выполнение». Раунд 218 (218-3): но КЛАСС
+    # (одно слово: OSError/ValueError/…) остаётся -- по build-пути (_dispute_processing_error)
+    # это единственное место, где пользователь видит причину: ячейка отчёта намеренно несёт
+    # только «сбой обработки» (решение пользователя, report._DISPUTE_REASON_LABELS), crash.log
+    # для нефатальных пофайловых не пишется. При систематическом пофайловом баге класс в
+    # логе -- ниточка к причине.
+    log_line(f"Замечание: не удалось обработать {disp} ({type(exc).__name__}) -- файл "
+             f"отмечен в отчёте, обработка продолжается со следующего", log=log)
 
 
 def _analyze_one_item(it, *, skip_hash, cache, retries, retry_delay, pause_cb,
@@ -8053,6 +8108,76 @@ def index_archive(cfg: Config, conn, log=print):
             f"{total_bytes / (1024**3):.2f} ГБ")
     return total_files, total_bytes
 
+
+def _index_archive_dvd_units(cfg: Config, log=print) -> dict:
+    """Накопитель B (находка ревизора): реестр уже архивированных DVD-юнитов (VIDEO_TS)
+    строился ТОЛЬКО из таблицы `dvd_units` в archive_cache.db -- а она пишется/читается лишь
+    при archive_hash_cache=True. При выключенном кэше (явный опт-аут пользователя) ИЛИ
+    удалённом/отсутствующем archive_cache.db реестр оставался пустым, и та же болванка,
+    скормленная повторным прогоном, копировалась второй раз как «VIDEO_TS (2)». Обычные файлы
+    от этого защищены: index_archive() перехеширует архив с нуля КАЖДЫЙ прогон, кэш лишь
+    ускоряет. Эта функция даёт DVD-юнитам ту же не-кэш-страховку -- досканирует Albums/ByDate
+    на уже лежащие там папки VIDEO_TS и считает их fingerprint тем же _dvd_unit_fingerprint(),
+    что и SourceWalker._handle_dvd_unit(). RAW/ не сканируется -- _handle_dvd_unit() кладёт
+    юнит только в albums_root либо bydate_root, в RAW VIDEO_TS не бывает.
+
+    Стоимость: только когда таблица `dvd_units` пуста (см. ниже). Тогда -- один проход
+    os.walk по Albums/ByDate (dentry-кэш тёплый после index_archive() по тем же корням);
+    sha256_file() достигается лишь для каталога, прошедшего _is_video_ts_dir(). Возвращает
+    {fingerprint: dest_path (путь папки VIDEO_TS в архиве)}.
+
+    Раунд 217 придирка 1 + Раунд 218 находка 218-1: ранний `return {}` -- ТОЛЬКО когда
+    `archive_hash_cache=True` И таблица `dvd_units` непуста. Тогда реестр получит вызывающий
+    код прямо из неё (`st.archive_cache_on`), обход здесь лишний (на сетевом диске со слабым
+    кэшем каталогов -- не бесплатный). При `archive_hash_cache=False` обходим ВСЕГДА, даже
+    если в остаточном .db есть строки dvd_units -- _run_impl() их не грузит, ранний return
+    оставил бы центр накопителя B (cache-off) незакрытым. Не покрытый край -- юнит,
+    скопированный ДО 2026-08-07 в архив с кэшем, где ПОЗЖЕ появились другие DVD-юниты
+    (таблица непуста, этой записи в ней нет): один дубль `VIDEO_TS (2)`, восстановимо, как
+    «старые дубли _Unsorted» (находка A).
+
+    Проверяем содержимое таблицы, НЕ факт существования файла: index_archive() чуть выше по
+    Фазе 1 уже мог пересоздать пустой archive_cache.db (открывает соединение при
+    archive_hash_cache=True), так что "файл есть" ещё не значит "реестр DVD жив".
+    """
+    cache_db = archive_cache_db_path(cfg.target)
+    if os.path.isfile(winlong(cache_db)):  # только читаем -- не создаём файл при cache=False
+        try:
+            _c = connect(cache_db)
+            try:
+                has_rows = _c.execute("SELECT 1 FROM dvd_units LIMIT 1").fetchone() is not None
+            finally:
+                _c.close()
+        except sqlite3.Error:
+            has_rows = False
+        # Раунд 218 находка 218-1: ранний return ТОЛЬКО когда вызывающий код реально возьмёт
+        # реестр из таблицы -- т.е. кэш включён (st.archive_cache_on -> dvd_unit_registry из
+        # dvd_units). При archive_hash_cache=False строки в .db могли остаться от прежних
+        # прогонов с кэшем, но _run_impl() их НЕ грузит -> без обхода тот же DVD копируется
+        # второй раз (ровно центр накопителя B). Кэш выключен -> обходим всегда.
+        if has_rows and cfg.archive_hash_cache:
+            return {}  # реестр непуст И кэш включён -> вызывающий код берёт его из таблицы
+
+    _pause_cb = (lambda: _cooperative_checkpoint(log=log)) if os.name == "nt" else None
+    found = {}
+    for root in (cfg.albums_root, cfg.bydate_root):
+        if not os.path.isdir(winlong(root)):
+            continue
+        for dirpath, dirnames, filenames in os.walk(winlong(root)):
+            if _pause_cb is not None:
+                _pause_cb()
+            stripped = _strip_winlong(dirpath)
+            if not _is_video_ts_dir(stripped, filenames):
+                continue
+            dirnames[:] = []  # VIDEO_TS -- неделимая единица, внутрь не спускаемся
+            records = _dvd_unit_file_records(stripped, progress_cb=_pause_cb)
+            if not records:
+                continue
+            found[_dvd_unit_fingerprint(records)] = stripped
+    if found:
+        log(f"Фаза 1: DVD-юнитов в архиве вне кэша реестра — {len(found)}")
+    return found
+
 # ============================================================================
 # ANALYZE  (А.2: CLI-подкоманда "analyze" -- read-only диагностика источника; внутреннее
 # значение mode остаётся "analyze-quick", см. _CLI_ANALYZE_MODE_MAP)
@@ -8200,6 +8325,20 @@ class AnalyzeStats:
     # _main()):
     n_exact_dupes: int = 0
     n_diff_name_same_content: int = 0
+    # Находка B / п.3 (2026-09-07): файл в _Unsorted, байт-идентичный копии в реальном разделе
+    # архива. НЕ «дубль внутри архива» (n_exact_dupes/exact_dup_edges -- тревога про порчу):
+    # _Unsorted -- карантин отбраковки, вне дедуп-базы. Отдельная мягкая подсказка на уборку в
+    # Паспорте (self_scan). Только self_scan -- обычный analyze произвольной папки этого не
+    # различает («показывает, что на диске», см. RULES.md :9166).
+    n_unsorted_already_archived: int = 0
+    # Полный п.3 (2026-09-08): сколько ФАЙЛОВ физически лежит в _Unsorted (Паспорт/self_scan) --
+    # ВСЕ: и декодируемые, и битые/пустые/иконки. Эти файлы исключены из КАЖДОГО счётчика,
+    # описывающего архив (total_files/n_images.../available/форматы/даты/тиры/камеры/гео/дерево/
+    # n_broken_or_zero) -- _Unsorted это карантин отбраковки, не часть архива. Единственный след
+    # в Паспорте -- отдельная строка «спорные файлы: N (объём)» + подсказка
+    # n_unsorted_already_archived. 0 для обычного analyze (self_scan=False -- не различает).
+    n_unsorted_files: int = 0
+    n_unsorted_bytes: int = 0
     n_near_dupes: int = 0
     predicted_unique_count: int = 0
     predicted_unique_bytes: int = 0
@@ -8403,16 +8542,19 @@ def _exif_cache_ready(cache: dict, item) -> bool:
                 and len(cached) > 8 and cached[8])
 
 
-def _tag_prefetch_pairs(items: list, cache: dict, log=print) -> list:
+def _tag_prefetch_pairs(items: list, cache: dict, log=print, warn_state=None) -> list:
     """[(item, tags_by_path)] для одного батча -- tags_by_path один и тот же словарь для всех
     item в батче (общий результат одного exiftool_batch() на весь батч), не по одному на item.
 
     cache -- см. _exif_cache_ready(): item, для которых EXIF уже в кэше, вообще не попадают в
     paths ниже -- tags_by_path для них останется пуст, тот же сигнал "бери из кэша", что
-    analyze_batch() уже понимает для sha256/phash (см. её же cache= параметр)."""
+    analyze_batch() уже понимает для sha256/phash (см. её же cache= параметр).
+
+    warn_state -- см. exiftool_batch() (накопитель F): дедуп «Замечания» при систематическом
+    сбое exiftool на один раз за прогон."""
     paths = [it.read_path for it in items
              if it.ftype in ("image", "raw", "video") and not _exif_cache_ready(cache, it)]
-    tags = exiftool_batch(paths, log=log) if paths else {}
+    tags = exiftool_batch(paths, log=log, warn_state=warn_state) if paths else {}
     return [(it, tags) for it in items]
 
 
@@ -8469,6 +8611,7 @@ def _walk_with_exif_prefetch(items_iter, tmp_extract_dir: str, batch_size: int, 
     SourceWalker -- честно отражает реальное завершение, включая ffprobe."""
     tmp_prefix = tmp_extract_dir + os.sep
     pending = []
+    warn_state = set()  # накопитель F: «Замечание» о сбое exiftool -- один раз за прогон
     for item in items_iter:
         if item.dvd_dest_path is not None:
             # DVD-юнит-файл (VIDEO_TS): ни _run_impl() (continue до analyze_batch()), ни
@@ -8476,36 +8619,36 @@ def _walk_with_exif_prefetch(items_iter, tmp_extract_dir: str, batch_size: int, 
             # exiftool на .VOB/.IFO/.BUP бессмысленно. Сбрасываем накопленный батч (та же
             # гарантия порядка, что и у tmp_extract-ветки ниже) и отдаём item с пустыми тегами.
             if pending:
-                yield from _flush_exif_prefetch_batch(pending, cache, log, rate_hint_cb)
+                yield from _flush_exif_prefetch_batch(pending, cache, log, rate_hint_cb, warn_state)
                 pending = []
             yield item, {}
             continue
         if item.read_path.startswith(tmp_prefix):
             if pending:
-                yield from _flush_exif_prefetch_batch(pending, cache, log, rate_hint_cb)
+                yield from _flush_exif_prefetch_batch(pending, cache, log, rate_hint_cb, warn_state)
                 pending = []
-            yield from _tag_prefetch_pairs([item], cache, log=log)
+            yield from _tag_prefetch_pairs([item], cache, log=log, warn_state=warn_state)
             continue
         pending.append(item)
         if len(pending) >= batch_size:
-            yield from _flush_exif_prefetch_batch(pending, cache, log, rate_hint_cb)
+            yield from _flush_exif_prefetch_batch(pending, cache, log, rate_hint_cb, warn_state)
             pending = []
     if pending:
-        yield from _flush_exif_prefetch_batch(pending, cache, log, rate_hint_cb)
+        yield from _flush_exif_prefetch_batch(pending, cache, log, rate_hint_cb, warn_state)
 
 
-def _flush_exif_prefetch_batch(pending: list, cache, log, rate_hint_cb=None):
+def _flush_exif_prefetch_batch(pending: list, cache, log, rate_hint_cb=None, warn_state=None):
     """См. rate_hint_cb в _walk_with_exif_prefetch(). Засекает реальное время вызова
     exiftool_batch() (внутри _tag_prefetch_pairs()) и передаёт средний секунд/файл в
     rate_hint_cb, для батчей больше 1 файла.
 
     "объектов %" здесь больше не тикает (2026-08-18, см. докстринг _walk_with_exif_prefetch())
     -- тикает сам потребитель (run_analyze() / _run_impl()), поштучно, после реальной обработки
-    каждого item."""
+    каждого item. warn_state -- см. exiftool_batch() (накопитель F)."""
     n = len(pending)
     t0 = time.time()
     try:
-        yield from _tag_prefetch_pairs(pending, cache, log=log)
+        yield from _tag_prefetch_pairs(pending, cache, log=log, warn_state=warn_state)
     finally:
         if rate_hint_cb is not None and n > 1:
             rate_hint_cb((time.time() - t0) / n, n)
@@ -8736,6 +8879,10 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
     # находка 2026-08-14, боевой прогон пользователя: два физически разных диска с одинаковым
     # содержимым схлопывались в "1", хотя в SOURCE их два -- см. докстрин n_dvd_units).
     _dvd_units_seen = set()
+    unsorted_file_shas = []  # полный п.3 (self_scan): sha КАЖДОГО декодируемого файла из _Unsorted (не
+                              # set -- Раунд 216 придирка 1: три байт-идентичные копии в _Unsorted
+                              # -> «удалить можно 3», не 1). Пересечение с готовым пулом считаем
+                              # после цикла -> n_unsorted_already_archived.
     _iter_count = 0  # 183-2: число зашедших в тело цикла item; если n_processing_errors
                       # сравнялось с ним -- пофайловый рубеж сработал на КАЖДОМ, систематический
                       # баг (не единичный кривой файл) -> walk_aborted ниже.
@@ -8762,8 +8909,27 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                 # рядом (_DRY_RUN_PHASE_DESC и т.п.).
                 bar.update(1, note=" большое видео" if (
                     item.ftype == "video" and item.size > 200 * 1024**2) else None)
-                stats.total_files += 1
-                stats.total_bytes += item.size
+                # Полный п.3 (2026-09-08, прямая команда пользователя): в Паспорте (self_scan)
+                # файлы из _Unsorted -- карантин отбраковки, НЕ часть архива. Мини-п.3 (2adea06)
+                # убрал их только из дедуп-базы; здесь они уходят из ЛЮБОГО счётчика,
+                # описывающего архив (тип медиа/объём, «найдено всего», доступно, форматы, даты,
+                # тиры, камеры, гео, дерево, «повреждён/пуст»). Единственный след -- отдельная
+                # строка «спорные файлы: N» (n_unsorted_files ниже) + прежняя подсказка на
+                # уборку (n_unsorted_already_archived -- пересечение с готовым пулом после цикла).
+                # rel_path здесь относительно cfg.source (== TARGET при self_scan); DVD-юнит в
+                # self_scan несёт синтетический rel_path "VIDEO_TS/..." (docstring run_passport()),
+                # никогда не "_Unsorted" -- проверка по item.rel_path безопасна и до вычисления
+                # self_scan_rel_path. Обычный analyze (self_scan=False) не различает -- «показывает,
+                # что на диске», RULES.md.
+                is_unsorted_selfscan = (
+                    self_scan and mode == "analyze"
+                    and item.rel_path.split("/", 1)[0].strip().lower() == "_unsorted")
+                if is_unsorted_selfscan:
+                    stats.n_unsorted_files += 1
+                    stats.n_unsorted_bytes += item.size
+                else:
+                    stats.total_files += 1
+                    stats.total_bytes += item.size
                 # Речь пользователя, 2026-08-11 (живой боевой прогон по C:\ целиком): "глубина
                 # вложенности"/"папок" в "Расположение" считались по ЛЮБОМУ файлу, включая
                 # совершенно не-медийные (код, кэши, установщики) -- на сканировании всего диска
@@ -8773,7 +8939,7 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                 # медиафайлам (is_media) -- тот же корень/подпапка/архив разбор, что и у
                 # files_by_location ниже, просто раньше независимо от типа файла.
                 is_media = item.ftype in ("image", "raw", "video")
-                if is_media:
+                if is_media and not is_unsorted_selfscan:
                     item_depth = item.rel_path.count("/")
                     if item_depth > stats.max_depth:
                         stats.max_depth = item_depth
@@ -8788,7 +8954,9 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                 # archive_boundary_idx not None -- файл пришёл из распакованного архива (любой глубины
                 # вложенности внутри него, "archive" не различает уровни), иначе "/" в rel_path решает
                 # корень/подпапка (rel_path всегда posix-style, см. SourceItem).
-                if item.archive_boundary_idx is not None:
+                if is_unsorted_selfscan:
+                    pass  # полный п.3: _Unsorted вне «Расположения»/«Тип медиа»/объёма архива
+                elif item.archive_boundary_idx is not None:
                     stats.files_by_location["archive"] += 1
                     stats.bytes_by_location["archive"] += item.size
                 elif "/" in item.rel_path:
@@ -8798,13 +8966,15 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                     stats.files_by_location["root"] += 1
                     stats.bytes_by_location["root"] += item.size
 
-                if item.ftype == "image":
+                if is_unsorted_selfscan:
+                    pass
+                elif item.ftype == "image":
                     stats.n_images += 1
                 elif item.ftype == "raw":
                     stats.n_raw += 1
                 elif item.ftype == "video":
                     stats.n_videos += 1
-                if item.ftype in ("image", "raw", "video"):
+                if item.ftype in ("image", "raw", "video") and not is_unsorted_selfscan:
                     stats.bytes_by_kind[item.ftype] += item.size
 
                 # Живая находка (боевой прогон, отчёт пользователя, 2026-08-09): VIDEO_TS/DVD-юнит
@@ -8835,7 +9005,7 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                 # включая то, что ниже по циклу окажется битым/нечитаемым/дублем (is_media уже
                 # решает "это фото/видео/raw", независимо от дальнейшей судьбы файла -- та же
                 # точка, что и n_images/n_raw/n_videos выше, до любых broken-проверок).
-                if is_media:
+                if is_media and not is_unsorted_selfscan:
                     _tree_key = _source_tree_parent_key(item)
                     if item.ftype == "image":
                         stats.source_tree_counts_image[_tree_key] += 1
@@ -8931,7 +9101,11 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                     tree_key = build_album_dest_dir("Albums", album_prefix, subpath).replace("\\", "/")
                 else:
                     tree_key = None  # см. ниже -- решается по дате (или "_Unsorted" при broken/zero)
-                if album:
+                if is_unsorted_selfscan:
+                    # Полный п.3: _Unsorted вне альбомной статистики (find_album() под карантинной
+                    # подпапкой в принципе может дать имя -- не считаем его альбомом архива).
+                    pass
+                elif album:
                     # 2026-08-08 (альбомный редизайн, RULES.md): "альбом -- это каждая папка в
                     # дереве" -- папка1\папка2\папка3 -- ТРИ разных альбома, не один. Считаем
                     # КАЖДЫЙ промежуточный путь от корня SOURCE до файла отдельно, не только
@@ -8965,9 +9139,9 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                         stats.n_media_by_date += 1
                         stats.bydate_media_by_folder[os.path.dirname(item.rel_path)] += 1
 
-                if item.ftype == "raw" and not item.sibling_path:
+                if item.ftype == "raw" and not item.sibling_path and not is_unsorted_selfscan:
                     stats.n_raw_without_jpeg += 1
-                if item.ftype == "image" and not item.sibling_path:
+                if item.ftype == "image" and not item.sibling_path and not is_unsorted_selfscan:
                     stats.n_jpeg_without_raw += 1
 
                 if is_dvd_unit_item:
@@ -8990,23 +9164,27 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                     # True там), обычный [1]-отчёт этот пункт вообще не показывает, ни сейчас, ни
                     # после этой правки -- ложному "0" протечь некуда (обсуждено и закрыто с
                     # пользователем в этой же сессии).
-                    if self_scan or cfg.check_signature:
+                    if (self_scan or cfg.check_signature) and not is_unsorted_selfscan:
                         real_kind = sniff_signature(item.read_path)
                         if real_kind is not None and real_kind != _coarse_kind(item.ftype):
                             stats.n_signature_mismatch += 1
 
                     if item.size == 0:
-                        stats.n_broken_or_zero += 1
-                        # Пустой файл -- содержимое НЕ распознано (TARGET-уровень назвал бы это
-                        # "disputed", см. AnalyzeStats.disputed_paths выше), не путать с
-                        # rec.read_error ниже ("не прочитано" -- I/O-сбой, файл вообще не открылся).
-                        stats.disputed_paths.append(_analyze_source_abs_path(cfg, item))
-                        stats.disputed_records.append(_analyze_dispute_record(cfg, item))
-                        # Битый/пустой файл всегда уходит в _Unsorted при реальной сборке (см.
-                        # отчёт "N файлов не удалось распознать -- Лежат в _Unsorted"), независимо
-                        # от того, что вычислил tree_key выше (реальный альбом/RAW тут не место
-                        # назначения).
-                        stats.tree_folder_counts["_Unsorted"] += 1
+                        # Полный п.3: 0-байтный файл В _Unsorted (Паспорт) -- уже посчитан в
+                        # n_unsorted_files, карантин отбраковки, НЕ «повреждён/пуст» архива и НЕ
+                        # disputed_*. Просто выходим из обработки этого item.
+                        if not is_unsorted_selfscan:
+                            stats.n_broken_or_zero += 1
+                            # Пустой файл -- содержимое НЕ распознано (TARGET-уровень назвал бы это
+                            # "disputed", см. AnalyzeStats.disputed_paths выше), не путать с
+                            # rec.read_error ниже ("не прочитано" -- I/O-сбой, файл не открылся).
+                            stats.disputed_paths.append(_analyze_source_abs_path(cfg, item))
+                            stats.disputed_records.append(_analyze_dispute_record(cfg, item))
+                            # Битый/пустой файл всегда уходит в _Unsorted при реальной сборке (см.
+                            # отчёт "N файлов не удалось распознать -- Лежат в _Unsorted"),
+                            # независимо от того, что вычислил tree_key выше (реальный альбом/RAW
+                            # тут не место назначения).
+                            stats.tree_folder_counts["_Unsorted"] += 1
                         # "объектов %" -- см. докстринг _walk_with_exif_prefetch()/2026-08-18:
                         # тикаем здесь, ПОСЛЕ решения "битый", не в момент отправки батча в
                         # exiftool. archive_boundary_idx is None -- та же гранулярность, что и
@@ -9038,21 +9216,24 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                     if item.archive_boundary_idx is None:
                         bar.add_object_progress(1)
                     if rec.read_error or rec.broken:
-                        stats.n_broken_or_zero += 1
-                        # rec.read_error -- файл физически не удалось прочитать (I/O-сбой, TARGET-
-                        # уровень зовёт это "не прочитано"/unreadable.csv); rec.broken -- файл
-                        # прочитан, но содержимое не распознано (та же категория, что
-                        # item.size==0 выше, TARGET-уровень зовёт это "disputed"/disputes.csv).
-                        # Этот участок уже ПОСЛЕ фильтра item.ftype in (image, raw, video) выше --
-                        # rec.read_error здесь гарантированно медиа, доп. проверка не нужна (в
-                        # отличие от item.size==0 выше, тот срабатывает ДО фильтра типа).
-                        if rec.read_error:
-                            stats.unreadable_paths.append(_analyze_source_abs_path(cfg, item))
-                            stats.unreadable_records.append(_analyze_dispute_record(cfg, item))
-                        else:
-                            stats.disputed_paths.append(_analyze_source_abs_path(cfg, item))
-                            stats.disputed_records.append(_analyze_dispute_record(cfg, item))
-                        stats.tree_folder_counts["_Unsorted"] += 1
+                        # Полный п.3: битый/нечитаемый файл В _Unsorted (Паспорт) -- ожидаемое
+                        # содержимое карантина, уже в n_unsorted_files. НЕ «повреждён/пуст» архива,
+                        # НЕ unreadable_*/disputed_*. Просто выходим.
+                        if not is_unsorted_selfscan:
+                            stats.n_broken_or_zero += 1
+                            # rec.read_error -- файл физически не удалось прочитать (I/O-сбой,
+                            # TARGET-уровень зовёт это "не прочитано"/unreadable.csv); rec.broken --
+                            # файл прочитан, но содержимое не распознано (та же категория, что
+                            # item.size==0 выше, TARGET-уровень зовёт это "disputed"/disputes.csv).
+                            # Этот участок уже ПОСЛЕ фильтра item.ftype in (image, raw, video) выше
+                            # -- rec.read_error здесь гарантированно медиа, доп. проверка не нужна.
+                            if rec.read_error:
+                                stats.unreadable_paths.append(_analyze_source_abs_path(cfg, item))
+                                stats.unreadable_records.append(_analyze_dispute_record(cfg, item))
+                            else:
+                                stats.disputed_paths.append(_analyze_source_abs_path(cfg, item))
+                                stats.disputed_records.append(_analyze_dispute_record(cfg, item))
+                            stats.tree_folder_counts["_Unsorted"] += 1
                         continue
                     # Речь пользователя, 2026-08-02: пишем, если ЛИБО хеш, ЛИБО EXIF были
                     # свежепосчитаны (не оба сразу нужны -- частый случай "хеш уже в кэше с
@@ -9075,6 +9256,19 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                              1, rec.exif_dt.isoformat() if rec.exif_dt else None, rec.exif_dt_source,
                              rec.camera, rec.gps_lat, rec.gps_lon),
                         )
+
+                if is_unsorted_selfscan:
+                    # Полный п.3: декодируемый файл В _Unsorted (Паспорт) дошёл сюда -- либо
+                    # вручную положенное туда фото, либо флуктуация broken-классификации (находка
+                    # B). Уже посчитан в n_unsorted_files; archive_cache засеян выше (следующий
+                    # Паспорт не перехеширует). ЕДИНСТВЕННОЕ, что берём дальше, -- sha для
+                    # подсказки на уборку: пересечение с ГОТОВЫМ пулом реальных разделов считаем
+                    # после цикла (порядок обхода Albums/_Unsorted не гарантирован) ->
+                    # n_unsorted_already_archived. Ни в один архив-описывающий счётчик (доступно/
+                    # форматы/даты/тиры/камеры/гео/дерево) файл НЕ идёт.
+                    if rec.sha256:
+                        unsorted_file_shas.append(rec.sha256)
+                    continue
 
                 # Задача A, п.2: эта точка цикла достигается ТОЛЬКО для item, которые реально
                 # доступны для архива -- is_dvd_unit_item пропустил все broken/read_error проверки
@@ -9189,6 +9383,9 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                 if rec.camera:
                     stats.cameras[rec.camera] += 1
 
+                # п.3 (2026-09-07 мини -> 2026-09-08 полный): файлы _Unsorted в Паспорте сюда не
+                # доходят вовсе -- `is_unsorted_selfscan` выше собрал их sha и сделал `continue`
+                # ДО «доступных» счётчиков. Здесь только реальные разделы архива: обычный дедуп.
                 if mode == "analyze" and rec.sha256:
                     decision = decide(pool, rec, cfg.mirror_raw)
                     if decision.decision == "skipped_present":
@@ -9260,14 +9457,15 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
     except KeyboardInterrupt:
         stats.interrupted = True
         bar.mark_interrupted()  # "обработано объектов XX%" не форсирует 100% на прерванном прогоне
-    except Exception as e:
+    except Exception:
         # Последний рубеж (2026-09-01, требование пользователя): пофайловые ошибки уже
         # пойманы выше -- сюда доходит только сбой САМОГО обхода источника (генератор
         # SourceWalker/_walk_with_exif_prefetch). Генератор не возобновить поштучно --
         # финализируем отчёт по уже собранной статистике. 183-2: walk_aborted (не interrupted)
         # -> экран «Работа завершилась не полностью из-за ошибки» + crash.log, не «Прервано».
-        log_line(f"ВНИМАНИЕ: обход источника прерван непредвиденной ошибкой ({e!r}) -- "
-                 f"отчёт построен по уже обработанным файлам, подробности в crash.log", log=log)
+        # Накопитель G: repr исключения в строку не идёт -- traceback уже в crash.log.
+        log_line("Замечание: обработка источника прервана непредвиденной ошибкой -- "
+                 "отчёт построен по уже обработанным файлам, подробности в crash.log", log=log)
         _append_crash_log_entry()  # полный traceback в crash.log для разбора
         stats.walk_aborted = True
         bar.mark_interrupted()
@@ -9290,6 +9488,12 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
     stats.n_objects_total = bar.object_count  # SESSION-HANDOFF.txt п.4 -- ДО close(), не после
     stats.n_folders_with_media = len(_folders_with_media)
     stats.n_dvd_units = len(_dvd_units_seen)
+    # п.3 (2026-09-07): сколько декодируемых ФАЙЛОВ из _Unsorted байт-идентичны чему-то в
+    # реальных разделах архива -- считаем ПОСЛЕ цикла по ГОТОВОМУ пулу (порядок обхода
+    # Albums/_Unsorted не гарантирован). Мягкая подсказка на уборку в Паспорте, не «дубль
+    # внутри архива». unsorted_file_shas пуст для не-self_scan (ветка сбора не срабатывает).
+    # Раунд 216 придирка 1: по файлам, не по различным sha -- «удалить можно N штук».
+    stats.n_unsorted_already_archived = sum(1 for s in unsorted_file_shas if s in pool.by_sha)
     # SESSION-HANDOFF.txt, 2026-08-11 (отложенная задача): реальная сборка (см. run_for_source())
     # пробрасывает только len(walker.listdir_failed) в отчёт -- analyze хочет сами пути (тот же
     # паттерн, что encrypted_archive_paths/failed_archive_paths ниже), cur_dirpath уже реальный
@@ -9632,6 +9836,10 @@ class _RunState:
         self.cache_commit_warned = False
         self.dest_path_by_read_path = {}
         self.merged_albums_seen = set()
+        # Находка A (2026-09-03): {sha256: relpath-в-_Unsorted} для дедупа ВНУТРИ _Unsorted.
+        # None -> ещё не строился; строится ЛЕНИВО при первом спорном файле (см.
+        # _disputed_sha_index()). _Unsorted в ОСНОВНОЙ пул дедупа НЕ входит (карантин, RULES.md).
+        self.disputed_shas = None
         self.stopped_for_space = False
         self.interrupted = False  # Ctrl+C-пакет: см. _run_impl() -- KeyboardInterrupt во время
                                    # основного цикла обхода источника ловится там же, где
@@ -9711,7 +9919,66 @@ def _log_post_placement_bookkeeping_failure(item, dest_path, e, run_logs, log):
     _append_crash_log_entry()
 
 
-def _dispute_processing_error(item, rec, e, cfg, run_logs, stats, log) -> tuple:
+def _disputed_sha_index(st) -> dict:
+    """{sha256: relpath-в-_Unsorted} для всего, что УЖЕ лежит в _Unsorted. Строится ЛЕНИВО при
+    первом спорном файле прогона (подавляющее большинство прогонов не даёт ни одного -->
+    _Unsorted не обходится вовсе), пополняется по ходу при каждой реальной укладке в _Unsorted.
+
+    Назначение -- дедуп ВНУТРИ _Unsorted (находка A, 2026-09-03): resolve_dest_path() сверяет
+    занятость имени только в ОДНОЙ зеркальной подпапке, поэтому один и тот же битый/иконочный
+    файл, встреченный в источнике по двум разным путям, давал две копии --
+    _Unsorted/<путь1>/x и _Unsorted/<путь2>/x. _Unsorted в ОСНОВНОЙ пул дедупа не входит
+    (RULES.md: карантин «на всякий случай», не участвует в сравнении реального архива на дубли)
+    -- этот индекс отдельный, читается ТОЛЬКО при укладке в _Unsorted.
+
+    НЕ кэшируется в archive_cache.db: index_archive()'s prune (`stale = cache.keys() -
+    processed_paths`) удалил бы эти строки на следующем прогоне (пути _Unsorted в его
+    processed_paths не входят). _Unsorted в здоровом архиве мал -> повторный хеш дёшев; для
+    патологического (гигабайты битых видео в карантине) размещение станет медленнее -- крайний
+    случай и без того вырожденного архива."""
+    if st.disputed_shas is not None:
+        return st.disputed_shas
+    idx = {}
+    dispute_dir = st.cfg.dispute
+    if os.path.isdir(winlong(dispute_dir)):
+        for path, _ftype in _walk_media_files(dispute_dir):
+            try:
+                # Раунд 216 придирка 2: полный путь (как ветка 'archive' -> existing.dest_path),
+                # не relpath -- колонка "matched" в skipped.csv одного формата для обеих веток.
+                idx[sha256_file(path)] = path
+            except OSError:
+                continue  # файл исчез между обходом и хешем -- та же гонка, что в index_archive()
+    st.disputed_shas = idx
+    return idx
+
+
+def _content_already_kept(expected_sha: str, st) -> tuple:
+    """(matched, where) если контент с `expected_sha` УЖЕ сохранён: в реальном разделе архива
+    ('archive', matched == dest_path) ЛИБО уже в карантине _Unsorted ('unsorted', matched ==
+    relpath внутри _Unsorted). Иначе (None, None).
+
+    Зовут только ветки укладки в _Unsorted (_process_record()'s `not rec.is_media` и
+    _dispute_processing_error()) -- вторую копию в _Unsorted тогда не создаём (находка A).
+    Обычная укладка в ByDate/Albums этот индекс НЕ смотрит: _Unsorted -- карантин, реальному
+    архиву он не мешает (в т.ч. хороший файл кладётся в ByDate, даже если его битый близнец
+    лежит в _Unsorted).
+
+    Раунд 216 придирка 3: 0-байтный файл НЕ дедупится -- содержимого в нём нет, «уже сохранён»
+    для него бессмысленно, а видимость «у вас N обрезанных до нуля файлов» важнее. Каждый
+    такой файл идёт в _Unsorted под своим зеркальным путём (дедуп по имени в подпапке -- как
+    было до находки A)."""
+    if expected_sha == _EMPTY_CONTENT_SHA:
+        return None, None
+    existing = st.pool.find_exact(expected_sha)
+    if existing is not None:
+        return existing.dest_path, "archive"
+    hit = _disputed_sha_index(st).get(expected_sha)
+    if hit is not None:
+        return hit, "unsorted"
+    return None, None
+
+
+def _dispute_processing_error(item, rec, e, st, log) -> tuple:
     """2026-09-02, ответ на REVIEW-HANDOFF.md 185-1(б) (безопасный вариант, по прямой команде
     пользователя). _run_impl()'s внешние `except Exception` вокруг `_process_record(rec, ...)`
     (основной цикл + end-of-run retry) зовут это на баге в decide()/resolve_date()/find_album()
@@ -9729,9 +9996,19 @@ def _dispute_processing_error(item, rec, e, cfg, run_logs, stats, log) -> tuple:
     unreadable -- True, если и попытка разместить в _Unsorted сама не смогла (двойной сбой,
     предельно редкий) -- тогда откат на честное "не прочитано", вызывающий код инкрементирует
     свои locals unreadable_count/unreadable_count_by_type (эта функция их не видит)."""
+    cfg, run_logs, stats = st.cfg, st.run_logs, st.stats
     _log_item_skipped(item, e, log=log)
-    dest_dir = safe_mirror_dir(cfg.dispute, os.path.dirname(item.rel_path))
     expected_sha = rec.sha256 or sha256_bytes(b"")
+    # Находка A: не класть в _Unsorted вторую копию контента, который уже сохранён (в разделе
+    # архива ЛИБО в самом _Unsorted). См. _content_already_kept().
+    matched, where = _content_already_kept(expected_sha, st)
+    if where is not None:
+        run_logs.skipped(item.origin_display, matched,
+                          "identical_in_archive" if where == "archive" else "identical_in_unsorted")
+        _stats_inc_typed(stats, "skipped_present", item.ftype)
+        stats["bytes_saved_by_dedup"] += item.size
+        return False, False
+    dest_dir = safe_mirror_dir(cfg.dispute, os.path.dirname(item.rel_path))
     try:
         dest_path, is_dup = resolve_dest_path(
             dest_dir, os.path.basename(item.rel_path),
@@ -9751,6 +10028,7 @@ def _dispute_processing_error(item, rec, e, cfg, run_logs, stats, log) -> tuple:
                              f"{place_err!r})")
         return False, True
     if not is_dup:
+        _disputed_sha_index(st)[expected_sha] = dest_path  # придирка 2: полный путь, не relpath
         run_logs.disputed(item.origin_display, "processing_error", dest_path,
                            was_hidden=rec.is_hidden)
         run_logs.action(f"disputed: {item.origin_display} -> {dest_path}")
@@ -9837,12 +10115,25 @@ def _process_record(rec, st: _RunState, log=print):
         return False
 
     if not rec.is_media:
-        dest_dir = safe_mirror_dir(cfg.dispute, os.path.dirname(item.rel_path))
         # rec.sha256 is only ever None for the size==0 special case (analyze_batch skips
-        # hashing empty files) -- sha256_bytes(b"") is the real hash of an empty file, so
-        # identical 0-byte placeholders still dedup correctly instead of comparing against
-        # an empty-string sentinel that can never match anything.
+        # hashing empty files) -- sha256_bytes(b"") is the real hash of an empty file, used by
+        # resolve_dest_path() below for its own same-name dedup within one mirror subdir.
+        # Раунд 216 придирка 3: _content_already_kept() НЕ дедупит 0-байтные файлы между
+        # подпапками/против архива -- каждый виден в _Unsorted под своим путём.
         expected_sha = rec.sha256 or sha256_bytes(b"")
+        # Находка A (2026-09-03): не класть в _Unsorted вторую копию контента, который уже
+        # сохранён -- в реальном разделе архива ЛИБО уже в самом _Unsorted (тот же файл,
+        # встреченный в источнике по другому пути / в прошлом прогоне). resolve_dest_path()
+        # ниже видит только ОДНУ зеркальную подпапку и такие дубли пропускал. _Unsorted в
+        # основной пул дедупа не входит -- см. _disputed_sha_index()/_content_already_kept().
+        matched, where = _content_already_kept(expected_sha, st)
+        if where is not None:
+            run_logs.skipped(item.origin_display, matched,
+                              "identical_in_archive" if where == "archive" else "identical_in_unsorted")
+            _stats_inc_typed(stats, "skipped_present", item.ftype)
+            stats["bytes_saved_by_dedup"] += item.size
+            return False
+        dest_dir = safe_mirror_dir(cfg.dispute, os.path.dirname(item.rel_path))
         try:
             dest_path, is_dup = resolve_dest_path(
                 dest_dir, os.path.basename(item.rel_path),
@@ -9865,6 +10156,7 @@ def _process_record(rec, st: _RunState, log=print):
         # bookkeeping_failure()).
         try:
             if not is_dup:
+                _disputed_sha_index(st)[expected_sha] = dest_path  # придирка 2: полный путь
                 run_logs.disputed(item.origin_display, rec.media_note or "not_media", dest_path,
                                    was_hidden=rec.is_hidden)
                 run_logs.action(f"disputed: {item.origin_display} -> {dest_path}")
@@ -10270,6 +10562,18 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
     report_environment(cfg, log=log, stats=stats)
     phase0_end = time.monotonic()
 
+    # Мягкая отмена («Прервать работу») во время Фазы 1 (index_archive() ниже, «Просматриваю
+    # уже собранный архив» -- бывает только при уже существующем архиве в TARGET): та фаза
+    # идёт ДО try/except основного цикла обхода, голый KeyboardInterrupt из
+    # _cooperative_checkpoint() улетал из воркер-потока мимо всех обработчиков
+    # _run_worker_thread() (не Exception/_HardExit/_InterruptedRunReport) и ронял поток без
+    # исхода на экране «Выполнение» -- живая находка пользователя, [2]/[3]. Тот же приём, что
+    # _interrupted_during_estimate ниже: пометить и заново возбудить внутри основного try.
+    _interrupted_during_phase1 = False
+    # Накопитель B: fingerprint'ы DVD-юнитов, уже лежащих в архиве, но не попавших в реестр
+    # `dvd_units` (кэш выключен / archive_cache.db отсутствует) -- см. _index_archive_dvd_units().
+    _archive_dvd_units = {}
+
     if shared_pool is not None:
         # Раунд 5 ревью (REVIEW-HANDOFF.md, вариант A): в рамках одного batch-процесса
         # (несколько SOURCE подряд на один TARGET) архив уже был полностью проиндексирован
@@ -10285,8 +10589,13 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
     else:
         conn = db_reset(cfg.index_db)
         log("=== Фаза 1: индекс архива (база дедупа) ===")
-        index_archive(cfg, conn, log=log)
-        pool = build_pool_from_archive_table(conn)
+        try:
+            index_archive(cfg, conn, log=log)
+            if not cfg.suppress_logs:  # реальная сборка/--dry-run; у «Пробного прогона» свой цикл
+                _archive_dvd_units = _index_archive_dvd_units(cfg, log=log)
+        except KeyboardInterrupt:
+            _interrupted_during_phase1 = True
+        pool = build_pool_from_archive_table(conn)  # по уже проиндексированному (частично на отмене)
         conn.close()  # не нужен дальше в этом прогоне; важно закрывать явно для --source all,
                       # где run() вызывается многократно в одном процессе на один и тот же work.db
         phase1_end = time.monotonic()
@@ -10345,15 +10654,27 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
     # уже создаёт файл ВНУТРИ TARGET, даже если из него потом только читают -- нарушает
     # задокументированную гарантию "suppress_logs/dry_run никогда не пишет в TARGET". Раз
     # st.cache_conn уже корректно гейтится этим же условием (cfg.archive_hash_cache and not
-    # cfg.dry_run), реестр просто наследует то же ограничение -- при dry_run/выключенном
-    # archive_hash_cache он пуст (VIDEO_TS всегда выглядит "новым"), но TARGET не трогается.
-    # Известное упрощение: [2] Пробный прогон/CLI analyze (run_analyze(), другой цикл) этот
-    # реестр не читает вообще -- превью всегда покажет VIDEO_TS как "новый" диск, даже если он
-    # уже реально заархивирован; сама РЕАЛЬНАЯ сборка (эта функция, не dry_run) решает правильно.
+    # cfg.dry_run). Эта ветка-из-таблицы под dry_run/выключенным archive_hash_cache пуста, но
+    # TARGET не трогается.
+    #
+    # Раунд 219 (219-1): картина по путям после накопителя B + 218-1 --
+    #   * РЕАЛЬНАЯ сборка (_run_impl, suppress_logs=False, не dry_run): реестр из таблицы
+    #     `dvd_units` (кэш вкл) ИЛИ с диска через `_archive_dvd_units` (кэш выкл) -- дедуп DVD
+    #     корректен в обоих режимах кэша;
+    #   * CLI `--dry-run` (_run_impl, suppress_logs=False, dry_run=True): таблицу не читает
+    #     (st.archive_cache_on=False), НО при выключенном кэше получает `_archive_dvd_units` с
+    #     диска (:8152 гейт по cfg.archive_hash_cache, не st.archive_cache_on) -> превью может
+    #     верно показать "дубль"; при включённом кэше -- пусто, "новый";
+    #   * интерактивный [2] "Пробный прогон" (suppress_logs=True) и CLI `analyze`
+    #     (run_analyze(), свой цикл) -- реестр DVD не читают вообще, превью всегда "новый".
     dvd_unit_registry = {}
     if st.archive_cache_on and st.cache_conn is not None:
         for fp, dest in st.cache_conn.execute("SELECT fingerprint, dest_path FROM dvd_units"):
             dvd_unit_registry[fp] = dest
+    # Накопитель B: DVD-юниты, найденные на диске в Фазе 1 (кэш реестра пуст/неполон) --
+    # setdefault, запись из `dvd_units` приоритетна (тот же dest_path, но канонический).
+    for fp, dest in _archive_dvd_units.items():
+        dvd_unit_registry.setdefault(fp, dest)
 
     log("=== Фаза 2/2а: обход источника ===")
 
@@ -10418,12 +10739,14 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
     # Ловим и роняем в тот же `except KeyboardInterrupt` ниже (bar уже создан). _HardExit
     # (крестик окна) пролетает насквозь.
     _interrupted_during_estimate = False
-    with ProgressReporter(total=None, desc=" Оцениваю объём работы", unit="файл") as est_bar:
-        try:
-            total_estimate = _quick_media_count_estimate(cfg.source, cfg, on_progress=est_bar.update)
-        except KeyboardInterrupt:
-            _interrupted_during_estimate = True
-            total_estimate = None
+    total_estimate = None
+    if not _interrupted_during_phase1:  # уже отменено в Фазе 1 -- незачем гонять предпересчёт
+        with ProgressReporter(total=None, desc=" Оцениваю объём работы", unit="файл") as est_bar:
+            try:
+                total_estimate = _quick_media_count_estimate(cfg.source, cfg, on_progress=est_bar.update)
+            except KeyboardInterrupt:
+                _interrupted_during_estimate = True
+                total_estimate = None
     with ProgressReporter(total=None, desc=_source_phase_desc, unit="файл",
                            disk_usage_path=_disk_usage_path, two_line=True,
                            total_estimate=total_estimate) as bar:
@@ -10462,8 +10785,8 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
             walker.walk(), cfg.tmp_extract, prefetch_batch_size, cache=source_meta_cache, log=log,
             rate_hint_cb=bar.set_batch_rate_hint)
         try:
-            if _interrupted_during_estimate:
-                raise KeyboardInterrupt  # отмена в фазе "Оцениваю объём" -> тот же обработчик ниже
+            if _interrupted_during_estimate or _interrupted_during_phase1:
+                raise KeyboardInterrupt  # отмена в Фазе 1 / фазе "Оцениваю объём" -> тот же обработчик ниже
             for item, tags_by_path in walker_iter:
                 # 2026-08-23, по прямой просьбе пользователя: пауза по пробелу, см.
                 # _check_pause_keypress()'s докстринг -- между файлами, не внутри одного.
@@ -10582,7 +10905,7 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
                         # (184-3), см. _dispute_processing_error().
                         _process_record_errors += 1  # 190-1: систематический гейт ниже
                         must_stop, fell_back = _dispute_processing_error(
-                            item, rec, e, cfg, run_logs, stats, log)
+                            item, rec, e, st, log)
                         if fell_back:
                             unreadable_count += 1
                             unreadable_count_by_type[_ftype_bucket(item.ftype)] += 1
@@ -10611,7 +10934,7 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
             # останавливает программу" не меняется, только теперь есть отчёт перед выходом.
             st.interrupted = True
             bar.mark_interrupted()  # "обработано объектов XX%" не форсирует 100% на прерванном прогоне
-        except Exception as e:
+        except Exception:
             # Последний рубеж (2026-09-01, требование пользователя «ни одна ошибка не
             # останавливает прогон»): пофайловые ошибки уже пойманы выше (analyze_batch()/
             # _process_record()), сюда доходит только сбой САМОГО обхода источника
@@ -10619,8 +10942,10 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
             # сам). Генератор не возобновить поштучно -- финализируем отчёт по уже собранному,
             # без голого трейсбека. 183-2: walk_aborted (не interrupted) -> исход «Работа
             # завершилась не полностью из-за ошибки» + crash.log, не «Прервано пользователем».
-            log_line(f"ВНИМАНИЕ: обход источника прерван непредвиденной ошибкой ({e!r}) -- "
-                     f"отчёт построен по уже обработанным файлам, подробности в crash.log", log=log)
+            # Накопитель G: repr исключения в строку не идёт -- полный traceback уже в
+            # crash.log (_append_crash_log_entry ниже), в строке он выглядел бы как трейсбек.
+            log_line("Замечание: обработка источника прервана непредвиденной ошибкой -- "
+                     "отчёт построен по уже обработанным файлам, подробности в crash.log", log=log)
             _append_crash_log_entry()  # полный traceback в crash.log для разбора
             st.walk_aborted = True
             bar.mark_interrupted()
@@ -10652,6 +10977,8 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
         # (не только при st.interrupted) -- дешёвый no-op на успешном прогоне, где чистить
         # нечего (обычный обход уже подчищает всё сам по ходу, см. _handle_archive()).
         _cleanup_own_tmp_extract_entries(cfg, log=log)
+        if not cfg.dry_run:
+            _prune_empty_dispute_dirs(cfg, log=log)  # пустой каркас от неудавшихся размещений / старых версий
 
         # Архивные события (extracted/no_media/password_protected/bomb_suspected/...) копятся
         # в walker.archive_logs по ходу walk() -- по завершении обхода переносим их в
@@ -10785,7 +11112,7 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
                         # прогон продолжается (требование пользователя 2026-09-01).
                         _process_record_errors += 1  # 190-1: систематический гейт ниже
                         must_stop, fell_back = _dispute_processing_error(
-                            item, rec, e, cfg, run_logs, stats, log)
+                            item, rec, e, st, log)
                         if fell_back:
                             unreadable_count += 1
                             unreadable_count_by_type[_ftype_bucket(item.ftype)] += 1
@@ -11513,6 +11840,21 @@ def run_analyze_for_source(source, target, sample_limit, mode, log=print):
     except ValueError as e:
         log(f"ОШИБКА КОНФИГУРАЦИИ: {e}")
         return None
+    # Накопитель C (находка ревизора): [1] «Сканирование источника» / CLI `analyze --source`
+    # (self_scan=False) читает имена папок и раскладку SOURCE как самостоятельные признаки
+    # даты/альбома. Если SOURCE -- это уже собранный этой же программой архив, те «признаки» --
+    # её собственная разметка с прошлого прогона, а не независимое доказательство: альбомы/
+    # даты/годы в отчёте выглядят увереннее, чем оправдано. Паспорт архива ([4], self_scan=
+    # True) от этого защищён (_PASSPORT_SELF_SCAN_RECOGNIZED_TOP + поправка resolve_date()),
+    # обычный analyze -- нет. Не блокируем (analyze на готовом архиве запускают и осознанно),
+    # но предупреждаем -- та же сигнатура архива, что у _target_has_existing_archive().
+    if _target_has_existing_archive(cfg.source):
+        log("ВНИМАНИЕ: указанный источник похож на уже собранный архив PhotoArchive. Этот "
+            "режим трактует имена папок (Albums\\<альбом>, ByDate\\<дата>) как самостоятельные "
+            "признаки альбома и даты -- для готового архива это его же собственная разметка, "
+            "а не независимые данные, поэтому альбомы/даты/годы в отчёте будут точнее, чем "
+            "оправдано. Чтобы проверить именно собранный архив, используйте «Паспорт архива» "
+            "(пункт [4] меню, либо analyze --target).")
     stats = run_analyze(cfg, mode, log=log)
     report_path = os.path.join(cfg.workdir, "analyze_report.csv")
     write_analyze_report_csv(report_path, stats)

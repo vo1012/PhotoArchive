@@ -233,6 +233,51 @@ class TestRunAnalyzeSurvivesItemError:
         assert stats.walk_aborted is True
         assert stats.interrupted is False
 
+    def test_walk_abort_message_has_no_traceback_repr(self, tmp_path, monkeypatch):
+        """Накопитель G: строка про сбой обхода не несёт repr исключения (выглядел бы как
+        трейсбек в зеркале экрана «Выполнение») -- полный traceback уже уходит в crash.log."""
+        source, cfg = self._cfg(tmp_path)
+        _make_jpeg(source / "a.jpg")
+        real_walk = m._walk_with_exif_prefetch
+
+        def _exploding_walk(*a, **kw):
+            for pair in real_walk(*a, **kw):
+                yield pair
+                raise RuntimeError("SECRET_TRACEBACK_TOKEN in walker")
+
+        monkeypatch.setattr(m, "_walk_with_exif_prefetch", _exploding_walk)
+        monkeypatch.setattr(m, "_app_dir", lambda: str(tmp_path / "appdir"))
+        lines = []
+        m.run_analyze(cfg, "analyze", log=lambda *a, **k: lines.append(" ".join(str(x) for x in a)))
+
+        joined = "\n".join(lines)
+        assert "Замечание: обработка источника прервана непредвиденной ошибкой" in joined
+        assert "ВНИМАНИЕ" not in joined
+        assert "SECRET_TRACEBACK_TOKEN" not in joined
+        assert "RuntimeError" not in joined
+        assert "crash.log" in joined
+        # а вот в crash.log -- полный traceback
+        assert "SECRET_TRACEBACK_TOKEN" in (tmp_path / "appdir" / "crash.log").read_text(encoding="utf-8")
+
+
+class TestUserFacingSkipMessageNoRepr:
+    """Накопитель G: _log_item_skipped() -- мягкое «Замечание», КЛАСС исключения (одно слово)
+    остаётся (Раунд 218 218-3: единственная ниточка к причине на build-пути), repr (аргументы)
+    -- нет."""
+
+    def test_log_item_skipped_keeps_class_drops_repr_args(self):
+        from types import SimpleNamespace
+        it = SimpleNamespace(origin_display="Отпуск 2015/IMG_1234.jpg", read_path="x")
+        lines = []
+        m._log_item_skipped(it, OSError(22, "Invalid argument"),
+                            log=lambda *a, **k: lines.append(" ".join(str(x) for x in a)))
+        joined = "\n".join(lines)
+        assert "Замечание: не удалось обработать Отпуск 2015/IMG_1234.jpg (OSError)" in joined
+        assert "ВНИМАНИЕ" not in joined
+        assert "Invalid argument" not in joined   # аргументы исключения (repr) -- нет
+        assert "Errno 22" not in joined
+        assert "в отчёте" in joined
+
 
 class TestRunImplSurvivesItemError:
     def _cfg(self, tmp_path, **over):

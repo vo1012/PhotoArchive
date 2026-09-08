@@ -1745,3 +1745,70 @@ class TestSourceTreeCounts:
 
         assert stats.source_tree_counts_image == Counter({"Album": 1})
         assert stats.n_images_available == 0  # битый -- недоступен для архива, но в дереве есть
+
+
+class TestAnalyzeSourceIsBuiltArchiveWarning:
+    """Накопитель C (находка ревизора): `analyze --source` / [1] «Сканирование источника»
+    (self_scan=False) доверяет разметке SOURCE как независимому доказательству даты/альбома.
+    Если SOURCE сам -- уже собранный архив, run_analyze_for_source() должна предупредить
+    (не блокировать) -- та же сигнатура архива, что у _target_has_existing_archive()."""
+
+    def _run(self, source, tmp_path):
+        # analyze_report.csv уходит в CWD (Config сам берёт WORKDIR оттуда) -- вызывающие
+        # тесты делают monkeypatch.chdir(tmp_path). Ловим строки лога.
+        lines = []
+        m.run_analyze_for_source(str(source), m._NO_TARGET_PLACEHOLDER, 0, "analyze-quick",
+                                  log=lambda *a, **k: lines.append(" ".join(str(x) for x in a)))
+        return "\n".join(lines)
+
+    def test_warns_when_source_has_sluzhebnye_fayly(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "OldArchive"
+        (source / "__служебные_файлы").mkdir(parents=True)
+        albums = source / "Albums" / "Свадьба"
+        albums.mkdir(parents=True)
+        _make_jpeg(albums / "p.jpg")
+
+        out = self._run(source, tmp_path)
+
+        assert "похож на уже собранный архив" in out
+        assert "Паспорт архива" in out
+
+    def test_warns_when_source_has_albums_and_bydate(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "OldArchive"
+        (source / "Albums").mkdir(parents=True)
+        bydate = source / "ByDate" / "2020-01"
+        bydate.mkdir(parents=True)
+        _make_jpeg(bydate / "p.jpg")
+
+        out = self._run(source, tmp_path)
+
+        assert "похож на уже собранный архив" in out
+
+    def test_no_warning_for_plain_source_folder(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "PhoneDump"
+        dcim = source / "DCIM"
+        dcim.mkdir(parents=True)
+        _make_jpeg(dcim / "p.jpg")
+
+        out = self._run(source, tmp_path)
+
+        assert "похож на уже собранный архив" not in out
+
+    def test_warning_does_not_block_analyze(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "OldArchive"
+        (source / "__служебные_файлы").mkdir(parents=True)
+        albums = source / "Albums" / "Отпуск 2015"
+        albums.mkdir(parents=True)
+        _make_jpeg(albums / "p.jpg")
+
+        lines = []
+        stats = m.run_analyze_for_source(
+            str(source), m._NO_TARGET_PLACEHOLDER, 0, "analyze-quick",
+            log=lambda *a, **k: lines.append(" ".join(str(x) for x in a)))
+
+        assert stats is not None
+        assert stats.n_images >= 1
