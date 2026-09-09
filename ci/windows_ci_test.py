@@ -1636,7 +1636,7 @@ def test_undated_file_shows_folder_and_name_in_report():
     check("Что программа решила сама" in html_out,
           "undated-report-path: report.html renders Section 3 heading")
     # _render_run_auto_decisions(): "<b>1</b> файл — без надёжной даты (папка <code>0000-
-    # undated</code>). Дозреют при повторном прогоне..." -- агрегат, без имени файла.
+    # undated</code>). Дату эти снимки сами не получат..." -- агрегат, без имени файла.
     check("без надёжной даты" in html_out and "0000-undated</code>" in html_out,
           "undated-report-path: Section 3 mentions the Tier D bucket (aggregate wording, "
           "live pipeline, verified end-to-end)")

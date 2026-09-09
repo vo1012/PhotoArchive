@@ -2495,8 +2495,9 @@ def test_generate_passport_report_clean_archive_shows_no_problems_explicitly(tmp
     assert "Все файлы лежат внутри признанных альбомов/дат." in html_out
     assert "У всех файлов есть точная или приблизительная дата съёмки." in html_out
     assert "Глубоко вложенных альбомов нет." in html_out
+    assert "Изображений, требующих проверки качества, не найдено." in html_out
     assert 'class="attn"' not in html_out
-    assert html_out.count('class="ok"') == 8
+    assert html_out.count('class="ok"') == 9
     assert r"D:\__PhotoArchive__" in html_out
 
 
@@ -2532,6 +2533,28 @@ def test_generate_passport_report_flags_problems_explicitly(tmp_path):
     assert "найден 1 архив" in html_out
     assert "4 файла лежат не внутри" in html_out
     assert html_out.count('class="attn"') == 6
+
+
+def test_passport_integrity_flags_quality_check_with_pointer_to_detail(tmp_path):
+    """2026-09-09, боевой вопрос пользователя: classify_image() при скане Паспорта метит
+    маленькие/нечитаемые изображения (n_quality_small_image/n_quality_low_confidence), но
+    раньше это никуда не выводилось -- вручную добавленный в архив скриншот Паспорт не
+    показывал. Теперь -- пункт "Целостности архива" + строки в passport_detail.xlsx."""
+    stats = _FakeAnalyzeStats()
+    stats.n_quality_small_image = 2
+    stats.n_quality_low_confidence = 1
+    html_out = r._render_passport_integrity(stats)
+    assert "3 изображения помечены на проверку качества" in html_out
+    assert "2 файла маленького размера" in html_out
+    assert "1 файл с низкой уверенностью распознавания" in html_out
+    assert "в детализированном отчёте" in html_out
+    assert 'class="attn"' in html_out
+
+
+def test_passport_integrity_quality_check_ok_when_none(tmp_path):
+    stats = _FakeAnalyzeStats()  # без n_quality_* вовсе -- getattr(..., 0)
+    html_out = r._render_passport_integrity(stats)
+    assert "Изображений, требующих проверки качества, не найдено." in html_out
 
 
 def test_passport_dup_count_subtracts_group_count_not_total_files(tmp_path):

@@ -1654,7 +1654,7 @@ def _render_interrupted_banner() -> str:
     включая --dry-run -- та же ветка _finalize_target_report()). Первая строка отчёта,
     крупнее обычного trust-banner (см. CSS .interrupted-banner) -- пользователь должен
     увидеть это раньше, чем начнёт читать цифры, которые описывают НЕполный прогон."""
-    return ('<p class="interrupted-banner">Работа режима прервана пользователем по CTRL-C. '
+    return ('<p class="interrupted-banner">Работа прервана пользователем. '
             'Отчёт содержит данные на момент остановки программы.</p>')
 
 
@@ -3392,8 +3392,10 @@ def _render_run_auto_decisions(checklist_new: dict, level: str) -> str:
     if n_tier_d:
         parts.append(
             f'<p><b>{n_tier_d}</b> {_plural(n_tier_d, "файл", "файла", "файлов")} — без '
-            f'надёжной даты (папка <code>0000-undated</code>). Дозреют при повторном прогоне, '
-            'если появятся метаданные.</p>'
+            f'надёжной даты (папка <code>0000-undated</code>). Дату эти снимки сами не '
+            'получат. Если проставить её вручную (EXIF-редактором или в свойствах файла) и '
+            'собрать архив заново, они добавятся в папку своего года; копия в '
+            '<code>0000-undated</code> при этом останется — архив только дополняется.</p>'
         )
 
     # 3.3
@@ -3440,7 +3442,8 @@ def _render_run_auto_decisions(checklist_new: dict, level: str) -> str:
             quality_bits.append(f"{_n_files(n_low_conf)} с низкой уверенностью распознавания")
         parts.append(
             f'<p><b>{n_quality}</b> {_plural(n_quality, "файл", "файла", "файлов")} '
-            f'{_saved_verb(n_quality, preview)} с пометкой на проверку качества — '
+            f'{_saved_verb(n_quality, preview)} с пометкой на проверку качества '
+            '(столбец «Примечание» в детализированном отчёте) — '
             + "; ".join(quality_bits) + '.</p>'
         )
 
@@ -4376,7 +4379,8 @@ def _render_dryrun_structure_recommendations(run_stats: dict) -> str:
         _li(
             f'«{name}» похож на папку облачной синхронизации, а не на один альбом',
             f'{_n_files(n)}, разбросанных по нескольким годам/камерам/датам — если это '
-            f'накопленная свалка, а не отдельный альбом, переименуйте папку-источник, добавив '
+            f'просто накопление снимков за разные годы и события, а не единый альбом, '
+            f'переименуйте папку-источник, добавив '
             f'«~» в начало имени («~{html.escape(name)}»), и содержимое разложится по дате при '
             'реальной сборке. Если это осознанно один большой альбом — ничего делать не нужно.',
         )
@@ -4974,6 +4978,23 @@ def _passport_broken_attn(n: int, n_unreadable: int) -> str:
     return base
 
 
+def _passport_quality_attn(n_small: int, n_low: int) -> str:
+    """Текст пункта «Пометка на проверку качества» -- classify_image() при скане Паспорта
+    уже метит small_image/low_confidence_photo (run_analyze()), файлы сохранены и доступны,
+    это FYI, не порча. Боевой вопрос пользователя 2026-09-09: HTML давал только счётчик в
+    Разделе 3 сводного отчёта, найти конкретные файлы (напр. вручную добавленный скриншот)
+    было негде. Пути -- в passport_detail.xlsx. Текст -- зеркало _render_run_auto_decisions()."""
+    bits = []
+    if n_small:
+        bits.append(f"{_n_files(n_small)} маленького размера (возможно, скриншоты/миниатюры)")
+    if n_low:
+        bits.append(f"{_n_files(n_low)} с низкой уверенностью распознавания")
+    total = n_small + n_low
+    return (f"{total} {_plural(total, 'изображение помечено', 'изображения помечены', 'изображений помечены')} "
+            "на проверку качества: " + "; ".join(bits) + " — файлы сохранены и доступны, "
+            "список с путями — в детализированном отчёте (столбец «Примечание»).")
+
+
 def _render_passport_integrity(stats, detail_xlsx_href: str = None,
                                 detail_xlsx_locked: bool = False) -> str:
     exact_clusters = _cluster_passport_edges(stats.exact_dup_edges)
@@ -5031,6 +5052,11 @@ def _render_passport_integrity(stats, detail_xlsx_href: str = None,
             lambda n: f"{n} {_plural(n, 'файл лежит', 'файла лежат', 'файлов лежат')} не внутри "
                       "конкретного альбома или папки по дате — похоже на файлы, добавленные или "
                       "перенесённые вручную, в обход программы."),
+        _passport_check(
+            getattr(stats, "n_quality_small_image", 0) + getattr(stats, "n_quality_low_confidence", 0),
+            "Изображений, требующих проверки качества, не найдено.",
+            lambda n: _passport_quality_attn(getattr(stats, "n_quality_small_image", 0),
+                                              getattr(stats, "n_quality_low_confidence", 0))),
     ]
     # Речь пользователя, 2026-08-02 (задача 3): старая версия просто складывала tier C+D в
     # одно число, не объясняя, что оно значит -- по RULES.md (блок UNDATED) точность даты

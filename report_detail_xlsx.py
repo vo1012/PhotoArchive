@@ -31,7 +31,7 @@ import re
 
 from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
-from openpyxl.styles import Font
+from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
 from report import (
@@ -113,17 +113,32 @@ def retry_replace(tmp_path: str, final_path: str) -> bool:
 
 _COLUMN_HEADERS = [
     "Путь к исходной папке", "Имя файла", "Расширение", "Тип медиа", "Копировано",
-    "Куда / с чем дуп", "Итоговое имя файла", "№ серии", "Примечание",
+    "Куда / с чем дуп", "Итоговое имя файла", "№ серии", "Файлов в серии", "Примечание",
     "Открыть файл (PowerShell)",
 ]
-_COLUMN_WIDTHS = [55, 32, 10, 10, 10, 55, 32, 8, 45, 46]
-# 0-based -- индекс "Открыть файл (PowerShell)" в _values ниже. ПОСЛЕДНЯЯ колонка -- живая
-# находка пользователя, 2026-09-05: длинный текст команды (теперь -- вся серия, не один файл,
-# см. _series_ps_commands()) переполняет соседнюю пустую ячейку Excel'ем визуально; последняя
-# колонка переполняется в пустое место листа, не на "Примечание".
-_DETAIL_PS_COMMAND_COL = 9
+# ВЕРХНИЙ предел ширины колонки; фактическая ширина подгоняется по самому длинному
+# значению в колонке (_write_flat_xlsx()), но не выше этого. Значение длиннее фактической
+# ширины -- перенос по словам ВНУТРИ ячейки (не наплыв на соседнюю), боевое замечание
+# пользователя 2026-09-09: путь/команда наезжали на пустые соседние поля.
+_COLUMN_MAX_WIDTHS = [60, 40, 12, 12, 12, 85, 40, 10, 15, 60, 120]
+# 0-based -- индекс "Открыть файл (PowerShell)" в _values ниже. ПОСЛЕДНЯЯ колонка (2026-09-05):
+# длинный текст команды (вся серия, см. _series_ps_commands()) -- перенос внутри ячейки,
+# гигантский кластер (сотни файлов) даёт высокую строку, но не невидимый наплыв через весь лист.
+_DETAIL_PS_COMMAND_COL = 10
 
 _KIND_LABELS = {"image": "фото", "video": "видео", "raw": "RAW", "other": "прочее"}
+
+# «Пометка на проверку качества» (report.py, Раздел 3 сводного отчёта — там только число).
+# small_image/low_confidence_photo: classify_image() (photosort_win.py) — файл сохранён в
+# архив как обычно, «пометка» = флаг в appended.csv (прогон) / оценка при скане (Паспорт).
+# 2026-09-09, боевой вопрос пользователя: HTML даёт только счётчик, найти конкретные файлы
+# было негде. Смысл тот же, что у агрегата report._render_run_auto_decisions()/_passport_
+# quality_attn() («N файлов маленького размера…»), но формулировка — пофайловая (идёт после
+# тире в «Примечании» прогона / в колонке «Примечание» Паспорта), не дословная копия агрегата.
+_QUALITY_FLAG_REASONS = {
+    "small_image": "маленькое фото (возможно, скриншот/миниатюра)",
+    "low_confidence_photo": "низкая уверенность распознавания",
+}
 
 # Раскраска -- решение пользователя 2026-08-15 (спека, "Визуальное различение"): только
 # вспомогательный сигнал, категория строки по-прежнему однозначно читается из
@@ -275,10 +290,12 @@ def _build_detail_rows(data: dict) -> list:
     в xlsx, тестируется независимо от openpyxl."""
     near_dup_clusters = _cluster_near_dup(data.get("near_dup_edges", []))
     series_id_by_dest = {}
+    series_size_by_dest = {}
     series_ps_by_dest = {}
     for i, cluster in enumerate(near_dup_clusters, start=1):
         for dest in cluster:
             series_id_by_dest[dest] = i
+            series_size_by_dest[dest] = len(cluster)
         series_ps_by_dest.update(_series_ps_commands(cluster))
 
     # PROMPT_report_detail_xlsx.md, "Примечание": «дата приблизительная» -- Tier B/C
@@ -318,6 +335,7 @@ def _build_detail_rows(data: dict) -> list:
         kind = _row_kind(dest, source)
         final_name = _source_basename(dest) if _source_basename(dest) != source_name else ""
         series_id = series_id_by_dest.get(dest, 0)
+        series_size = series_size_by_dest.get(dest, 0)
         notes = []
         if final_name:
             notes.append("переименовано")
@@ -325,11 +343,14 @@ def _build_detail_rows(data: dict) -> list:
             notes.append("похожая серия")
         if dest in approx_date_dests:
             notes.append("дата приблизительная")
+        quality_reason = _QUALITY_FLAG_REASONS.get(r.get("flags", "") or "")
+        if quality_reason:
+            notes.append("на проверку качества — " + quality_reason)
         note = "; ".join(notes)
         rows.append({
             "folder": _source_dirname(source), "name": source_name, "ext": _ext(source),
             "kind": kind, "copied": True, "dest_or_dup": dest, "final_name": final_name,
-            "series_id": series_id, "note": note, "color": None,
+            "series_id": series_id, "series_size": series_size, "note": note, "color": None,
             "ps_command": series_ps_by_dest.get(dest, ""),
         })
 
@@ -344,7 +365,7 @@ def _build_detail_rows(data: dict) -> list:
             "folder": _source_dirname(sample_source), "name": "VIDEO_TS", "ext": "",
             "kind": "video", "copied": True, "dest_or_dup": dest_dir,
             "final_name": dest_name if dest_name != "VIDEO_TS" else "",
-            "series_id": 0,
+            "series_id": 0, "series_size": 0,
             "note": f"DVD-видео (VIDEO_TS), скопировано целиком ({_n_files(len(group_rows))})",
             "color": None, "ps_command": "",
         })
@@ -361,8 +382,8 @@ def _build_detail_rows(data: dict) -> list:
         rows.append({
             "folder": _source_dirname(source), "name": source_name, "ext": _ext(source),
             "kind": _row_kind(dest, source), "copied": True, "dest_or_dup": dest,
-            "final_name": final_name, "series_id": 0, "note": "; ".join(notes), "color": None,
-            "ps_command": "",
+            "final_name": final_name, "series_id": 0, "series_size": 0,
+            "note": "; ".join(notes), "color": None, "ps_command": "",
         })
 
     for r in data.get("skipped", []):
@@ -382,7 +403,7 @@ def _build_detail_rows(data: dict) -> list:
         rows.append({
             "folder": _source_dirname(source), "name": source_name, "ext": _ext(source),
             "kind": kind, "copied": False, "dest_or_dup": matched, "final_name": "",
-            "series_id": 0, "note": note, "color": color,
+            "series_id": 0, "series_size": 0, "note": note, "color": color,
             "ps_command": _dup_pair_ps_command(source, matched),
         })
 
@@ -393,7 +414,8 @@ def _build_detail_rows(data: dict) -> list:
         rows.append({
             "folder": _source_dirname(source), "name": source_name, "ext": _ext(source),
             "kind": _row_kind(source), "copied": False, "dest_or_dup": "", "final_name": "",
-            "series_id": 0, "note": f"не прочитано: {error}" if error else "не прочитано",
+            "series_id": 0, "series_size": 0,
+            "note": f"не прочитано: {error}" if error else "не прочитано",
             "color": _COLOR_PROBLEM, "ps_command": "",
         })
 
@@ -442,17 +464,41 @@ def generate_detail_xlsx(data: dict, report_out_path: str) -> str:
     values = [
         [row["folder"], row["name"], row["ext"], _KIND_LABELS.get(row["kind"], row["kind"]),
          "да" if row["copied"] else "нет", row["dest_or_dup"], row["final_name"],
-         row["series_id"], row["note"], row["ps_command"]]
+         # 222-1 (+ хвост: и «№ серии» тоже): обе колонки имеют смысл только для строк
+         # «похожая серия» -- у одиночного файла ячейки пустые, а не литеральный «0».
+         row["series_id"] or "", row["series_size"] or "", row["note"], row["ps_command"]]
         for row in rows
     ]
     out_path = os.path.join(os.path.dirname(report_out_path), DETAIL_XLSX_FILENAME)
-    _write_flat_xlsx(_COLUMN_HEADERS, _COLUMN_WIDTHS, values,
+    _write_flat_xlsx(_COLUMN_HEADERS, _COLUMN_MAX_WIDTHS, values,
                       colors=[row["color"] for row in rows], out_path=out_path,
                       small_font_col=_DETAIL_PS_COMMAND_COL)
     return DETAIL_XLSX_FILENAME
 
 
 _SMALL_FONT_SIZE = 8  # против дефолтного Calibri 11 -- см. small_font_col ниже
+_MIN_COLUMN_WIDTH = 6  # чтобы узкая колонка ("№ серии") не схлопнулась в нечитаемую полоску
+
+
+def _fit_column_widths(headers: list, values: list, max_widths: list) -> list:
+    """Ширина колонки = самое длинное значение в ней (или её заголовок) + 1 на воздух, но не
+    выше max_widths[i] и не ниже _MIN_COLUMN_WIDTH. Боевое замечание пользователя 2026-09-09:
+    фикс. ширины наезжали текстом на пустые соседние поля ("Куда / с чем дуп" -> пустое
+    "Итоговое имя файла", "Открыть файл (PowerShell)" -> пустое место листа). Единица ширины
+    .xlsx -- примерно ширина "0" дефолтного шрифта; len() -- достаточное приближение для
+    "подогнать, чтобы обычное не наезжало", идеальная попиксельная подгонка не нужна."""
+    fitted = []
+    for i, cap in enumerate(max_widths):
+        longest = len(str(headers[i]))
+        for row in values:
+            v = row[i]
+            if v is None:
+                continue
+            n = len(v) if isinstance(v, str) else len(str(v))
+            if n > longest:
+                longest = n
+        fitted.append(min(max(longest + 1, _MIN_COLUMN_WIDTH), cap))
+    return fitted
 
 
 def _write_flat_xlsx(headers: list, widths: list, values: list, colors: list,
@@ -460,10 +506,21 @@ def _write_flat_xlsx(headers: list, widths: list, values: list, colors: list,
     """Общая механика записи листа (заголовок жирным, freeze panes, автофильтр, ширины
     колонок, `\\?\\`-безопасное сохранение) -- переиспользуется generate_detail_xlsx() (прогон)
     и generate_passport_detail_xlsx() (Паспорт архива), у которых разная ФОРМА строк
-    (9 колонок vs 6), но одинаковая механика листа. `values` -- уже полностью отформатированные
+    (10 колонок vs 7), но одинаковая механика листа. `values` -- уже полностью отформатированные
     для отображения списки (никаких bool/Counter/сырых кодов -- ответственность вызывающего
     builder'а). `colors` -- цвет шрифта строки ("#rrggbb") или None; уникальных значений
     единицы, объекты Font кэшируются и один инстанс переиспользуется на все ячейки.
+
+    `widths` -- ВЕРХНИЙ предел ширины каждой колонки; фактическая ширина подгоняется по
+    контенту (_fit_column_widths()). Значение, которое всё равно длиннее фактической ширины
+    (очень глубокий путь, команда на весь кластер), получает `wrap_text` -- переносится по
+    словам ВНУТРИ своей ячейки, а не наплывает на соседнюю (боевое замечание 2026-09-09). Цена:
+    строка с таким значением уходит по медленному (`WriteOnlyCell`) пути -- в здоровом архиве
+    с короткими путями это редкость и быстрый путь (`ws.append`) сохраняется; в архиве, где
+    длинный путь у КАЖДОГО файла, запись ~×2 на стресс-объёме (40k строк -- секунды, не
+    минуты, порог "GUI выглядит зависшим" далеко). Гигантский near_dup-кластер (сотни файлов
+    в одной команде) даёт очень высокую строку -- Excel ограничивает её 409 pt, остаток текста
+    в ячейке остаётся (копируется целиком), просто не весь виден.
 
     `small_font_col` (0-based, опционально) -- одна колонка получает уменьшенный шрифт
     (`_SMALL_FONT_SIZE`) независимо от цвета строки. Введён 2026-09-04 для столбца
@@ -493,7 +550,8 @@ def _write_flat_xlsx(headers: list, widths: list, values: list, colors: list,
     wb = Workbook(write_only=True)
     ws = wb.create_sheet("Детализация")
     ws.freeze_panes = "A2"
-    for idx, width in enumerate(widths, start=1):
+    eff_widths = _fit_column_widths(headers, values, widths)
+    for idx, width in enumerate(eff_widths, start=1):
         ws.column_dimensions[get_column_letter(idx)].width = width
 
     bold_font = Font(bold=True)
@@ -502,11 +560,14 @@ def _write_flat_xlsx(headers: list, widths: list, values: list, colors: list,
         cell.font = bold_font
     ws.append(header_cells)
 
+    wrap_align = Alignment(wrap_text=True, vertical="top")
     font_by_color = {}
     small_font_by_color = {}
     for row_values, color in zip(values, colors, strict=True):
         needs_styled_path = small_font_col is not None and row_values[small_font_col]
-        if not color and not needs_styled_path:
+        wrap_idxs = {i for i, w in enumerate(eff_widths)
+                     if row_values[i] is not None and len(str(row_values[i])) > w}
+        if not color and not needs_styled_path and not wrap_idxs:
             ws.append(row_values)
             continue
         row_font = None
@@ -516,6 +577,8 @@ def _write_flat_xlsx(headers: list, widths: list, values: list, colors: list,
                 row_font = font_by_color[color] = Font(color=_argb(color))
         cells = [WriteOnlyCell(ws, value=v) for v in row_values]
         for idx, cell in enumerate(cells):
+            if idx in wrap_idxs:
+                cell.alignment = wrap_align
             if idx == small_font_col:
                 small_font = small_font_by_color.get(color)
                 if small_font is None:
@@ -559,20 +622,20 @@ def _write_flat_xlsx(headers: list, widths: list, values: list, colors: list,
 
 PASSPORT_DETAIL_XLSX_FILENAME = "passport_detail.xlsx"
 
-_PASSPORT_COLUMN_HEADERS = ["Папка", "Имя", "Тип находки", "№ группы",
+_PASSPORT_COLUMN_HEADERS = ["Папка", "Имя", "Тип находки", "№ группы", "Файлов в группе",
                              "Примечание", "Открыть файл (PowerShell)"]
-_PASSPORT_COLUMN_WIDTHS = [55, 32, 20, 10, 45, 46]
-# 0-based -- см. _DETAIL_PS_COMMAND_COL (ПОСЛЕДНЯЯ колонка, переполнение текста не перекрывает
-# "Примечание").
-_PASSPORT_PS_COMMAND_COL = 5
+# см. _COLUMN_MAX_WIDTHS -- верхний предел, фактическая ширина подгоняется по контенту.
+_PASSPORT_COLUMN_MAX_WIDTHS = [75, 40, 20, 10, 16, 45, 120]
+# 0-based -- см. _DETAIL_PS_COMMAND_COL (ПОСЛЕДНЯЯ колонка, перенос внутри ячейки).
+_PASSPORT_PS_COMMAND_COL = 6
 
 
 def _passport_row(path: str, category: str, group_id: int, note: str, color: str,
-                   ps_command: str = "") -> dict:
+                   ps_command: str = "", group_size: int = 0) -> dict:
     return {
         "folder": _source_dirname(path), "name": _source_basename(path),
-        "category": category, "group_id": group_id, "note": note, "color": color,
-        "ps_command": ps_command,
+        "category": category, "group_id": group_id, "group_size": group_size,
+        "note": note, "color": color, "ps_command": ps_command,
     }
 
 
@@ -637,7 +700,7 @@ def _build_passport_detail_rows(stats, target_path: str = None) -> list:
         ps_by_path = _series_ps_commands(abs_paths)
         for path in abs_paths:
             rows.append(_passport_row(path, "дубликат", i, "", _COLOR_DUPLICATE,
-                                       ps_by_path.get(path, "")))
+                                       ps_by_path.get(path, ""), group_size=len(cluster)))
 
     near_clusters = _cluster_passport_edges(stats.near_dup_edges)
     for i, cluster in enumerate(near_clusters, start=1):
@@ -645,7 +708,7 @@ def _build_passport_detail_rows(stats, target_path: str = None) -> list:
         ps_by_path = _series_ps_commands(abs_paths)
         for path in abs_paths:
             rows.append(_passport_row(path, "похожая серия", i, "", None,
-                                       ps_by_path.get(path, "")))
+                                       ps_by_path.get(path, ""), group_size=len(cluster)))
 
     # Живая находка пользователя, 2026-08-24: "N файлов лежат не внутри альбома/даты"
     # (_render_passport_integrity()) раньше был единственным пунктом карточки "Целостность
@@ -655,6 +718,15 @@ def _build_passport_detail_rows(stats, target_path: str = None) -> list:
     for path in stats.dump_item_paths:
         rows.append(_passport_row(_passport_abs_path(path, target_path), "вне альбома/даты", 0,
                                    "", None))
+
+    # 2026-09-09, боевой вопрос пользователя: classify_image() при скане Паспорта уже метит
+    # маленькие/нечитаемые изображения (n_quality_small_image/n_quality_low_confidence), но
+    # найти КОНКРЕТНЫЙ такой файл (напр. вручную добавленный в архив скриншот) было негде --
+    # тот же пробел, что был у dump_item_paths до 2026-08-24. quality_flag_paths -- список
+    # (origin_display, note), формат пути как у dump_item_paths.
+    for path, note in getattr(stats, "quality_flag_paths", []):
+        rows.append(_passport_row(_passport_abs_path(path, target_path), "на проверку качества",
+                                   0, _QUALITY_FLAG_REASONS.get(note, note), None))
 
     rows.sort(key=lambda d: (d["folder"], d["name"]))
     return rows
@@ -669,10 +741,13 @@ def generate_passport_detail_xlsx(stats, report_out_path: str, target_path: str 
     rows = _build_passport_detail_rows(stats, target_path)
     if not rows:
         return None
-    values = [[row["folder"], row["name"], row["category"], row["group_id"], row["note"],
-               row["ps_command"]] for row in rows]
+    # 222-1 (+ хвост: и «№ группы» тоже): обе колонки -- пусто, а не «0», для одиночных
+    # находок (архив/битый/вне альбома/на проверку качества); заполнены только для дубль-/
+    # серия-кластеров.
+    values = [[row["folder"], row["name"], row["category"], row["group_id"] or "",
+               row["group_size"] or "", row["note"], row["ps_command"]] for row in rows]
     out_path = os.path.join(os.path.dirname(report_out_path), PASSPORT_DETAIL_XLSX_FILENAME)
-    _write_flat_xlsx(_PASSPORT_COLUMN_HEADERS, _PASSPORT_COLUMN_WIDTHS, values,
+    _write_flat_xlsx(_PASSPORT_COLUMN_HEADERS, _PASSPORT_COLUMN_MAX_WIDTHS, values,
                       colors=[row["color"] for row in rows], out_path=out_path,
                       small_font_col=_PASSPORT_PS_COMMAND_COL)
     return PASSPORT_DETAIL_XLSX_FILENAME
