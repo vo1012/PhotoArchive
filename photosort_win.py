@@ -79,7 +79,7 @@ warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
 # blanket ignore of all warnings, so any other future PIL/library warning still surfaces.
 warnings.filterwarnings("ignore", message="Palette images with Transparency.*", category=UserWarning)
 
-__version__ = "0.6.14"          # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
+__version__ = "0.6.15"          # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
                                  # с RULES_VERSION ниже (та про совместимость архива, а не exe)
 RULES_VERSION = "2026-08-11"   # дата последнего изменения бизнес-правил -- см. RULES.md;
                                 # менять руками при изменении логики раскладки/дедупа/дат
@@ -8263,6 +8263,16 @@ class AnalyzeStats:
     # item.origin_display -- тот же формат пути, что уже хранят exact_dup_edges/near_dup_edges
     # (см. их докстринг), _passport_abs_path()/_passport_normalize_dest() понимают его как есть.
     dump_item_paths: list = field(default_factory=list)
+    # 2026-09-09, боевой вопрос пользователя: classify_image() при скане Паспорта уже метит
+    # файлы small_image/low_confidence_photo (analyze_batch(small_image_px=...)), но результат
+    # никуда не шёл -- такой файл считался обычным доступным фото. Теперь Паспорт (self_scan)
+    # собирает счётчики + пути, чтобы найти ВРУЧНУЮ добавленные в архив миниатюры/скриншоты/
+    # нечитаемые изображения. Только self_scan -- обычный analyze чужой папки не трогаем (у
+    # dry-run [2] пометка видна через appended.csv). Путь -- item.origin_display, как
+    # dump_item_paths выше; note -- "small_image"/"low_confidence_photo".
+    n_quality_small_image: int = 0
+    n_quality_low_confidence: int = 0
+    quality_flag_paths: list = field(default_factory=list)
     # SESSION-HANDOFF.txt, 2026-08-07 (группировка альбом/дата в analyze-отчёте): YY/QQ --
     # медиафайлы, которые нашли альбом, и медиафайлы, которым альбом не нашёлся (разложатся по
     # дате) -- фильтр по item.ftype in ("image", "raw", "video"), в отличие от n_dump_items/
@@ -9282,6 +9292,16 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                 elif item.ftype == "video":
                     stats.n_videos_available += 1
                 stats.bytes_by_kind_available[item.ftype] += item.size
+
+                # «Пометка на проверку качества» -- только Паспорт (self_scan). classify_image()
+                # уже проставил rec.media_note выше (analyze_batch), файл при этом остаётся
+                # обычным доступным фото (is_media=True) -- только фиксируем факт + путь.
+                if self_scan and rec.media_note in ("small_image", "low_confidence_photo"):
+                    if rec.media_note == "small_image":
+                        stats.n_quality_small_image += 1
+                    else:
+                        stats.n_quality_low_confidence += 1
+                    stats.quality_flag_paths.append((item.origin_display, rec.media_note))
 
                 # Задача A, п.5/6: топ-форматов -- та же "available" точка цикла, что и счётчики
                 # выше (ТЗ пользователя относит топ-форматов к Разделу 2 "Доступно для архива", не
@@ -12115,7 +12135,7 @@ def _finalize_analyze_report(stats, open_browser: bool, log=print, source_path: 
         _n_detail = (len(stats.encrypted_archive_paths) + len(stats.failed_archive_paths)
                      + len(stats.disputed_records) + len(stats.unreadable_records)
                      + len(stats.exact_dup_edges) + len(stats.near_dup_edges)
-                     + len(stats.dump_item_paths))
+                     + len(stats.dump_item_paths) + len(stats.quality_flag_paths))
         _scale = f" ({_n_detail} записей)" if _n_detail > 3000 else ""
         _log_and_bus_status("Формирую итоговый отчёт…", log)
         _log_and_bus_status(f"  [1/1] собираю страницу и детализированную таблицу{_scale}…", log)

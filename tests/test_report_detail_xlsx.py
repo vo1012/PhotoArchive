@@ -14,8 +14,8 @@ import report_detail_xlsx as rx
 from test_report import _FakeAnalyzeStats
 
 
-def _appended(source, dest, reason="appended_new", ts="2026-01-01 00:00:01"):
-    return {"timestamp": ts, "source": source, "dest": dest, "reason": reason, "flags": "",
+def _appended(source, dest, reason="appended_new", ts="2026-01-01 00:00:01", flags=""):
+    return {"timestamp": ts, "source": source, "dest": dest, "reason": reason, "flags": flags,
             "date": "", "duration": "", "place": "", "camera": ""}
 
 
@@ -129,6 +129,7 @@ class TestBuildDetailRows:
         assert row["dest_or_dup"] == r"D:\TARGET\Albums\Vacation\a.jpg"
         assert row["final_name"] == ""
         assert row["series_id"] == 0
+        assert row["series_size"] == 0
         assert row["note"] == ""
         assert row["color"] is None
 
@@ -155,8 +156,47 @@ class TestBuildDetailRows:
         rows = rx._build_detail_rows(data)
         by_name = {row["name"]: row for row in rows}
         assert by_name["a.jpg"]["series_id"] == by_name["b.jpg"]["series_id"] == 1
+        assert by_name["a.jpg"]["series_size"] == by_name["b.jpg"]["series_size"] == 2
         assert "похожая серия" in by_name["a.jpg"]["note"]
         assert "похожая серия" in by_name["b.jpg"]["note"]
+
+    def test_quality_flag_small_image_goes_to_note(self):
+        rows = rx._build_detail_rows({"appended": [
+            _appended(r"D:\S\shot.png", r"D:\TARGET\ByDate\2020\shot.png", flags="small_image"),
+        ]})
+        assert rows[0]["note"] == "на проверку качества — маленькое фото (возможно, скриншот/миниатюра)"
+
+    def test_quality_flag_low_confidence_combines_with_other_notes(self):
+        rows = rx._build_detail_rows({"appended": [
+            _appended(r"D:\S\a.jpg", r"D:\TARGET\ByDate\2020\a_1.jpg", flags="low_confidence_photo"),
+        ]})
+        assert "переименовано" in rows[0]["note"]
+        assert "на проверку качества — низкая уверенность распознавания" in rows[0]["note"]
+
+    def test_unknown_flag_value_adds_no_note(self):
+        rows = rx._build_detail_rows({"appended": [
+            _appended(r"D:\S\a.jpg", r"D:\TARGET\ByDate\2020\a.jpg", flags="something_else"),
+        ]})
+        assert rows[0]["note"] == ""
+
+    def test_series_size_column_reflects_cluster_of_three(self):
+        data = {
+            "appended": [
+                _appended(r"D:\SOURCE\a.jpg", r"D:\TARGET\a.jpg"),
+                _appended(r"D:\SOURCE\b.jpg", r"D:\TARGET\b.jpg"),
+                _appended(r"D:\SOURCE\c.jpg", r"D:\TARGET\c.jpg"),
+            ],
+            "near_dup_edges": [
+                {"timestamp": "2026-01-01 00:00:01", "source": r"D:\SOURCE\b.jpg",
+                 "dest": r"D:\TARGET\b.jpg", "matched_dest": r"D:\TARGET\a.jpg",
+                 "category": "appended_near_dup", "hamming": "3"},
+                {"timestamp": "2026-01-01 00:00:02", "source": r"D:\SOURCE\c.jpg",
+                 "dest": r"D:\TARGET\c.jpg", "matched_dest": r"D:\TARGET\b.jpg",
+                 "category": "appended_near_dup", "hamming": "3"},
+            ],
+        }
+        rows = rx._build_detail_rows(data)
+        assert {row["series_size"] for row in rows} == {3}
 
     def test_near_dup_same_folder_dests_get_identical_powershell_command(self):
         """Столбец "Открыть файл (PowerShell)" в детализации обычного прогона (2026-09-05,
@@ -421,7 +461,7 @@ class TestGenerateDetailXlsx:
         header = [c.value for c in ws[1]]
         assert header == rx._COLUMN_HEADERS
         assert ws[1][0].font.bold is True
-        assert ws.auto_filter.ref == f"A1:J{ws.max_row}"
+        assert ws.auto_filter.ref == f"A1:K{ws.max_row}"
         assert ws.freeze_panes == "A2"
 
     def test_many_same_color_rows_all_get_the_color(self, tmp_path):
@@ -461,6 +501,31 @@ class TestGenerateDetailXlsx:
         # write_only больше не пишет row_dimensions -- их нет/дефолтны, это ожидаемо
         assert ws.row_dimensions[3].outline_level == 0
 
+    def test_series_columns_blank_for_non_series_number_for_series(self, tmp_path):
+        """222-1 + хвост: «№ серии» И «Файлов в серии» пусты (не «0») у одиночного файла,
+        числа -- у строк серии."""
+        data = {
+            "appended": [
+                _appended(r"D:\S\a.jpg", r"D:\TARGET\a.jpg"),
+                _appended(r"D:\S\b.jpg", r"D:\TARGET\b.jpg"),
+                _appended(r"D:\S\lone.jpg", r"D:\TARGET\lone.jpg"),
+            ],
+            "near_dup_edges": [
+                {"timestamp": "2026-01-01 00:00:02", "source": r"D:\S\b.jpg",
+                 "dest": r"D:\TARGET\b.jpg", "matched_dest": r"D:\TARGET\a.jpg",
+                 "category": "appended_near_dup", "hamming": "3"},
+            ],
+        }
+        rx.generate_detail_xlsx(data, str(tmp_path / "report.html"))
+        ws = load_workbook(str(tmp_path / rx.DETAIL_XLSX_FILENAME)).active
+        c_id = rx._COLUMN_HEADERS.index("№ серии") + 1
+        c_size = rx._COLUMN_HEADERS.index("Файлов в серии") + 1
+        rows = {ws.cell(row=i, column=2).value: (ws.cell(row=i, column=c_id).value,
+                                                 ws.cell(row=i, column=c_size).value)
+                for i in range(2, ws.max_row + 1)}
+        assert rows["a.jpg"] == (1, 2) and rows["b.jpg"] == (1, 2)
+        assert rows["lone.jpg"] == (None, None)  # обе пусты, не 0
+
     def test_powershell_column_uses_small_font_when_populated(self, tmp_path):
         data = {"skipped": [
             _skipped(r"D:\SOURCE\dup.jpg", r"D:\TARGET\a.jpg", "already_present"),
@@ -471,6 +536,40 @@ class TestGenerateDetailXlsx:
         ps_cell = ws.cell(row=2, column=rx._DETAIL_PS_COMMAND_COL + 1)
         assert ps_cell.value.startswith("Start-Process ")
         assert ps_cell.font.size == rx._SMALL_FONT_SIZE
+
+    def test_column_width_fits_content_but_is_capped(self, tmp_path):
+        """Боевое замечание 2026-09-09: колонка подгоняется по самому длинному значению, но не
+        выше верхнего предела -- узкая колонка не наезжает текстом, широкий путь упирается в
+        предел (дальше -- перенос по словам, следующий тест)."""
+        short = r"D:\S\a.jpg"
+        deep = r"D:\TARGET\ByDate\2015\2015-07\%s\IMG_0001.jpg" % ("Очень длинная папка " * 8)
+        data = {"appended": [
+            _appended(short, r"D:\TARGET\ByDate\2015\a.jpg"),
+            _appended(r"D:\S\b.jpg", deep),
+        ]}
+        rx.generate_detail_xlsx(data, str(tmp_path / "report.html"))
+        ws = load_workbook(str(tmp_path / rx.DETAIL_XLSX_FILENAME)).active
+        dims = ws.column_dimensions
+        # "Куда / с чем дуп" -- колонка F (индекс 6): контент длиннее предела -> ширина == предел
+        assert dims["F"].width == rx._COLUMN_MAX_WIDTHS[5]
+        # "Расширение" -- контент короткий ("jpg") -> ширина заметно меньше предела
+        assert dims["C"].width < rx._COLUMN_MAX_WIDTHS[2]
+
+    def test_overlong_value_wraps_inside_its_cell(self, tmp_path):
+        deep = r"D:\TARGET\ByDate\2015\2015-07\%s\IMG_0001.jpg" % ("Очень длинная папка " * 8)
+        data = {"appended": [_appended(r"D:\S\b.jpg", deep)]}
+        rx.generate_detail_xlsx(data, str(tmp_path / "report.html"))
+        ws = load_workbook(str(tmp_path / rx.DETAIL_XLSX_FILENAME)).active
+        dest_cell = ws.cell(row=2, column=6)
+        assert dest_cell.value == deep  # значение целое, не обрезано
+        assert dest_cell.alignment.wrap_text is True
+
+    def test_short_values_do_not_get_wrap(self, tmp_path):
+        data = {"appended": [_appended(r"D:\S\a.jpg", r"D:\TARGET\ByDate\2015\a.jpg")]}
+        rx.generate_detail_xlsx(data, str(tmp_path / "report.html"))
+        ws = load_workbook(str(tmp_path / rx.DETAIL_XLSX_FILENAME)).active
+        for col in range(1, len(rx._COLUMN_HEADERS) + 1):
+            assert not ws.cell(row=2, column=col).alignment.wrap_text
 
     def test_duplicate_and_problem_rows_get_distinct_visible_font_colors(self, tmp_path):
         out_path = tmp_path / "report.html"
@@ -689,6 +788,7 @@ class TestBuildPassportDetailRows:
         assert row["note"] == "запаролен"
         assert row["color"] == rx._COLOR_PROBLEM
         assert row["group_id"] == 0
+        assert row["group_size"] == 0
 
     def test_failed_archive_row(self):
         stats = _passport_stats(failed_archive_paths=[r"D:\TARGET\Broken.rar"])
@@ -734,6 +834,7 @@ class TestBuildPassportDetailRows:
         assert {row["name"] for row in rows} == {"orig.jpg", "copy1.jpg", "copy2.jpg"}
         group_ids = {row["group_id"] for row in rows}
         assert group_ids == {1}
+        assert {row["group_size"] for row in rows} == {3}
         assert all(row["category"] == "дубликат" for row in rows)
         assert all(row["color"] == rx._COLOR_DUPLICATE for row in rows)
 
@@ -854,6 +955,29 @@ class TestBuildPassportDetailRows:
         rows = rx._build_passport_detail_rows(stats, target_path=r"D:\TARGET")
         assert rows[0]["folder"] == r"D:\TARGET\SomeStray"
 
+    def test_quality_flag_paths_get_own_category_with_reason(self):
+        """2026-09-09: classify_image() при скане Паспорта метит маленькие/нечитаемые
+        изображения; раньше в детализацию не попадали, найти вручную добавленный скриншот
+        было негде."""
+        stats = _passport_stats(quality_flag_paths=[
+            ("Albums/screenshot.png", "small_image"),
+            ("ByDate/broken.jpg", "low_confidence_photo"),
+        ])
+        rows = rx._build_passport_detail_rows(stats, target_path=r"D:\TARGET")
+        by_name = {row["name"]: row for row in rows}
+        assert by_name["screenshot.png"]["category"] == "на проверку качества"
+        assert by_name["screenshot.png"]["note"] == "маленькое фото (возможно, скриншот/миниатюра)"
+        assert by_name["screenshot.png"]["folder"] == r"D:\TARGET\Albums"
+        assert by_name["broken.jpg"]["note"] == "низкая уверенность распознавания"
+        assert all(row["group_id"] == 0 and row["color"] is None for row in rows)
+
+    def test_no_quality_flag_paths_attr_is_tolerated(self):
+        """_passport_stats() (как и старый _FakeAnalyzeStats) не несёт quality_flag_paths --
+        построитель не должен падать (getattr с дефолтом)."""
+        stats = _passport_stats()
+        assert not hasattr(stats, "quality_flag_paths")
+        assert rx._build_passport_detail_rows(stats) == []
+
 
 class TestGeneratePassportDetailXlsx:
     def test_returns_none_when_nothing_found(self, tmp_path):
@@ -876,7 +1000,9 @@ class TestGeneratePassportDetailXlsx:
         # реально записанный .xlsx) -- сама ячейка пуста, что и требовалось для "нет команды".
         # "Открыть файл (PowerShell)" -- ПОСЛЕДНЯЯ колонка (2026-09-05, не перекрывает
         # "Примечание" переполнением текста).
-        assert row == [r"D:\TARGET", "Foto.zip", "архив", 0, "запаролен", None]
+        # «№ группы» и «Файлов в группе» пусты (openpyxl округляет "" до None) -- одиночная
+        # находка, не кластер (222-1 + хвост: обе колонки бланчатся для не-кластеров)
+        assert row == [r"D:\TARGET", "Foto.zip", "архив", None, None, "запаролен", None]
 
     def test_powershell_column_uses_small_font_when_populated(self, tmp_path):
         stats = _passport_stats(exact_dup_edges=[

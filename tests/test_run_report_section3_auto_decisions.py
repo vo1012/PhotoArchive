@@ -64,6 +64,10 @@ class TestRenderRunAutoDecisions:
         html_out = r._render_run_auto_decisions(checklist_new, "target")
         assert "<b>7</b> файлов — без надёжной даты" in html_out
         assert "0000-undated" in html_out
+        # объясняет, что дата не появится сама и что делать вручную (правка 2026-09-09,
+        # старое "Дозреют при повторном прогоне" непонятно и звучало как авто-процесс)
+        assert "сами не получат" in html_out
+        assert "собрать архив заново" in html_out
 
     def test_near_dup_series_count_and_file_sum(self):
         checklist_new = {"near_dup_clusters": [["a", "b"], ["c", "d", "e"]]}
@@ -142,6 +146,8 @@ class TestRenderRunAutoDecisions:
         html_out = r._render_run_auto_decisions(checklist_new, "target")
         assert "<b>5</b> файлов" in html_out
         assert "с пометкой на проверку качества" in html_out
+        # 2026-09-09: раньше был только счётчик, куда смотреть за файлами -- не сказано
+        assert "столбец «Примечание» в детализированном отчёте" in html_out
         assert "2 файла маленького размера" in html_out
         assert "3 файла с низкой уверенностью распознавания" in html_out
 

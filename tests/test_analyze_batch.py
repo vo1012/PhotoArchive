@@ -583,6 +583,46 @@ class TestExifCacheReuse:
         assert not call_sizes, f"expected exiftool_batch() never called on the warm pass, got {call_sizes}"
 
 
+class TestRunAnalyzeQualityFlags:
+    """2026-09-09, боевой вопрос пользователя: classify_image() при скане Паспорта уже метит
+    маленькие изображения (small_image), но run_analyze() результат отбрасывал -- вручную
+    добавленный в архив скриншот Паспорт не показывал. Теперь self_scan собирает
+    n_quality_small_image/n_quality_low_confidence + quality_flag_paths."""
+
+    def _archive_with_small_image(self, tmp_path):
+        target = tmp_path / "MyArchive"
+        albums = target / "Albums" / "A"
+        albums.mkdir(parents=True)
+        (target / "__служебные_файлы").mkdir()
+        _make_jpeg(albums / "big.jpg", size=(800, 600))
+        _make_jpeg(albums / "screenshot.jpg", size=(400, 300))  # < 640, без камеры -> small_image
+        return target
+
+    def test_self_scan_collects_small_image_flag_and_path(self, tmp_path):
+        target = self._archive_with_small_image(tmp_path)
+        workdir = tmp_path / "appdir"
+        workdir.mkdir()
+        cfg = m.Config(source=str(target), target=m._NO_TARGET_PLACEHOLDER, sample_limit=0,
+                        workdir=str(workdir))
+        stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None, self_scan=True)
+        assert stats.n_quality_small_image == 1
+        assert stats.n_quality_low_confidence == 0
+        assert [note for _p, note in stats.quality_flag_paths] == ["small_image"]
+        assert stats.quality_flag_paths[0][0].endswith("screenshot.jpg")
+        # файл всё равно посчитан как обычное доступное фото, не потерян
+        assert stats.n_images_available == 2
+
+    def test_plain_analyze_does_not_collect_quality_flags(self, tmp_path):
+        source = self._archive_with_small_image(tmp_path)
+        workdir = tmp_path / "appdir"
+        workdir.mkdir()
+        cfg = m.Config(source=str(source), target=m._NO_TARGET_PLACEHOLDER, sample_limit=0,
+                        workdir=str(workdir))
+        stats = m.run_analyze(cfg, "analyze", log=lambda *a, **k: None)  # self_scan=False
+        assert stats.n_quality_small_image == 0
+        assert stats.quality_flag_paths == []
+
+
 class TestVideoCacheReuse:
     """Речь пользователя, 2026-08-03 ("сделать ffmpeg?" -> кэш video-полей по аналогии с EXIF
     выше): в отличие от exif_dt/camera/gps (которых в archive_cache не было ДО задачи 2026-08-02
