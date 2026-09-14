@@ -1393,11 +1393,21 @@ def _top_formats_hbar(counter: Counter, width: int = 300, color: str = COLOR_ACC
 
 
 def _fmt_bytes(n: int) -> str:
+    """Живой прогон 2026-09-13: пачка крошечных файлов (иконки/gif на единицы-десятки КБ)
+    суммарно даёт <0.5 МБ -- старая версия (голое `{mb:.0f} МБ`) округляла это до "0 МБ",
+    что рядом с "N файлов добавлено" читается как противоречие ("добавили файлы, но объём
+    0"). Каскад до КБ/Б устраняет именно этот разрыв -- ГБ/МБ-ветки (>= 1 соответствующей
+    единицы) не тронуты, старые assert'ы на "10 МБ"/"2.0 ГБ" в тестах остаются в силе."""
     gb = n / 1024 ** 3
     if gb >= 1:
         return f"{gb:.1f} ГБ"
     mb = n / 1024 ** 2
-    return f"{mb:.0f} МБ"
+    if mb >= 1:
+        return f"{mb:.0f} МБ"
+    kb = n / 1024
+    if kb >= 1:
+        return f"{kb:.0f} КБ"
+    return f"{n} Б"
 
 
 def _stat_tile(value, label: str, extra: str = "") -> str:
@@ -2127,9 +2137,12 @@ def _build_this_run_model(run_stats: dict, level: str) -> dict:
                                   extra=f'{breakdown_html}{near_dup_footnote}'))
     # Пакет п.2 (SESSION-HANDOFF.txt): объём этого прогона -- есть в run_stats с самого
     # появления секции, просто не рендерился нигде (REPORT_STRUCTURE.md, "известные пробелы").
+    # Живая речь пользователя, 2026-09-13: "в архив" убрано -- архив и _Unsorted (спорные) это
+    # разные вещи (см. disputed_label ниже по функции), а bytes_appended вообще не в курсе про
+    # _Unsorted -- лейбл не должен намекать на это разграничение там, где сам не участвует.
     bytes_appended = run_stats.get("bytes_appended", 0)
     if bytes_appended:
-        appended_label = "было бы добавлено в архив" if preview else "добавлено в архив"
+        appended_label = "было бы добавлено" if preview else "добавлено"
         stats_html.append(_stat_tile(_fmt_bytes(bytes_appended), appended_label))
     bytes_saved = run_stats.get("bytes_saved_by_dedup", 0)
     if bytes_saved:
@@ -2180,12 +2193,27 @@ def _build_this_run_model(run_stats: dict, level: str) -> dict:
                          "Не прочитано — не скопировано (ошибка чтения)")
     disputed_label = ("Спорные — были бы сохранены отдельно, не в архиве (_Unsorted)" if preview else
                        "Спорные — сохранены отдельно, не в архиве (_Unsorted)")
-    segments = [
+    # Живая речь пользователя, 2026-09-13: раньше все пять категорий делили ОДИН круг -- на
+    # архиве с большим числом точных дублей (десятки тысяч) редкие категории (в первую очередь
+    # "Спорные", которые как раз требуют ручного разбора) вырождались в невидимый тонкий сектор
+    # (_svg_pie: frac ~= 0.0001 -- дуга неотличима от линии). Два круга по физическому исходу
+    # вместо одного по категории: "Легло на диск" (новые/похожие/спорные -- у всех физическая
+    # копия появилась в TARGET, просто в разных местах -- см. landed ниже) и "Не скопировано"
+    # (дубли/нечитаемое -- копии в TARGET нет вообще). Числа/подписи те же самые, что и в
+    # прежнем едином segments -- перегруппировка, не новая арифметика (тайл "N новых файлов"
+    # выше по-прежнему совпадает с "Новые файлы" здесь -- оба n_new_strict, near-dup отдельно,
+    # как и было, см. test_render_this_run_new_files_tile_excludes_near_dup_matches_chart_number).
+    # Спорные/Не прочитано поменялись цветами (PALETTE[3]/[4]) -- спорным теперь тёплый цвет
+    # (тот же, что раньше был у "Не прочитано"), чтобы категория, требующая внимания
+    # пользователя, не терялась даже в собственном (уже некрупном) круге "Легло на диск".
+    landed_segments = [
         (new_label, n_new_strict, CATEGORY_PALETTE[0]),
-        (dup_label, n_skipped, CATEGORY_PALETTE[1]),
         (near_dup_label, n_near_dup, CATEGORY_PALETTE[2]),
-        (unreadable_label, n_unreadable, CATEGORY_PALETTE[3]),
-        (disputed_label, n_disputed, CATEGORY_PALETTE[4]),
+        (disputed_label, n_disputed, CATEGORY_PALETTE[3]),
+    ]
+    not_copied_segments = [
+        (dup_label, n_skipped, CATEGORY_PALETTE[1]),
+        (unreadable_label, n_unreadable, CATEGORY_PALETTE[4]),
     ]
 
     # 2026-07-26, по просьбе пользователя: разбивка по типу файла для каждой категории этой
@@ -2225,7 +2253,8 @@ def _build_this_run_model(run_stats: dict, level: str) -> dict:
         "fits_after_dryrun_bad": bool(
             preview and "fits_after_dryrun" in run_stats and not run_stats["fits_after_dryrun"]),
         "listdir_failed": run_stats.get("listdir_failed_count", 0),
-        "segments": segments,
+        "landed_segments": landed_segments,
+        "not_copied_segments": not_copied_segments,
         # Итоговая строка с явным двоичным итогом -- легло физически на диск (новые, включая
         # near-dup, которые уже входят в n_new_total, см. photosort_win.py:5713 + спорные,
         # физически копируемые в _Unsorted) против не скопировано вообще (дубли + нечитаемое).
@@ -2317,9 +2346,29 @@ def _render_this_run(run_stats: dict, level: str = "target", verify_link: str = 
     # давала понять, что физически легло в архив, а что нет (напр. "Спорные" копируются в
     # _Unsorted, а "Дубли" -- вообще нет, но оба не входят в счётчик "Итоговый архив") --
     # статус теперь виден прямо в подписи легенды, не только в отдельном тексте карточки.
-    svg, legend = _svg_pie(model["segments"])
-    if svg:
-        parts.append(f'<div class="chart-block">{svg}<div class="legend">{legend}</div></div>')
+    #
+    # Живая речь пользователя, 2026-09-13: два круга вместо одного (см. комментарий у
+    # landed_segments/not_copied_segments в _build_this_run_model) -- "Легло на диск"
+    # (новые+похожие+спорные) и "Не скопировано" (дубли+нечитаемое), каждый со своей
+    # легендой, чтобы редкие категории не тонули в круге, где доминируют точные дубли.
+    landed_svg, landed_legend = _svg_pie(model["landed_segments"])
+    not_copied_svg, not_copied_legend = _svg_pie(model["not_copied_segments"])
+    chart_cells = []
+    if landed_svg:
+        chart_cells.append(
+            f'<div><p><b>Легло на диск</b></p><div class="chart-block">{landed_svg}'
+            f'<div class="legend">{landed_legend}</div></div></div>'
+        )
+    if not_copied_svg:
+        chart_cells.append(
+            f'<div><p><b>Не скопировано</b></p><div class="chart-block">{not_copied_svg}'
+            f'<div class="legend">{not_copied_legend}</div></div></div>'
+        )
+    if len(chart_cells) == 2:
+        parts.append(f'<div class="grid-2">{"".join(chart_cells)}</div>')
+    elif chart_cells:
+        parts.append(chart_cells[0])
+    if chart_cells:
         landed, not_copied = model["landed"], model["not_copied"]
         if landed or not_copied:
             parts.append(
@@ -2723,8 +2772,13 @@ def _render_sheet2(model: dict) -> str:
                 ("Новые файлы", model["decisions"]["appended"], CATEGORY_PALETTE[0]),
                 ("Дубли", model["decisions"]["skipped_present"], CATEGORY_PALETTE[1]),
                 ("Похожие кадры сохранены", model["decisions"]["near_dup"], CATEGORY_PALETTE[2]),
-                ("Не прочитано", model["decisions"]["unreadable"], CATEGORY_PALETTE[3]),
-                ("Спорные", model["decisions"]["disputed"], CATEGORY_PALETTE[4]),
+                # Раунд 228 ревизора: цвета согласованы с _build_this_run_model() (PALETTE[3] --
+                # тёплый -- у "Спорные", не у "Не прочитано") -- та же категория, тот же цвет
+                # везде, где сегодня рисуется decisions-диаграмма, даже в этой ветке (сейчас не
+                # достижима из прод-кода, см. докстринг _generate_from_model(), но не мертва
+                # окончательно -- не тестами защищена сама по себе, только их совпадением).
+                ("Не прочитано", model["decisions"]["unreadable"], CATEGORY_PALETTE[4]),
+                ("Спорные", model["decisions"]["disputed"], CATEGORY_PALETTE[3]),
             ], _n_files, dup_type_caption, ""))
     pie_charts.extend([
         # REVIEW-HANDOFF.md, Раунд 32, задача 1: RAW-файлы не участвуют в tier-расчёте

@@ -2529,21 +2529,28 @@ def test_dump_segment_names_configurable():
     # Config computes the right effective sets, and load_yaml_config() auto-creates a
     # missing photoarchive_config.yaml from DEFAULT_CONFIG_YAML_TEMPLATE.
     code = (
-        "import sys; sys.path.insert(0, %r)\n"
+        "import sys, os; sys.path.insert(0, %r)\n"
         "import photosort_win as m\n"
+        # 2026-09-14: real os.path.abspath()-resolved paths, not literal 'C:/x'/'C:/y' --
+        # those aren't absolute per os.path.isabs() on a POSIX interpreter (only ntpath
+        # would parse a drive letter that way), so Config() used to raise here on Linux
+        # even though the very same literals are absolute on real Windows. abspath()
+        # against the subprocess's own CWD is absolute on either platform.
+        "_src = os.path.abspath('unit_cfg_src')\n"
+        "_tgt = os.path.abspath('unit_cfg_tgt')\n"
         "print('protected_has_five:', m.DUMP_SEGMENT_NAMES_PROTECTED == "
         "frozenset({'bydate', 'albums', 'raw', '_unsorted', '__photoarchive__'}))\n"
         "print('default_excludes_protected:', not (set(n.lower() for n in "
         "m.DEFAULT_DUMP_SEGMENT_NAMES) & m.DUMP_SEGMENT_NAMES_PROTECTED))\n"
         "print('bare_desktop_dump:', m.is_dump_segment('Desktop') is True)\n"
         "print('bare_real_album_not_dump:', m.is_dump_segment('Отпуск 2015') is False)\n"
-        "print('protected_survives_empty_override:', 'albums' in m.Config(source='C:/x', "
-        "target='C:/y', dump_segment_names=[]).dump_segment_names_lower)\n"
-        "print('extra_name_added:', 'yandexdisk' in m.Config(source='C:/x', target='C:/y', "
+        "print('protected_survives_empty_override:', 'albums' in m.Config(source=_src, "
+        "target=_tgt, dump_segment_names=[]).dump_segment_names_lower)\n"
+        "print('extra_name_added:', 'yandexdisk' in m.Config(source=_src, target=_tgt, "
         "extra_dump_segment_names=['YandexDisk']).dump_segment_names_lower)\n"
-        "print('extra_prefix_added:', 'onedrive' in m.Config(source='C:/x', target='C:/y', "
+        "print('extra_prefix_added:', 'onedrive' in m.Config(source=_src, target=_tgt, "
         "extra_dump_segment_prefixes=['OneDrive']).dump_segment_prefixes_tuple)\n"
-        "import tempfile, os\n"
+        "import tempfile\n"
         "d = tempfile.mkdtemp()\n"
         "p = os.path.join(d, 'photoarchive_config.yaml')\n"
         "logs = []\n"
@@ -2658,13 +2665,17 @@ def test_dump_segment_config_ignores_nested_yaml_alias_bomb():
           "turning a few-hundred-byte config file into ~15s of CPU and hundreds of MB of string "
           "data. Fix: _clean_str_set() drops non-string elements instead of str()-ing them ===")
     code = (
-        "import sys, time; sys.path.insert(0, %r)\n"
+        "import sys, time, os; sys.path.insert(0, %r)\n"
         "import photosort_win as m\n"
+        # 2026-09-14: os.path.abspath(), not literal 'C:/x'/'C:/y' -- see the same fix's
+        # comment in test_dump_segment_names_configurable() above.
+        "_src = os.path.abspath('unit_cfg_src')\n"
+        "_tgt = os.path.abspath('unit_cfg_tgt')\n"
         "bomb = ['x'] * 10\n"
         "for _ in range(8):\n"
         "    bomb = [bomb] * 10\n"  # 10**8 leaves, but O(1) per level via shared references
         "t0 = time.time()\n"
-        "cfg = m.Config(source='C:/x', target='C:/y', "
+        "cfg = m.Config(source=_src, target=_tgt, "
         "extra_dump_segment_names=['YandexDisk', bomb], "
         "extra_dump_segment_prefixes=['backup_', bomb])\n"
         "elapsed = time.time() - t0\n"
