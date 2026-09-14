@@ -547,6 +547,17 @@ def test_render_this_run_shows_bytes_appended_free_disk_and_undated():
     assert "не удалось бы распознать дату" in html_out
 
 
+def test_fmt_bytes_cascades_to_kb_and_bytes_instead_of_rounding_to_zero_mb():
+    """Живой прогон 2026-09-13: 23 крошечных файла (иконки/gif из старой папки установщика)
+    суммарно дали <0.5 МБ -- до фикса `_fmt_bytes` показывал "0 МБ" рядом с "23 файла
+    добавлено", что читалось как противоречие. КБ/Б-ветки -- ниже порога МБ/КБ соответственно,
+    ГБ/МБ-пороги (см. test_render_this_run_shows_bytes_appended_free_disk_and_undated выше) не
+    меняются."""
+    assert r._fmt_bytes(300_000) == "293 КБ"  # < 0.5 МБ -- было бы "0 МБ" до фикса
+    assert r._fmt_bytes(500) == "500 Б"  # < 1 КБ
+    assert r._fmt_bytes(0) == "0 Б"
+
+
 def test_render_this_run_shows_meta_line_with_paths_and_date():
     """Речь пользователя, 2026-08-09: раньше "Пробный прогон"/"Пополнение архива" НЕ получали
     дату вовсе (прежнее решение задачи 10 явно исключало этот заголовок) -- пользователь прямо
@@ -746,6 +757,38 @@ def test_render_this_run_legend_and_summary_hypothetical_in_preview():
     assert "Спорные — были бы сохранены отдельно, не в архиве (_Unsorted)" in html_out
     assert ("Итого: 6 файлов легло бы физически (новые + похожие + спорные), "
             "3 файла не было бы скопировано (дубли + не прочитано).") in html_out
+
+
+def test_render_this_run_splits_landed_and_not_copied_into_two_diagrams():
+    """Живая речь пользователя, 2026-09-13: на архиве с большим числом точных дублей "Спорные"
+    вырождались в невидимый тонкий сектор одного общего круга. Теперь два круга -- "Легло на
+    диск" (новые/похожие/спорные) и "Не скопировано" (дубли/нечитаемое), в grid-2 (не один
+    <div class="chart-block">, как раньше)."""
+    run_stats = {
+        "appended_images": 5, "appended_videos": 0,
+        "skipped_present": 2, "appended_near_dup": 1,
+        "unreadable_count": 1, "disputed": 1,
+    }
+    html_out = r._render_this_run(run_stats, level="target")
+    assert '<div class="grid-2">' in html_out
+    assert "<p><b>Легло на диск</b></p>" in html_out
+    assert "<p><b>Не скопировано</b></p>" in html_out
+    assert html_out.count('class="chart-block"') == 2
+    # Спорные -- тёплый (ранее принадлежавший "Не прочитано") цвет, чтобы категория, которой
+    # нужно внимание пользователя, не терялась даже в уменьшенном круге "Легло на диск".
+    assert f'background:{r.CATEGORY_PALETTE[3]}' in html_out  # Спорные
+    assert f'background:{r.CATEGORY_PALETTE[4]}' in html_out  # Не прочитано
+
+
+def test_render_this_run_single_diagram_when_nothing_was_skipped():
+    """Если "Не скопировано" пусто (не было ни дублей, ни нечитаемого) -- второй круг/заголовок
+    не рендерится вовсе, не пустая карточка рядом с первым (см. len(chart_cells)==2 в
+    _render_this_run())."""
+    run_stats = {"appended_images": 5, "appended_videos": 0}
+    html_out = r._render_this_run(run_stats, level="target")
+    assert '<div class="grid-2">' not in html_out
+    assert "<p><b>Легло на диск</b></p>" in html_out
+    assert "<p><b>Не скопировано</b></p>" not in html_out
 
 
 def _cloudlike_profile(n=40, years=4, cameras=3, date_subdirs=0, name="Отпуск"):

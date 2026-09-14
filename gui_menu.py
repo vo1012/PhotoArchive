@@ -2033,7 +2033,8 @@ class _Wizard:
         if messagebox.askyesno(
                 "PhotoArchive — прервать работу?",
                 "Прервать работу? Уже разложенные файлы останутся на месте, будет создан "
-                "частичный отчёт. Остановка может занять несколько секунд.",
+                "частичный отчёт. Остановка обычно занимает несколько секунд, в редких "
+                "случаях (очень большое видео) — до минуты.",
                 icon="warning", default="no", parent=self.root):
             self._run_bus.cancel_event.set()
 
@@ -2380,8 +2381,9 @@ class _Wizard:
         from tkinter import messagebox
         if not messagebox.askyesno(
                 "PhotoArchive — работа ещё идёт",
-                "Работа ещё идёт. Прервать и закрыть программу? Это может занять несколько "
-                "секунд.", icon="warning", default="no", parent=self.root):
+                "Работа ещё идёт. Прервать и закрыть программу? Это обычно занимает "
+                "несколько секунд, в редких случаях (очень большое видео) — до минуты.",
+                icon="warning", default="no", parent=self.root):
             return
         self._run_bus.cancel_hard = True
         self._run_bus.cancel_event.set()

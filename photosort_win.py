@@ -79,7 +79,7 @@ warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
 # blanket ignore of all warnings, so any other future PIL/library warning still surfaces.
 warnings.filterwarnings("ignore", message="Palette images with Transparency.*", category=UserWarning)
 
-__version__ = "0.6.15"          # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
+__version__ = "0.6.16"          # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
                                  # с RULES_VERSION ниже (та про совместимость архива, а не exe)
 RULES_VERSION = "2026-08-11"   # дата последнего изменения бизнес-правил -- см. RULES.md;
                                 # менять руками при изменении логики раскладки/дедупа/дат
@@ -7325,6 +7325,43 @@ def clear_target_lock(target: str, log=print) -> bool:
         return False
 
 
+def _copy_file_cooperative(src_path: str, dst_path: str, chunk_size: int = 4 * 1024 * 1024,
+                            progress_cb=None) -> None:
+    """shutil.copy2()-эквивалент (данные + метаданные), но чанками с progress_cb после
+    каждого чанка -- та же мёртвая зона, что sha256_file() уже закрывает для хеширования
+    (см. её докстринг), только для самого копирования. Без этого одно многогигабайтное
+    видео держало «Прервать работу»/крестик окна неотзывчивыми на всё время копирования
+    (живая находка пользователя, боевой прогон 2026-09-12): cancel_event выставлялся, но
+    единственный блокирующий shutil.copy2() ни разу не заглядывал в _cooperative_
+    checkpoint(), так что отмена ждала конца копии (минуты на большом файле), а не долей
+    секунды.
+
+    readinto()/memoryview() в один переиспользуемый буфер -- тот же приём, что CPython's
+    shutil._copyfileobj_readinto() на Windows-пути shutil.copy2() (голый .read(chunk_size)
+    аллоцирует новый bytes-объект на каждый чанк). На реальной Windows-машине (самопроверка
+    перед пушем, 300МБ-файл) голый .read()-цикл оказался в ~3 раза медленнее shutil.copy2();
+    независимая проверка на Linux (REVIEW-HANDOFF.md Раунд 225) разницы read/readinto не
+    нашла вовсе -- там аллокация bytes-объекта не является узким местом, обе техники ровно
+    на ~30% медленнее shutil.copy2(). Платформенно-специфичная цифра, не универсальная
+    причина -- сам выбор
+    readinto/memoryview всё равно верный (соответствует нативной Windows-технике), но не
+    считать «~3x» законом природы."""
+    with open(src_path, "rb") as fsrc, open(dst_path, "wb") as fdst:
+        buf = bytearray(chunk_size)
+        with memoryview(buf) as mv:
+            while True:
+                n = fsrc.readinto(mv)
+                if not n:
+                    break
+                if n < chunk_size:
+                    fdst.write(mv[:n])
+                else:
+                    fdst.write(mv)
+                if progress_cb is not None:
+                    progress_cb()
+    shutil.copystat(src_path, dst_path)
+
+
 def atomic_copy(src_path: str, dest_path: str, expected_sha256: str, margin_bytes: int):
     """Copy src -> temp file in the same directory as dest -> verify hash matches source
     -> atomic rename to dest_path. A broken/partial copy can never end up at dest_path.
@@ -7345,7 +7382,9 @@ def atomic_copy(src_path: str, dest_path: str, expected_sha256: str, margin_byte
     fd, tmp_path = tempfile.mkstemp(prefix=".photosort_tmp_", dir=winlong(dest_dir))
     os.close(fd)
     try:
-        shutil.copy2(winlong(src_path), tmp_path)
+        _copy_file_cooperative(
+            winlong(src_path), tmp_path,
+            progress_cb=(_cooperative_checkpoint if os.name == "nt" else None))
         # B (REVIEW-HANDOFF.md Раунд 148, замечание 2): пост-копи верификация хеша на КАЖДОЕ
         # размещение файла -- для одного гигантского видео та же «мёртвая зона» для паузы по
         # пробелу, что и уже покрытый хеш архива. progress_cb -- то же, что в analyze_batch().
