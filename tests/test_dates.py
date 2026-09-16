@@ -107,7 +107,7 @@ def test_parse_exif_date_rejects_implausible_year(s):
     # REVIEW-HANDOFF.md Раунд 175-1: неправдоподобный EXIF-год не должен становиться Tier A.
     # Прежний код принимал любой год 1..9999 (datetime() конструируется) -> уверенная дата,
     # которая на Windows доходила до strftime() (< 1900 отклоняется CRT).
-    assert m.parse_exif_date(s) is None
+    assert m.parse_exif_date(s) == (None, False)
 
 
 @pytest.mark.parametrize("s,expected", [
@@ -115,7 +115,39 @@ def test_parse_exif_date_rejects_implausible_year(s):
     ("1900:01:01 00:00:00", datetime(1900, 1, 1)),   # ровно на нижней границе
 ])
 def test_parse_exif_date_accepts_plausible_year(s, expected):
-    assert m.parse_exif_date(s) == expected
+    assert m.parse_exif_date(s) == (expected, False)
+
+
+@pytest.mark.parametrize("s,expected", [
+    # Однозначный порядок: 25 месяцем быть не может -> точно день, не ambiguous.
+    ("25/03/2012 08:00:00", datetime(2012, 3, 25, 8, 0, 0)),
+    ("03/25/2012 08:00:00", datetime(2012, 3, 25, 8, 0, 0)),
+    # Точка вместо слэша (европейский формат), тоже однозначный порядок.
+    ("25.03.2012 08:00:00", datetime(2012, 3, 25, 8, 0, 0)),
+    # Год-первым, но со слэшами/дефисами вместо двоеточий, без секунд.
+    ("2012/07/05 17:13", datetime(2012, 7, 5, 17, 13)),
+    ("2012-07-05 17:13:00", datetime(2012, 7, 5, 17, 13, 0)),
+    # Обе стороны равны -- порядок не влияет на результат, не помечается ambiguous.
+    ("07/07/2012 09:00:00", datetime(2012, 7, 7, 9, 0, 0)),
+])
+def test_parse_exif_date_accepts_nonstandard_separators(s, expected):
+    assert m.parse_exif_date(s) == (expected, False)
+
+
+@pytest.mark.parametrize("s,expected", [
+    # Живой баг-репорт 2026-09-15: Samsung SGH-i900 ("Mits Camera") пишет
+    # DateTimeOriginal как "DD/MM/YYYY HH:MM" вместо стандартного EXIF-формата --
+    # exiftool отдаёт её сырой строкой, прежний regex отбрасывал целиком (дата
+    # проваливалась в Tier C, медиана по папке уводила на годы в сторону). Обе
+    # стороны (5 и 7) <= 12 -- порядок принципиально неразличим форматом.
+    ("05/07/2012 17:13", datetime(2012, 7, 5, 17, 13)),
+    ("05.07.2012 17:13", datetime(2012, 7, 5, 17, 13)),
+    ("03/07/2012 10:00:00", datetime(2012, 7, 3, 10, 0, 0)),
+])
+def test_parse_exif_date_ambiguous_day_month_defaults_day_first(s, expected):
+    # Текущее умолчание -- day-first (см. комментарий в parse_exif_date), помечается
+    # ambiguous=True, чтобы resolve_date() понизил дату до Tier B ("дата приблизительная").
+    assert m.parse_exif_date(s) == (expected, True)
 
 
 def test_best_exif_datetime_skips_implausible_key_falls_to_next():
@@ -125,6 +157,37 @@ def test_best_exif_datetime_skips_implausible_key_falls_to_next():
     tags = {"DateTimeOriginal": "1850:01:01 00:00:00", "CreateDate": "2015:06:15 12:00:00"}
     dt, key = m.best_exif_datetime(tags)
     assert (dt, key) == (datetime(2015, 6, 15, 12, 0, 0), "CreateDate")
+
+
+def test_best_exif_datetime_marks_ambiguous_source():
+    # ambiguous=True (день/месяц угадан) кодируется суффиксом в exif_dt_source (см.
+    # _EXIF_DT_SOURCE_AMBIGUOUS_SUFFIX) -- resolve_date() ниже его распознаёт и понижает тир.
+    tags = {"DateTimeOriginal": "03/07/2012 10:00:00"}
+    dt, key = m.best_exif_datetime(tags)
+    assert dt == datetime(2012, 7, 3, 10, 0, 0)
+    assert key == "DateTimeOriginal" + m._EXIF_DT_SOURCE_AMBIGUOUS_SUFFIX
+
+
+def test_resolve_date_downgrades_ambiguous_exif_to_tier_b():
+    # Обсуждение с пользователем, 2026-09-15: угаданный день/месяц -- это дата ИЗ EXIF, но
+    # порядок в ней предположение, не факт; отчёт обязан показать её как приблизительную
+    # (Tier B), а не молча выдать за надёжный Tier A.
+    ctx = m.DateContext()
+    exif_dt, exif_source = m.best_exif_datetime({"DateTimeOriginal": "03/07/2012 10:00:00"})
+    dt, tier, conf, evidence, precision = m.resolve_date(
+        ctx, "IMG_0001.jpg", 1000.0, exif_dt=exif_dt, exif_source=exif_source)
+    assert (dt, tier, conf, evidence, precision) == (
+        datetime(2012, 7, 3, 10, 0, 0), "B", "medium", "DateTimeOriginal", "day")
+
+
+def test_resolve_date_keeps_unambiguous_exif_as_tier_a():
+    # Контрольный случай: день > 12 -> порядок однозначен, никакого понижения.
+    ctx = m.DateContext()
+    exif_dt, exif_source = m.best_exif_datetime({"DateTimeOriginal": "25/03/2012 08:00:00"})
+    dt, tier, conf, evidence, precision = m.resolve_date(
+        ctx, "IMG_0001.jpg", 1000.0, exif_dt=exif_dt, exif_source=exif_source)
+    assert (dt, tier, conf, evidence, precision) == (
+        datetime(2012, 3, 25, 8, 0, 0), "A", "high", "DateTimeOriginal", "day")
 
 
 def test_safe_dt_from_mtime_valid_value():
@@ -207,17 +270,41 @@ class TestResolveDate:
             ctx, "Поездка 2019/no_date_in_name.jpg", mtime=1000.0)
         assert (tier, evidence, precision) == ("B", "folder_name_year", "year")
 
-    def test_folder_cluster_inference_from_earlier_sibling(self):
+    def test_folder_cluster_inference_when_own_mtime_unusable(self):
+        # 2026-09-15: после смены приоритета (см. класс ниже) folder-cluster inference
+        # срабатывает, только когда у файла СОВСЕМ нет пригодного своего mtime (см.
+        # _safe_dt_from_mtime()) -- mtime=1e30 тот же переполняющий мусорный сентинел, что и
+        # в test_bogus_mtime_falls_to_tier_d_instead_of_crashing.
         ctx = m.DateContext()
         exif_dt = datetime(2022, 5, 1, 10, 0, 0)
         m.resolve_date(ctx, "Альбом/a.jpg", mtime=1000.0, exif_dt=exif_dt, exif_source="exif")
-        # Second file in the same folder has no reliable signal of its own -- borrows the
-        # tier A/B neighbor's date via folder-cluster median.
         dt, tier, confidence, evidence, precision = m.resolve_date(
-            ctx, "Альбом/no_signal.jpg", mtime=1001.0)
+            ctx, "Альбом/no_signal.jpg", mtime=1e30)
         assert dt == exif_dt
         assert (tier, confidence, evidence, precision) == (
             "C", "low", "inferred_from_folder_cluster", "day")
+
+    def test_own_mtime_wins_over_folder_cluster_median_even_far_off(self):
+        # Обсуждение с пользователем 2026-09-15 -- два живых случая подряд:
+        # 1) свадьба, 18 дней расхождения: файл без EXIF (телефон) получал ЗАСТРЯВШУЮ медиану
+        #    папки вместо своего mtime, хотя рядом лежал снимок с камеры того же дня с
+        #    настоящим EXIF -- одно событие разъезжалось по двум месяцам архива.
+        # 2) тот же архив, расхождения в МЕСЯЦЫ (реальные файлы с сентябрьским/декабрьским
+        #    mtime всё равно получали majовскую медиану) -- промежуточный фикс "доверять
+        #    mtime, только если расхождение < N дней" не мог закрыть это разумным порогом.
+        # Пользователь: файлы с одинаковым именем/номером в одной "папке" на практике
+        # встречались из РАЗНЫХ источников (устройств/приложений) -- интерполяция/агрегация по
+        # соседям в принципе не гарантированно относится к этому файлу. Собственный
+        # (не-артефактный) mtime -- единственный сигнал именно про ЭТОТ файл, побеждает
+        # безусловно, той же логикой, что использует обычный просмотрщик фото.
+        ctx = m.DateContext()
+        exif_dt = datetime(2013, 6, 18, 13, 10, 40)
+        m.resolve_date(ctx, "Свадьба/camera.jpg", mtime=1000.0, exif_dt=exif_dt, exif_source="exif")
+        far_mtime_dt = datetime(2013, 12, 28, 17, 51, 13)  # реальный случай: тот же архив
+        dt, tier, confidence, evidence, precision = m.resolve_date(
+            ctx, "Свадьба/phone_no_exif.jpg", mtime=far_mtime_dt.timestamp())
+        assert dt == far_mtime_dt
+        assert (tier, confidence, evidence, precision) == ("C", "low", "mtime", "day")
 
     def test_mtime_fallback_when_not_a_copy_artifact(self):
         ctx = m.DateContext()
@@ -249,11 +336,14 @@ class TestResolveDate:
     def test_folder_cluster_inference_with_prewar_neighbor(self):
         # Точный путь краша 2026-08-31: resolve_date() -> folder_cluster_median() на кластере
         # с довоенной Tier A-датой. На Windows прежний код падал здесь OSError [Errno 22].
+        # mtime=1e30 -- own mtime намеренно непригоден (см. _safe_dt_from_mtime()), чтобы дойти
+        # именно до folder-cluster inference (mtime теперь проверяется ПЕРВЫМ, см.
+        # test_own_mtime_wins_over_folder_cluster_median_even_far_off выше).
         ctx = m.DateContext()
         exif_dt = datetime(1935, 7, 1, 12, 0, 0)
         m.resolve_date(ctx, "Плёнки/scan01.jpg", mtime=1000.0, exif_dt=exif_dt, exif_source="exif")
         dt, tier, confidence, evidence, precision = m.resolve_date(
-            ctx, "Плёнки/scan02_no_exif.jpg", mtime=1001.0)
+            ctx, "Плёнки/scan02_no_exif.jpg", mtime=1e30)
         assert dt == exif_dt
         assert (tier, evidence) == ("C", "inferred_from_folder_cluster")
 

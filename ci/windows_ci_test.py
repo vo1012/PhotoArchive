@@ -219,8 +219,19 @@ def test_mirror_raw():
     image(jpg, 1500, 1100, exif=True)
     with open(os.path.join(src, "IMG_0001.CR2"), "wb") as f:
         f.write(b"FAKE-CR2-PAIRED" + os.urandom(256))
-    with open(os.path.join(src, "IMG_0002.CR2"), "wb") as f:
+    lone_raw = os.path.join(src, "IMG_0002.CR2")
+    with open(lone_raw, "wb") as f:
         f.write(b"FAKE-CR2-LONE" + os.urandom(256))
+    # 2026-09-16: явный старый mtime -- Tier C (resolve_date()) с 2026-09-15 проверяет
+    # СОБСТВЕННЫЙ mtime файла ПЕРВЫМ (см. photosort_win.py, комментарий "Живой баг-репорт
+    # 2026-09-15"), folder_cluster_median() -- только запасной вариант. Без этой строки файл
+    # получает mtime "сейчас" (момент создания фикстуры этим тестом) и попадает в ByDate-папку
+    # текущего месяца прогона CI, а не в "2019-07 [PhotoArchive]" ниже -- тест ломался бы в
+    # любой день, когда фикстура создаётся не в июле 2019. Цель этого теста -- проверить
+    # MIRROR_RAW (копируется ли одиночный RAW без пары), а не поведение датировки по mtime
+    # (для него есть отдельные тесты) -- старый mtime убирает эту путаницу.
+    _old_ts = time.mktime(datetime(2019, 7, 15, 12, 0, 0).timetuple())
+    os.utime(lone_raw, (_old_ts, _old_ts))
 
     tgt_true = os.path.join(WORK, "target_raw_true")
     run_photosort(src, tgt_true)

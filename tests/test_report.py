@@ -417,9 +417,28 @@ def test_build_model_from_rows_empty_data_has_no_crash_and_hides_categories():
     (r"C:\T\dst\ByDate\2026\2026-00 month-unknown [PhotoArchive]\file.jpg", (2026, None, None, None)),
     (r"C:\T\dst\RAW\ByDate\2026\2026-07-18 Москва [PhotoArchive]\file.cr2", (2026, 7, 18, "Москва")),
     (r"C:\T\dst\Albums\Отпуск 2019\file.jpg", None),  # не под ByDate вовсе
+    # 2026-09-15: место теперь отдельная подпапка ВНУТРИ day/month-папки (см.
+    # build_bydate_dest_dir()), а не часть её имени -- по пути место больше не
+    # восстановить (функция смотрит только на сегмент СРАЗУ после года), это осознанно:
+    # build_model_from_rows() подхватывает его резервом из колонки "place" appended.csv
+    # (см. test_city_recovered_from_place_column_when_place_is_a_bydate_subfolder ниже).
+    (r"C:\T\dst\ByDate\2026\2026-07 [PhotoArchive]\Москва\file.jpg", (2026, 7, None, None)),
 ])
 def test_parse_bydate_segment(dest, expected):
     assert r._parse_bydate_segment(dest) == expected
+
+
+def test_city_recovered_from_place_column_when_place_is_a_bydate_subfolder():
+    # Обсуждение с пользователем 2026-09-15: место переехало из имени day/month-папки в
+    # отдельную подпапку внутри неё -- _parse_bydate_segment() больше не видит место по
+    # пути (см. кейс выше), но build_model_from_rows() уже читает "place" отдельной
+    # колонкой appended.csv (изначально резерв для Albums\..., где ByDate в пути нет
+    # вовсе) -- тот же резерв бесплатно закрывает и этот случай, без правок в report.py.
+    rows = [{"timestamp": "t", "source": "s1",
+             "dest": r"C:\T\dst\ByDate\2026\2026-07 [PhotoArchive]\Москва\file.jpg",
+             "reason": "appended_new", "flags": "", "date": "2026-07-01", "place": "Москва"}]
+    model = r.build_model_from_rows({"appended": rows})
+    assert model["cities"] == Counter({"Москва": 1})
 
 
 def test_raw_without_jpeg_counted_in_dates_raw_with_jpeg_excluded():

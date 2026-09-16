@@ -33,10 +33,20 @@ def test_valid_config_derives_expected_roots(tmp_path):
     ("sample_limit", -1),
     ("read_retry_count", -1),
     ("read_retry_delay", -0.1),
+    ("classification_filter", "bogus"),
 ])
 def test_invalid_field_values_raise(tmp_path, field, value):
     with pytest.raises(ValueError):
         _make(tmp_path, **{field: value})
+
+
+def test_classification_filter_defaults_to_all(tmp_path):
+    assert _make(tmp_path).classification_filter == "all"
+
+
+@pytest.mark.parametrize("value", ["all", "albums_only", "bydate_only"])
+def test_classification_filter_accepts_valid_values(tmp_path, value):
+    assert _make(tmp_path, classification_filter=value).classification_filter == value
 
 
 def test_relative_source_rejected(tmp_path):

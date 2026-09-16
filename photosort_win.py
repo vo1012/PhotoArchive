@@ -49,7 +49,7 @@ from collections import defaultdict, Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from PIL import Image
+from PIL import Image, ImageOps
 import pillow_heif
 import imagehash
 import yaml
@@ -79,9 +79,9 @@ warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
 # blanket ignore of all warnings, so any other future PIL/library warning still surfaces.
 warnings.filterwarnings("ignore", message="Palette images with Transparency.*", category=UserWarning)
 
-__version__ = "0.6.16"          # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
+__version__ = "0.6.17"          # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
                                  # с RULES_VERSION ниже (та про совместимость архива, а не exe)
-RULES_VERSION = "2026-08-11"   # дата последнего изменения бизнес-правил -- см. RULES.md;
+RULES_VERSION = "2026-09-15"   # дата последнего изменения бизнес-правил -- см. RULES.md;
                                 # менять руками при изменении логики раскладки/дедупа/дат
 __copyright__ = "© 2026 Vladimir Oleynikov"  # держим строку короткой и везде идентичной
                                               # LICENSE, а не только там, куда мало кто
@@ -2461,6 +2461,16 @@ class Config:
     small_image_px: int = 640
     free_space_margin_gb: float = 10.0
     dry_run: bool = False
+    # 2026-09-15, прямая просьба пользователя (переключатель "альбом"/"по дате"/"всё подряд"):
+    # "all" (по умолчанию) -- поведение не меняется вообще. "albums_only"/"bydate_only" --
+    # SourceWalker (_walk_dir()) отбрасывает противоположную классификацию ДО чтения байт файла
+    # (см. find_album()/is_dump_segment() -- решение чисто по сегментам пути), давая пользователю
+    # прогнать несколько ПЕРЕСЕКАЮЩИХСЯ источников в два прохода (сначала albums_only на всех,
+    # потом bydate_only на всех) -- Фаза 1 каждого прогона переиндексирует уже собранный TARGET,
+    # поэтому альбомная копия из ЛЮБОГО источника гарантированно попадёт в пул дедупа раньше
+    # дамп-копии из ДРУГОГО источника, даже если тот на диске обрабатывается позже. Только GUI
+    # (экран 2, режим "Создание архива") -- CLI-флага нет по прямой просьбе пользователя.
+    classification_filter: str = "all"  # "all" | "albums_only" | "bydate_only"
     sample_limit: int = 0
     read_retry_count: int = 3
     read_retry_delay: float = 5.0
@@ -2702,6 +2712,10 @@ class Config:
         # (_source_drive_is_bydate_only()) по тому же мотиву, что и у _volume_likely_gone() --
         # см. её докстринг.
         self.source_bydate_only = _source_drive_is_bydate_only(self.source, self.bydate_only_drives)
+        if self.classification_filter not in ("all", "albums_only", "bydate_only"):
+            raise ValueError(
+                f"classification_filter должен быть 'all'/'albums_only'/'bydate_only', "
+                f"получено: {self.classification_filter!r}")
 
 # ============================================================================
 # DB  (from pipeline/db.py)
@@ -2770,6 +2784,15 @@ CREATE TABLE IF NOT EXISTS archive_cache (
     width INTEGER,
     height INTEGER,
     bitrate INTEGER,
+    -- REVIEW-HANDOFF.md Раунд 234, находка 234-1: в отличие от source_meta_cache
+    -- (_SOURCE_META_CACHE_TTL_DAYS), archive_cache вообще не имеет TTL -- файл, уже лежащий в
+    -- TARGET, стабилен по size/mtime между прогонами, поэтому кэш-хит по ним держится вечно.
+    -- Когда image_phash_and_size() меняет алгоритм (напр. exif_transpose(), b556f5c/2026-09-15)
+    -- так, что для ТОГО ЖЕ файла получается другой phash/width/height, старые строки без этой
+    -- версии остаются НАВСЕГДА недостижимы для нового алгоритма -- единственная инвалидация,
+    -- не завязанная на TTL/изменение файла. NULL -- строки, посчитанные до этой колонки
+    -- (см. _ARCHIVE_PHASH_VERSION в index_archive()) -- по определению устарели.
+    phash_version INTEGER,
     -- Речь пользователя, 2026-08-02 ("почему Фаза 1 быстрая, а паспорт медленный -- разве не
     -- один алгоритм?"): Фаза 1 никогда не зовёт exiftool (ей нужны только sha256/pHash для
     -- пула дедупа) -- паспорт зовёт БЕЗУСЛОВНО на каждый файл (дата/камера/GPS), даже при
@@ -2848,11 +2871,17 @@ def _migrate_archive_cache_exif_columns(conn: sqlite3.Connection) -> None:
     накопил реальные sha256/pHash пользователя) -- новые колонки сами не появятся, ALTER TABLE
     нужен явно. Проверка через PRAGMA table_info (не try/except на "duplicate column" -- та
     ошибка на некоторых сборках sqlite3 неотличима по тексту от других OperationalError, дороже
-    и менее прямолинейно, чем прочитать список колонок заранее)."""
+    и менее прямолинейно, чем прочитать список колонок заранее).
+
+    phash_version (REVIEW-HANDOFF.md Раунд 234, находка 234-1) -- тот же приём, для той же
+    причины: существующий archive_cache.db не получит новую колонку сам, ALTER TABLE обязателен;
+    ADD COLUMN без DEFAULT даёт NULL старым строкам -- ровно нужное значение "версия неизвестна,
+    считать устаревшей" (см. index_archive())."""
     existing = {row[1] for row in conn.execute("PRAGMA table_info(archive_cache)")}
     for col, coltype in (
         ("exif_cached", "INTEGER"), ("exif_dt", "TEXT"), ("exif_dt_source", "TEXT"),
         ("camera", "TEXT"), ("gps_lat", "REAL"), ("gps_lon", "REAL"),
+        ("phash_version", "INTEGER"),
     ):
         if col not in existing:
             conn.execute(f"ALTER TABLE archive_cache ADD COLUMN {col} {coltype}")
@@ -2973,11 +3002,31 @@ def _pil_open_source(src):
     return winlong(src)
 
 
+# REVIEW-HANDOFF.md Раунд 234, находка 234-1: версия алгоритма image_phash_and_size() --
+# бампится, когда меняется способ вычисления phash/width/height для ТОГО ЖЕ файла (пример --
+# добавление exif_transpose() ниже, b556f5c/2026-09-15, версия 1 -> 2). index_archive()
+# сверяет её с колонкой phash_version в archive_cache (SCHEMA выше) на cache-хите по
+# ftype=="image" -- без этого archive_cache, у которого (в отличие от source_meta_cache) нет
+# TTL, отдавал бы посчитанный старым алгоритмом phash бесконечно для уже заархивированных
+# файлов, ни разу его не переисчисляя.
+_ARCHIVE_PHASH_VERSION = 2
+
+
 def image_phash_and_size(src):
     """Returns (phash_hex, width, height) or (None, None, None) if unreadable.
-    src -- путь ЛИБО байты файла (read-once, см. _pil_open_source() и комментарий выше)."""
+    src -- путь ЛИБО байты файла (read-once, см. _pil_open_source() и комментарий выше).
+
+    ImageOps.exif_transpose() применяется ДО хеширования/размера -- живой баг-репорт
+    2026-09-15: то же самое фото, сохранённое один раз с "сырыми" (напр. landscape)
+    пикселями + EXIF Orientation=6, другой раз уже повёрнутым (portrait) и Orientation=1
+    (типичный результат ре-сохранения приложением/облаком/синком) -- без этой коррекции их
+    phash получаются НИКАК не связанными (hamming ~32 из 64, как у случайных разных фото), а
+    w/h -- взаимно обратными (aspect тоже не совпадает, near-dup не находит даже подходящий
+    бакет кандидатов). После exif_transpose() оба варианта дают БИТ В БИТ идентичный phash
+    (проверено на живой паре файлов из архива пользователя)."""
     try:
         with Image.open(_pil_open_source(src)) as im:
+            im = ImageOps.exif_transpose(im)
             im = im.convert("L")
             w, h = im.size
             ph = imagehash.phash(im)
@@ -3126,16 +3175,64 @@ EXIF_TAGS = [
     "-FileType",
 ]
 
-_DATE_RE = re.compile(r"^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})")
+_DATE_RE = re.compile(
+    r"^(\d{4})[:\-/](\d{1,2})[:\-/](\d{1,2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?"
+)
+# Некоторые камеры/телефоны (напр. Samsung SGH-i900, ПО "Mits Camera") пишут
+# DateTimeOriginal НЕ в стандартном EXIF-порядке "YYYY:MM:DD", а день/месяц через
+# "/" или "." -- exiftool не смог её нормализовать и отдаёт сырой строкой как
+# есть. Просмотрщики (Проводник и т.п.) парсят её лениво и показывают верно,
+# прежний regex -- нет: дата целиком проваливалась дальше по resolve_date() до
+# Tier C (медиана дат по папке), которая может увести на годы в сторону от
+# истины (живой баг-репорт 2026-09-15: телефонное фото июля 2012 ушло в
+# ByDate/2007 -- унаследовало дату от соседей по исходной папке).
+_DATE_RE_DMY = re.compile(
+    r"^(\d{1,2})[/.](\d{1,2})[/.](\d{4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?"
+)
 
 
 def parse_exif_date(s):
+    """Returns (datetime, ambiguous) or (None, False). ambiguous=True только когда день/месяц
+    пришлось УГАДАТЬ (нестандартный формат, обе стороны <= 12, см. ветка ниже) -- вызывающая
+    сторона (best_exif_datetime()/resolve_date()) обязана понизить такую дату до Tier B
+    ("дата приблизительная" в отчёте), а не выдавать её как надёжный Tier A: живой случай
+    2026-09-15 (обсуждение с пользователем) -- угаданный день/месяц это, по сути, тот же
+    класс "не по EXIF, а по вспомогательным признакам", что и Tier B/C, просто источник
+    сырья -- сам EXIF-тег, а не имя файла/папки."""
     if not s or not isinstance(s, str):
-        return None
-    m = _DATE_RE.match(s.strip())
-    if not m:
-        return None
-    y, mo, d, h, mi, se = (int(x) for x in m.groups())
+        return None, False
+    s = s.strip()
+    m = _DATE_RE.match(s)
+    if m:
+        y, mo, d, h, mi, se = m.groups()
+        y, mo, d, h, mi = int(y), int(mo), int(d), int(h), int(mi)
+        se = int(se) if se else 0
+        ambiguous = False
+    else:
+        m = _DATE_RE_DMY.match(s)
+        if not m:
+            return None, False
+        a, b, y, h, mi, se = m.groups()
+        a, b, y, h, mi = int(a), int(b), int(y), int(h), int(mi)
+        se = int(se) if se else 0
+        # a/b -- день и месяц в неизвестном порядке. Однозначно, только если одна
+        # из сторон > 12 (месяцем быть не может) или обе стороны равны (порядок
+        # не влияет на результат). Если обе <= 12 и различны (как в живом случае
+        # выше, "05/07") -- порядок принципиально неразличим форматом; берём
+        # day-first (DD/MM) как доминирующий у виденных "битых" камер/телефонов,
+        # но помечаем ambiguous=True.
+        if a > 12 and b <= 12:
+            d, mo = a, b
+            ambiguous = False
+        elif b > 12 and a <= 12:
+            d, mo = b, a
+            ambiguous = False
+        elif a == b:
+            d, mo = a, b
+            ambiguous = False
+        else:
+            d, mo = a, b
+            ambiguous = True
     # Гейт года -- как у Tier B (date_from_filename/date_from_folder_name через _valid()):
     # неправдоподобный EXIF-год (камера со сброшенными часами -> 1980/2000/2099, севшая
     # батарейка -> 0001:01:01) НЕ становится уверенной Tier A-датой, а проваливается дальше
@@ -3143,11 +3240,11 @@ def parse_exif_date(s):
     # без этого год < 1900 доходил до date_value.strftime() -- Windows CRT strftime
     # исторически отклоняет годы < 1900 (тот же класс краха, что и фикс 879929b на шаг выше).
     if not _valid(y, mo, d):
-        return None
+        return None, False
     try:
-        return datetime(y, mo, d, h, mi, se)
+        return datetime(y, mo, d, h, mi, se), ambiguous
     except ValueError:
-        return None
+        return None, False
 
 
 def exiftool_batch(paths, batch_size=200, log=print, warn_state=None):
@@ -3245,16 +3342,28 @@ def exiftool_batch(paths, batch_size=200, log=print, warn_state=None):
     return results
 
 
+# Суффикс, которым best_exif_datetime() метит exif_dt_source, когда день/месяц пришлось
+# угадать (parse_exif_date() -> ambiguous=True). Кодируем прямо в это TEXT-поле (а не заводим
+# отдельную колонку archive_cache/source_meta_cache) сознательно -- поле и так свободный текст
+# без схемы enum, round-trip через кэш между прогонами получается бесплатно (resolve_date()
+# распознаёт суффикс что при живом вызове exiftool, что при чтении уже закэшированной строки
+# из прошлого прогона), а отдельная колонка потребовала бы ALTER TABLE-миграции на двух
+# таблицах и правки во всех SELECT/INSERT вокруг exif_dt_source ради редкого краевого случая.
+_EXIF_DT_SOURCE_AMBIGUOUS_SUFFIX = "|ambiguous_dmy"
+
+
 def best_exif_datetime(tags: dict):
-    """Tier A candidate date from EXIF/QuickTime/XMP/IPTC tags, in priority order."""
+    """Tier A (или -- при угаданном дне/месяце в нестандартном формате -- пониженный до Tier B
+    самим resolve_date(), см. _EXIF_DT_SOURCE_AMBIGUOUS_SUFFIX) candidate date from
+    EXIF/QuickTime/XMP/IPTC tags, in priority order."""
     for key in (
         "DateTimeOriginal", "CreateDate", "QuickTime:CreateDate",
         "MediaCreateDate", "TrackCreateDate", "XMP:DateCreated",
         "IPTC:DateCreated", "GPSDateStamp",
     ):
-        dt = parse_exif_date(tags.get(key))
+        dt, ambiguous = parse_exif_date(tags.get(key))
         if dt:
-            return dt, key
+            return dt, (key + _EXIF_DT_SOURCE_AMBIGUOUS_SUFFIX if ambiguous else key)
     return None, None
 
 
@@ -4601,6 +4710,15 @@ class SourceWalker:
         # провалиться (права доступа/длинный путь/повреждённая ФС) -- вся папка теряется молча
         # без этого счётчика, отчёт не мог дать пользователю сигнал "не всё было прочитано".
         self.listdir_failed = []  # list of dirpath
+        # 2026-09-15, переключатель "альбом"/"по дате"/"всё подряд" (cfg.classification_filter):
+        # для сводки прогона ("иначе пользователь увидит подозрительно маленькие цифры и не
+        # поймёт почему") -- НЕ пытаемся дать точную разбивку по image/raw/video для целых
+        # отброшенных поддеревьев/архивов (albums_only) -- сама суть экономии в том, чтобы НЕ
+        # спускаться внутрь и не листать их, точное число потребовало бы именно того I/O,
+        # которого фильтр избегает. "files" -- точный счётчик (по ftype), т.к. на файл-листе
+        # find_album() уже посчитан и тип уже известен без доп. I/O.
+        self.classification_filtered_subtrees = 0  # целые папки/архивы, отброшенные без спуска
+        self.classification_filtered_files = {"image": 0, "raw": 0, "video": 0}
         # 2026-07-11 (session on managing the exclude-dir list): pропуски по имени папки
         # (hard/default/extra) считаются, а не печатаются построчно -- на полном скане диска
         # node_modules/.git может встретиться сотни раз, построчный print был бы спамом.
@@ -4834,6 +4952,10 @@ class SourceWalker:
                 yield from self._drain_deferred_phases()
                 return
             # a single plain media file given directly as SOURCE
+            # 2026-09-15: classification_filter намеренно НЕ применяется здесь -- у голого
+            # файла-SOURCE нет сегментов пути, которые мог бы отравить is_dump_segment(), сам
+            # факт явного указания пользователем этого файла как SOURCE весомее гипотетической
+            # классификации по голому имени файла. Обрабатывается всегда, независимо от фильтра.
             t = file_type(source)
             if t in ("image", "raw", "video"):
                 st = os.stat(winlong(source))
@@ -5016,6 +5138,18 @@ class SourceWalker:
             return
 
         volume_label = _dvd_unit_volume_label_if_live_disc(video_ts_dirpath, check_volume_label)
+        # 2026-09-15, classification_filter: тот же критерий "A"/"D", что и у show_placement_
+        # letter выше (letter = "A" if (volume_label or album is not None) else "D") -- ПОСЛЕ
+        # volume_label (живой диск) и fingerprint/registry-проверки выше, т.к. они нужны
+        # регистрации юнита независимо от фильтра (дедуп ЦЕЛОГО диска, не по классификации).
+        # Юнит -- одна неделимая единица (см. докстрин класса выше), считаем как один
+        # "поддерево", не по файлам внутри -- та же гранулярность, что у archive/folder-веток.
+        if self.cfg.classification_filter != "all":
+            is_album_unit = bool(volume_label or album is not None)
+            wants_albums = self.cfg.classification_filter == "albums_only"
+            if is_album_unit != wants_albums:
+                self.classification_filtered_subtrees += 1
+                return
         if volume_label:
             unit_name = _unique_dvd_dest_name(self.cfg.albums_root, volume_label,
                                                self._dvd_names_reserved)
@@ -5468,6 +5602,15 @@ class SourceWalker:
                             new_rel_prefix.split("/"), archive_boundary_idx=this_boundary,
                             dump_names=self.cfg.dump_segment_names_lower,
                             dump_prefixes=self.cfg.dump_segment_prefixes_tuple):
+                        # 2026-09-15, classification_filter=="albums_only": этот архив
+                        # безусловно ByDate (см. проверку выше) -- albums_only его не хочет
+                        # вовсе, и не нужно даже открывать/распаковывать, чтобы узнать это
+                        # (решение уже принято чисто по имени архива). НЕ откладываем в
+                        # _deferred_tilde_archives -- он туда просто не попадёт, и Фаза 2
+                        # никогда не увидит и не распакует его.
+                        if self.cfg.classification_filter == "albums_only":
+                            self.classification_filtered_subtrees += 1
+                            continue
                         # Откладывается на Фазу 2 (_drain_deferred_phases()) -- НЕ тикаем
                         # сейчас, разбор архива ещё не начат, тик -- там же, сразу после
                         # yield from self._handle_archive() в цикле по _deferred_tilde_archives.
@@ -5534,6 +5677,19 @@ class SourceWalker:
                         dump_names=self.cfg.dump_segment_names_lower,
                         dump_prefixes=self.cfg.dump_segment_prefixes_tuple,
                         bydate_only=self.cfg.source_bydate_only)
+                    # 2026-09-15, classification_filter: файл-лист -- единственное место, где
+                    # решение уже ОКОНЧАТЕЛЬНОЕ и тип файла уже известен без доп. I/O (st.stat()
+                    # уже сделан выше) -- считаем точно, в отличие от целых поддеревьев/архивов
+                    # выше (там намеренно не спускаемся, чтобы не платить I/O, который фильтр и
+                    # должен избегать).
+                    if album is None and self.cfg.classification_filter == "albums_only":
+                        if t in self.classification_filtered_files:
+                            self.classification_filtered_files[t] += 1
+                        continue
+                    if album is not None and self.cfg.classification_filter == "bydate_only":
+                        if t in self.classification_filtered_files:
+                            self.classification_filtered_files[t] += 1
+                        continue
                     if album is None:
                         # Откладывается на Фазу 3 -- НЕ тикаем сейчас, файл ещё не обработан,
                         # тик -- там же, сразу после yield в цикле по _deferred_stray_files
@@ -5580,6 +5736,12 @@ class SourceWalker:
                     # "new_tree_rel_prefix", а _tree_rel() внутри деренного re-walk безусловно
                     # СРЕЗАЕТ rel_prefix-баланс, считая его уже учтённым в tree_rel_prefix --
                     # без пересчёта здесь путь до самой "~synced"-папки терялся бы целиком).
+                    # 2026-09-15, classification_filter=="albums_only": то же рассуждение, что
+                    # и у тильда-архива выше -- эта папка безусловно ByDate по имени сегмента,
+                    # albums_only её не хочет, спускаться (listdir/сниффинг типов) незачем.
+                    if self.cfg.classification_filter == "albums_only":
+                        self.classification_filtered_subtrees += 1
+                        continue
                     # _tree_rel(rel) досчитывает его тем же способом, что и для архива.
                     self._deferred_bydate_roots.append(
                         (full, rel, origin_prefix, cur_ancestors + (full_real,),
@@ -6730,8 +6892,9 @@ def resolve_date(ctx: DateContext, rel_path: str, mtime: float, exif_dt=None, ex
     run_passport() переиспользует этот же конвейер с cfg.source=TARGET -- folder-based
     вывод даты (date_from_folder_name() ниже) на обычном SOURCE честный независимый сигнал
     (папка, которую НАЗВАЛ пользователь), но на TARGET сами ByDate-папки называет программа
-    (build_bydate_dest_dir()) -- их имя ("2024-07-15 Москва") УЖЕ является выводом этой же
-    самой функции с прошлого прогона (Tier C/D, низкая уверенность), не новым независимым
+    (build_bydate_dest_dir()) -- их имя ("2024-07-15 [PhotoArchive]", место -- отдельная
+    подпапка "Москва" уровнем глубже) УЖЕ является выводом этой же самой функции с прошлого
+    прогона (Tier C/D, низкая уверенность), не новым независимым
     доказательством. Без этого флага паспорт на втором проходе считывал бы собственную
     разметку архива как будто это свежее подтверждение и завышал Tier до B ("средняя
     уверенность") для файлов, у которых её на самом деле нет -- количество "дата определена
@@ -6751,6 +6914,18 @@ def resolve_date(ctx: DateContext, rel_path: str, mtime: float, exif_dt=None, ex
         exif_dt = None
 
     if exif_dt:
+        # _EXIF_DT_SOURCE_AMBIGUOUS_SUFFIX: best_exif_datetime() угадал день/месяц (нестандартный
+        # формат тега, обе стороны <= 12 -- см. parse_exif_date()). Дата всё ещё из EXIF, но
+        # порядок дня/месяца в ней -- предположение, не факт; понижаем до Tier B, чтобы отчёт
+        # честно показал "дата приблизительная" (обсуждение с пользователем, 2026-09-15) вместо
+        # молчаливого Tier A. exif_source очищается от суффикса -- дальше по коду (evidence в
+        # dates_review.csv) должно остаться голое имя тега, как и для обычного Tier A/B.
+        ambiguous = isinstance(exif_source, str) and exif_source.endswith(
+            _EXIF_DT_SOURCE_AMBIGUOUS_SUFFIX)
+        if ambiguous:
+            exif_source = exif_source[:-len(_EXIF_DT_SOURCE_AMBIGUOUS_SUFFIX)]
+            ctx.record(dirname, exif_dt, "B", rec_mtime)
+            return exif_dt, "B", "medium", exif_source, "day"
         ctx.record(dirname, exif_dt, "A", rec_mtime)
         return exif_dt, "A", "high", exif_source, "day"
 
@@ -6764,16 +6939,35 @@ def resolve_date(ctx: DateContext, rel_path: str, mtime: float, exif_dt=None, ex
         ctx.record(dirname, dt, "B", rec_mtime)
         return dt, "B", "medium", ev, "year"
 
+    # Живой баг-репорт 2026-09-15 (обсуждение с пользователем, реальный архив): собственный
+    # (не-артефактный) mtime файла проверяется ПЕРВЫМ, до folder_cluster_median(). Раньше
+    # порядок был обратным (медиана затем mtime-фолбэк), затем -- промежуточный вариант со
+    # сравнением "mtime в пределах N дней от медианы" -- оба варианта ломались на большой
+    # исходной папке, растянутой на годы (весь фотоархив с телефона): folder_cluster_median()
+    # накопительная, считается по тому, что УСПЕЛО набраться к моменту обхода ЭТОГО файла, и
+    # "застревает" на значении многонедельной-многомесячной давности; порог в днях чинил
+    # только близкие расхождения, реальные случаи с разницей в месяцы-годы (файл из сентября
+    # получал медиану от июня) оставались сломанными. Кроме того, для архивов, где файлы с
+    # одинаковым именем/номером в одной "папке" реально приходят из РАЗНЫХ источников
+    # (устройств/приложений) -- пользователь сталкивался с этим на практике -- никакая
+    # интерполяция/агрегация по соседям по номеру не гарантированно корректна, потому что сами
+    # "соседи" могут не иметь отношения к этому файлу. Собственный mtime -- единственный
+    # сигнал, который гарантированно относится именно к ЭТОМУ файлу (та же логика, что
+    # используют обычные просмотрщики фото -- см. обсуждение с пользователем). Компромисс: для
+    # одиночного файла с испорченным (но не сгруппированным в узкое окно с другими -- иначе
+    # его поймает mtime_is_copy_artifact()) mtime защиты со стороны соседей по папке больше
+    # нет -- если такой файл есть в кластере с надёжно датированными соседями, его дата больше
+    # НЕ подстраховывается их медианой.
+    sibling_mtimes = ctx.dir_mtimes.get(dirname, [])
+    if mtime_dt is not None and not mtime_is_copy_artifact(sibling_mtimes + [mtime]):
+        ctx.record(dirname, mtime_dt, "C", rec_mtime)
+        return mtime_dt, "C", "low", "mtime", "day"
+
     neighbors = ctx.dir_tier_ab_dates.get(dirname, [])
     if neighbors:
         med = folder_cluster_median(neighbors)
         ctx.record(dirname, med, "C", rec_mtime)
         return med, "C", "low", "inferred_from_folder_cluster", "day"
-
-    sibling_mtimes = ctx.dir_mtimes.get(dirname, [])
-    if mtime_dt is not None and not mtime_is_copy_artifact(sibling_mtimes + [mtime]):
-        ctx.record(dirname, mtime_dt, "C", rec_mtime)
-        return mtime_dt, "C", "low", "mtime", "day"
 
     ctx.record(dirname, None, "D", rec_mtime)
     return None, "D", "none", "no_signal", None
@@ -6996,12 +7190,27 @@ def build_album_dest_dir(albums_root: str, album_prefix: str, subpath: list) -> 
 
 def build_bydate_dest_dir(bydate_root: str, date_value, precision: str, place: str,
                            granularity: str = "day") -> str:
-    """granularity: day (по умолчанию, текущее поведение) | month | year | flat.
+    """granularity: day | month | year | flat.
     precision=='year' (сама дата известна только с точностью до года) всегда даёт
     month-unknown-корзину независимо от granularity -- сузить её до month/day нечем.
-    place (город из reverse_geocoder) санитизируется перед склейкой в имя папки -- он не
-    сегмент пути сам по себе, а часть строки, поэтому чистить нужно ДО f-string, а не
-    после (санитайзер не трогает пробелы, только Windows-запрещённые символы)."""
+    place (город из reverse_geocoder) санитизируется перед использованием как отдельный
+    сегмент пути -- санитайзер не трогает пробелы, только Windows-запрещённые символы.
+
+    Живой баг-репорт 2026-09-15 (обсуждение с пользователем, реальный архив, поездка с
+    заездом в несколько городов за один месяц): раньше место дописывалось В ИМЯ ТОЙ ЖЕ
+    day/month-папки ("2013-06 Казань [PhotoArchive]") -- под годом появлялся десяток почти
+    одинаковых папок-соседей (по одной на город), не видно, сколько вообще было месяцев
+    активности. Теперь place -- ОТДЕЛЬНЫЙ подуровень ВНУТРИ day/month-
+    папки: ровно один day/month-контейнер на период (её имя больше не несёт места), файлы С
+    известным местом лежат в подпапке по городу, файлы БЕЗ места (нет GPS) -- прямо в
+    контейнере, россыпью. Решает и архитектурную проблему предыдущего дизайна: "сколько
+    разных мест наберётся за месяц" известно только post-factum (нужен второй проход) --
+    "есть ли место у ЭТОГО файла" решается на месте, без буферизации.
+    report.py._parse_bydate_segment() место из пути больше не восстанавливает (в имени
+    контейнера его больше нет) -- build_model_from_rows() уже читает place из отдельной
+    колонки appended.csv как запасной путь (изначально для Albums\\..., где сегмента ByDate
+    нет вовсе) -- тот же резерв бесплатно закрывает и этот случай, правки в report.py не
+    нужны."""
     place = sanitize_windows_component(place) if place else place
     if granularity == "flat":
         return bydate_root
@@ -7011,14 +7220,11 @@ def build_bydate_dest_dir(bydate_root: str, date_value, precision: str, place: s
     if precision == "year":
         return os.path.join(bydate_root, str(year), f"{year}-00 month-unknown{DUMP_TAG}")
     if granularity == "month":
-        month_folder = date_value.strftime("%Y-%m")
-        if place:
-            month_folder = f"{month_folder} {place}"
-        return os.path.join(bydate_root, str(year), f"{month_folder}{DUMP_TAG}")
-    day_folder = date_value.strftime("%Y-%m-%d")
-    if place:
-        day_folder = f"{day_folder} {place}"
-    return os.path.join(bydate_root, str(year), f"{day_folder}{DUMP_TAG}")
+        period_folder = date_value.strftime("%Y-%m")
+    else:
+        period_folder = date_value.strftime("%Y-%m-%d")
+    container = os.path.join(bydate_root, str(year), f"{period_folder}{DUMP_TAG}")
+    return os.path.join(container, place) if place else container
 
 
 def raw_dest_dir(item: "SourceItem", rec: "SourceRecord", cfg: "Config",
@@ -7031,8 +7237,8 @@ def raw_dest_dir(item: "SourceItem", rec: "SourceRecord", cfg: "Config",
     чистой галереей, все RAW сносятся одной отдельной папкой.
 
     sibling -- RAW кладётся в подпапку RAW\\ РЯДОМ с тем местом, куда лёг (или лёг бы) его
-    JPEG-партнёр: Albums\\Море 2015\\RAW\\IMG.CR2, ByDate\\2019\\2019-07-15 Москва
-    [PhotoArchive]\\RAW\\IMG.CR2. Удобно для сценария "фотограф хранит RAW при кадре";
+    JPEG-партнёр: Albums\\Море 2015\\RAW\\IMG.CR2, ByDate\\2019\\2019-07-15
+    [PhotoArchive]\\Москва\\RAW\\IMG.CR2. Удобно для сценария "фотограф хранит RAW при кадре";
     удаление альбома удаляет и его RAW заодно. Одинокий RAW (нет парного JPEG) кладётся в
     RAW-подпапку той папки,
     куда лёг бы его JPEG по обычной логике размещения (альбом/дата) -- см. RULES.md,
@@ -7503,10 +7709,14 @@ def _seed_archive_cache(conn, dest_path: str, size: int, sha256, phash, duration
     conn.execute(
         "INSERT OR REPLACE INTO archive_cache"
         "(path,size,mtime,sha256,phash,duration,width,height,bitrate,"
-        "exif_cached,exif_dt,exif_dt_source,camera,gps_lat,gps_lon) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "exif_cached,exif_dt,exif_dt_source,camera,gps_lat,gps_lon,phash_version) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (dest_path, st.st_size, st.st_mtime, sha256, phash, duration, width, height, bitrate,
-         1, exif_dt.isoformat() if exif_dt else None, exif_dt_source, camera, gps_lat, gps_lon),
+         1, exif_dt.isoformat() if exif_dt else None, exif_dt_source, camera, gps_lat, gps_lon,
+         # phash_version (234-1): phash здесь -- то, что этот же прогон только что посчитал
+         # place_file()'ом размещённому файлу через analyze_batch()/image_phash_and_size()
+         # текущего кода -- всегда актуальная версия, не унаследованная из старого кэша.
+         _ARCHIVE_PHASH_VERSION),
     )
 
 
@@ -8007,7 +8217,8 @@ def index_archive(cfg: Config, conn, log=print):
         cache_conn = _open_archive_cache_conn(cfg.target)
         if cache_conn is not None:
             for row in cache_conn.execute(
-                "SELECT path, size, mtime, sha256, phash, duration, width, height, bitrate FROM archive_cache"
+                "SELECT path, size, mtime, sha256, phash, duration, width, height, bitrate, "
+                "phash_version FROM archive_cache"
             ):
                 cache[row[0]] = row[1:]
 
@@ -8074,7 +8285,16 @@ def index_archive(cfg: Config, conn, log=print):
                 note = "большое видео" if ftype == "video" and size > 200 * 1024**2 else None
 
                 cached = cache.get(path)
-                if cached and cached[0] == size and abs(cached[1] - mtime) < 1e-6:
+                cache_hit = bool(cached and cached[0] == size and abs(cached[1] - mtime) < 1e-6)
+                # REVIEW-HANDOFF.md Раунд 234, находка 234-1: для ftype=="image" cache-хит
+                # дополнительно требует совпадения phash_version -- иначе строка, посчитанная
+                # ДО фикса b556f5c (exif_transpose()), отдавала бы старый phash/width/height
+                # бесконечно (archive_cache, в отличие от source_meta_cache, не имеет TTL --
+                # см. SCHEMA archive_cache выше). raw/video не затронуты (raw не считает phash
+                # здесь, video -- отдельный алгоритм, не exif-зависимый).
+                if cache_hit and ftype == "image" and cached[8] != _ARCHIVE_PHASH_VERSION:
+                    cache_hit = False
+                if cache_hit:
                     sha, phash, duration, width, height, bitrate = cached[2], cached[3], cached[4], cached[5], cached[6], cached[7]
                 else:
                     # Раунд 7 ревью (REVIEW-HANDOFF.md): тот же приём, что и фикс раунда 6 в
@@ -8105,9 +8325,10 @@ def index_archive(cfg: Config, conn, log=print):
                     if cache_conn is not None:
                         cache_conn.execute(
                             "INSERT OR REPLACE INTO archive_cache"
-                            "(path,size,mtime,sha256,phash,duration,width,height,bitrate) "
-                            "VALUES (?,?,?,?,?,?,?,?,?)",
-                            (path, size, mtime, sha, phash, duration, width, height, bitrate),
+                            "(path,size,mtime,sha256,phash,duration,width,height,bitrate,phash_version) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                            (path, size, mtime, sha, phash, duration, width, height, bitrate,
+                             _ARCHIVE_PHASH_VERSION),
                         )
 
                 cur.execute(
@@ -9298,12 +9519,19 @@ def run_analyze(cfg: Config, mode: str, log=print, self_scan: bool = False) -> A
                         archive_cache_conn.execute(
                             "INSERT OR REPLACE INTO archive_cache"
                             "(path,size,mtime,sha256,phash,duration,width,height,bitrate,"
-                            "exif_cached,exif_dt,exif_dt_source,camera,gps_lat,gps_lon) "
-                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            "exif_cached,exif_dt,exif_dt_source,camera,gps_lat,gps_lon,phash_version) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                             (item.read_path, item.size, item.mtime, rec.sha256, rec.phash,
                              rec.duration, rec.width, rec.height, rec.bitrate,
                              1, rec.exif_dt.isoformat() if rec.exif_dt else None, rec.exif_dt_source,
-                             rec.camera, rec.gps_lat, rec.gps_lon),
+                             rec.camera, rec.gps_lat, rec.gps_lon,
+                             # phash_version (234-1): mode=="analyze" здесь (skip_hash=False,
+                             # гейт mode=="analyze" на archive_cache_conn выше) -- rec.phash
+                             # всегда настоящий phash текущего image_phash_and_size(), не
+                             # skip_hash-заглушка "-" -- безопасно ставить текущую версию,
+                             # чтобы index_archive() на следующей ОБЫЧНОЙ сборке того же архива
+                             # не пересчитывал то, что Паспорт уже посчитал свежим алгоритмом.
+                             _ARCHIVE_PHASH_VERSION),
                         )
 
                 if is_unsorted_selfscan:
@@ -10551,6 +10779,21 @@ def build_final_summary(stats: dict, walker: "SourceWalker", unreadable_count: i
     if n_excluded_dirs:
         lines.append(f"Пропущено служебных/системных папок: {n_excluded_dirs} "
                       f"(подробности -- actions.log)\n")
+    # 2026-09-15, classification_filter ("альбом"/"по дате"/"всё подряд", только GUI): без
+    # этой строки при albums_only/bydate_only числа "Обработано"/"Итоговый архив" выглядели бы
+    # подозрительно маленькими без объяснения. classification_filtered_files -- точная разбивка
+    # (файл-листья, тип уже известен без доп. I/O); classification_filtered_subtrees -- целые
+    # папки/архивы/DVD-юниты противоположной классификации, отброшенные БЕЗ спуска -- точное
+    # число файлов внутри намеренно не посчитано (в этом и была экономия фильтра).
+    n_filtered_files = sum(walker.classification_filtered_files.values())
+    if n_filtered_files or walker.classification_filtered_subtrees:
+        filter_label = {"albums_only": "только альбомы", "bydate_only": "только по дате"}.get(
+            walker.cfg.classification_filter, walker.cfg.classification_filter)
+        lines.append(
+            f"Пропущено фильтром «{filter_label}»: {n_filtered_files} файлов"
+            + (f" + {walker.classification_filtered_subtrees} папок/архивов/DVD-юнитов целиком"
+               if walker.classification_filtered_subtrees else "")
+            + " (это НЕ дубли — противоположная классификация, ждите второй прогон)\n")
     return "".join(lines)
 
 
@@ -11345,8 +11588,8 @@ DEFAULT_CONFIG_YAML_TEMPLATE = """\
 # read_retry_delay: 5.0         # секунд между попытками
 
 # bydate_granularity: month     # day | month | year | flat -- гранулярность папок ByDate
-#   day:                  ByDate/2019/2019-07-15 Москва/
-#   month (по умолчанию): ByDate/2019/2019-07 Москва/
+#   day:                  ByDate/2019/2019-07-15/Москва/   (без места -- файл прямо в папке дня)
+#   month (по умолчанию): ByDate/2019/2019-07/Москва/      (без места -- файл прямо в папке месяца)
 #   year:                 ByDate/2019/
 #   flat:                 ByDate/   (все дампы одной кучей, без подпапок по дате)
 #   Смена этой настройки НЕ переименовывает уже собранные папки (архив append-only) --
@@ -11855,17 +12098,21 @@ class RunResult:
 
 
 def run_for_source(source, target, dry_run, sample_limit, log=print, suppress_logs=False,
-                    shared_pool=None, print_summary=True) -> RunResult:
+                    shared_pool=None, print_summary=True, classification_filter="all") -> RunResult:
     """print_summary (пакет п.4, SESSION-HANDOFF.txt; 2026-08-09 -- распространено на [2]
     _bare_launch_run_dryrun(), раньше пропущено там, живая находка пользователя): False у
     _bare_launch_run_build() ([3] голого меню) и _bare_launch_run_dryrun() ([2]) -- подавляет
     техническую консольную сводку внутри _run_impl() (дублирует report.html), не трогая
     write_summary()/CSV-логи. Обычный CLI archive не передаёт этот параметр (остаётся True по
-    умолчанию) -- контракт для headless-автоматизации не меняется."""
+    умолчанию) -- контракт для headless-автоматизации не меняется.
+
+    classification_filter (2026-09-15, только GUI -- см. Config.classification_filter): "all"
+    по умолчанию, CLI не передаёт ничего кроме дефолта -- нет публичного флага."""
     yaml_overrides = load_yaml_config(CONFIG_YAML_PATH, log=log)
     try:
         cfg = Config(source=source, target=target, dry_run=dry_run, sample_limit=sample_limit,
-                     suppress_logs=suppress_logs, **yaml_overrides)
+                     suppress_logs=suppress_logs, classification_filter=classification_filter,
+                     **yaml_overrides)
     except ValueError as e:
         log(f"ОШИБКА КОНФИГУРАЦИИ: {e}")
         return RunResult(failed=True, exit_code=EXIT_CONFIG_ERROR)
@@ -11933,8 +12180,8 @@ def run_passport(target: str, log=print) -> AnalyzeStats:
     self_scan=True (живой репорт пользователя, 2026-08-01): та же защита сама по себе НЕ
     делает найденные внутри ByDate/RAW/_Unsorted файлы "файлами внутри альбома/даты" -- у
     find_album() для них закономерно нет ответа (см. _PASSPORT_SELF_SCAN_RECOGNIZED_TOP), а
-    их собственное имя папки ("2024-07-15 Москва") -- это разметка, которую программа сама
-    же и сгенерировала на прошлом прогоне, не новое независимое доказательство даты. Раньше
+    их собственное имя папки ("2024-07-15 [PhotoArchive]") -- это разметка, которую программа
+    сама же и сгенерировала на прошлом прогоне, не новое независимое доказательство даты. Раньше
     здесь ошибочно предполагалось, что это уже обработано -- проверено фактическим прогоном
     на реальном архиве, было не так (164 ложных "файл вне альбома", заниженное число
     "дата определена лишь приблизительно").
@@ -13093,7 +13340,7 @@ def _bare_launch_run_dryrun(sources: list, target: str, input_fn=input, log=prin
 
 
 def _bare_launch_run_build(sources: list, target: str, input_fn=input, log=print,
-                            outcome: dict = None) -> str:
+                            outcome: dict = None, classification_filter: str = "all") -> str:
     """Шаг [3] меню -- раздел 6 ТЗ. Единственное подтверждение (_confirm_build_summary,
     развилка 4 раздела 11) перед реальной записью. Возвращает путь к отчёту, или None, если
     пользователь отказался (или сборка вообще не состоялась) -- вызывающий код
@@ -13109,6 +13356,10 @@ def _bare_launch_run_build(sources: list, target: str, input_fn=input, log=print
     thread() передаёт свежий dict и после вызова решает `bus.done(..., "warnings")` вместо
     `"ok"`, если `stopped_for_space` истинен -- тот же принцип, что уже несёт `free_disk_bytes`
     в `run_stats` для содержимого самого отчёта, только наружу для исхода экрана «Выполнение».
+
+    classification_filter (2026-09-15, переключатель "альбом"/"по дате"/"всё подряд", ТОЛЬКО
+    GUI, экран 2 режима "Создание архива" -- см. Config.classification_filter): "all" по
+    умолчанию (текстовое меню/CLI никогда не передают ничего другого).
 
     2026-07-21, по прямой просьбе пользователя: раньше [3] был единственным пунктом меню, не
     возвращавшимся в главное меню после успеха -- вместо этого ждал явный Enter
@@ -13152,7 +13403,8 @@ def _bare_launch_run_build(sources: list, target: str, input_fn=input, log=print
             if len(expanded) > 1:
                 log(f"\n########## SOURCE = {s} ##########")
             result = run_for_source(s, target, dry_run=False, sample_limit=0, log=log,
-                                     shared_pool=shared_pool, print_summary=False)
+                                     shared_pool=shared_pool, print_summary=False,
+                                     classification_filter=classification_filter)
             if not result.failed:
                 any_succeeded = True
                 total_processed += result.processed_count

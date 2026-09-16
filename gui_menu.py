@@ -163,6 +163,25 @@ _MODE_SCREEN_HEIGHT = 260  # живой замер: 248 (статичный эк
 # показывается, см. _configure_nav() ниже). Футер теперь живёт ТАМ (см. render_mode_screen()),
 # не добавляя ни одного пикселя новой высоты -- эта константа не тронута, её первоначальный
 # смысл ("статичный экран, есть небольшой запас") восстановлен как есть.
+# 2026-09-15, переключатель "альбом"/"по дате"/"всё подряд": пробовала поднять 358 -> 400 по
+# синтетическому живому замеру ДЕЛЬТЫ (_apply_fixed_content_size no-op + pack_propagate(True) +
+# winfo_reqheight()/DPI-scale) -- ОТКАЧЕНО по прямому живому отзыву пользователя на реальном
+# .exe ("от сообщения до кнопок много свободного места, размер окна можно было не
+# увеличивать"). Синтетический замер переоценил реальную потребность -- скорее всего мои
+# тестовые пути (~197 символов вместе с длинным temp-префиксом) были заметно длиннее
+# калибровочного "140+" случая ниже, либо DPI-расхождение (см. следующий абзац) исказило
+# сравнение сильнее, чем казалось. Живой клик на реальном .exe -- более надёжный источник
+# истины, чем синтетический tkinter-замер без реального контента; урок на будущее для этого
+# файла. Новый радиоблок (см. render_paths_screen(), mode=="build") влезает в СУЩЕСТВУЮЩИЙ
+# запас без изменения константы.
+#
+# НАХОДКА ПРИ ЗАМЕРЕ (не связана с этой правкой впрямую, но ей подтверждена): натуральная высота
+# baseline на этой машине тем синтетическим замером показала заметно больше документированной
+# ниже (443.7 против исторических ~331-358) -- возможно, DPI-масштаб живого дисплея сейчас
+# отличается от того, что был на машине/сессии, писавшей числа ниже (tk scaling ~3.0 в замере
+# против упомянутых в комментариях ~3.68). Живой клик только что показал ОБРАТНОЕ (много
+# пустого места, не мало) -- сам синтетический замер, а не только его абсолютные числа, стоит
+# перепроверять с осторожностью в этом файле, не доверять ему слепо для решений о размере окна.
 _PATHS_SCREEN_HEIGHT = 358  # живая находка пользователя 2026-08-22 (продолжение): нижний
 # динамический комментарий (build/dry_run, оба пути выбраны) реально обрезался снизу почти до
 # одной строки -- старое число (215, "живой замер... 200") занижало реальную натуральную высоту
@@ -292,6 +311,11 @@ _RUN_CONTENT_WIDTH = 820
 # НЕ живой замер -- та же методология константы на экран, что и у остальных трёх (шапка
 # «идёт»/исхода + status-строка + панель 80x12 _RUN_MONO_SIZE + кнопки), с запасом под самую
 # высокую (шапка исхода `aborted`: сообщение + ссылка на частичный отчёт).
+# 2026-09-15: коротко поднимала 360 -> 400 вслед за _PATHS_SCREEN_HEIGHT (переключатель
+# "альбом"/"по дате"/"всё подряд" на экране 2, test_budget_includes_run_screen_height требует
+# _RUN_SCREEN_HEIGHT >= max(остальных)) -- откачено вместе с _PATHS_SCREEN_HEIGHT обратно к 358
+# по живому отзыву пользователя (синтетический замер переоценил реальную потребность, новый
+# радиоблок влез в уже имевшийся запас без изменения константы, см. её докстрин).
 _RUN_SCREEN_HEIGHT = 360
 # Шапка экрана 4 -- ФИКСИРОВАННОЙ высоты (pack_propagate(False)) для running / ok /
 # interrupted / nothing, чтобы панель-зеркало не «прыгала» при смене «идёт» -> «Работа
@@ -1261,7 +1285,12 @@ class _Wizard:
         # результат резолва голого корня диска в подпапку (_confirm_paths()), то, с чем реально
         # работает движок. Раздельно (Раунд 188, 188-3): при откате на экран 2 по неснятому
         # LOCK рендер должен видеть исходный выбор, а не уже резолвленный путь.
-        self.state = {"mode": None, "source": None, "target": None, "target_resolved": None}
+        self.state = {"mode": None, "source": None, "target": None, "target_resolved": None,
+                      # 2026-09-15, переключатель "альбом"/"по дате"/"всё подряд" (только
+                      # режим "Создание архива", см. render_paths_screen()) -- дефолт "all"
+                      # значит "вести себя как раньше" для любого режима, где радиогруппа не
+                      # показывается вовсе (view/dry_run/passport).
+                      "classification_filter": "all"}
         self.action = None  # "next" / "back" / "cancel" / "start" / "menu" / "exit"
         self._keep_alive_job = [None]
         self._taskbar_hicon = None  # см. _set_crisp_taskbar_icon()/destroy() -- Раунд 134 ревью
@@ -1527,6 +1556,9 @@ class _Wizard:
         self.state["source"] = None
         self.state["target"] = None
         self.state["target_resolved"] = None
+        # 2026-09-15: тот же принцип, что и у source/target выше -- выбор фильтра не должен
+        # незаметно пережить смену режима (Назад -> выбрать другой режим, отличный от "build").
+        self.state["classification_filter"] = "all"
 
     def destroy(self) -> None:
         self._stop_keep_alive()
@@ -1688,6 +1720,46 @@ class _Wizard:
                 info = self._compute_target_info()
                 _render_comment_box(dynamic_wrap, info["message"], info["tone"])
 
+        # 2026-09-15, переключатель "альбом"/"по дате"/"всё подряд" -- ТОЛЬКО режим "Создание
+        # архива" (по прямой просьбе пользователя: только реальная сборка/пополнение, не
+        # "Пробный прогон"/"Паспорт архива"/"Просмотр"). Дефолт "all" -- в остальных режимах
+        # блока просто нет вообще (не задизейблен, не спрятан -- отсутствует), высота экрана
+        # не зависит от режима (_PATHS_SCREEN_HEIGHT одна на все четыре, см. её докстринг) --
+        # в этих режимах внизу content остаётся немного пустого места, осознанно, дешевле и
+        # безопаснее новой per-mode высоты.
+        if mode == "build":
+            from tkinter import ttk
+
+            filter_var = tk.StringVar(value=self.state["classification_filter"])
+
+            def _on_filter_change():
+                self.state["classification_filter"] = filter_var.get()
+
+            filter_frame = tk.Frame(self.content, bg=_BG)
+            filter_frame.pack(fill="x", pady=(_px(10), 0))
+            tk.Label(filter_frame, text="Что обрабатывать в этом прогоне:", bg=_BG, fg=_MUTED,
+                      font=("Segoe UI", 9)).pack(side="left")
+            # ttk, не classic tk.Radiobutton -- 2026-09-16, живой отзыв "кружок выбора в
+            # радиобаттоне маленький": classic Radiobutton не имеет никакой опции для размера
+            # индикатора (первая попытка -- indicatordiameter -- вообще не существующая для него
+            # опция Tk, валила экран крашем, см. коммит "Фикс краша экрана 2"); в теме 'clam' у
+            # ttk.Radiobutton индикатор -- настраиваемый стилевой элемент (indicatorsize). 'clam'
+            # -- единственная тема во всём приложении (grep по репозиторию не находит другого
+            # ttk-виджета), переключение темы процесса не затрагивает ничего кроме этого блока.
+            style = ttk.Style(filter_frame)
+            style.theme_use("clam")
+            style.configure("PhotoArchiveFilter.TRadiobutton", background=_BG, foreground=_TEXT,
+                             font=("Segoe UI", 9), indicatorsize=_px(8), indicatormargin=_px(2))
+            style.map("PhotoArchiveFilter.TRadiobutton",
+                      background=[("active", _BG)],
+                      indicatorbackground=[("selected", _GREEN), ("!selected", _BG)])
+            for value, label in (("all", "Все файлы"), ("albums_only", "Только альбомы"),
+                                  ("bydate_only", "Только по дате")):
+                ttk.Radiobutton(filter_frame, text=label, value=value, variable=filter_var,
+                                 command=_on_filter_change,
+                                 style="PhotoArchiveFilter.TRadiobutton").pack(
+                    side="left", padx=(_px(10), 0))
+
         can_advance = self._paths_valid()
 
         # Фраза «что сейчас произойдёт» над кнопкой запуска (перенесена с бывшего экрана
@@ -1746,7 +1818,10 @@ class _Wizard:
         # кнопки экрана 2 (Источник/Архив) теперь одной ширины независимо от текста.
         # anchor="w" -- без него текст в растянутой кнопке центрируется, а не прижимается к
         # левому краю (было незаметно при sticky="nw", где кнопка и так была впритык к тексту).
-        btn = tk.Button(parent, text=label_text, command=on_pick, font=("Segoe UI", 9),
+        # font 10 -- тот же размер, что кнопки Шага 1 (render_mode_screen()), по прямой просьбе
+        # пользователя 2026-09-16 ("надписи на кнопках Шага 1 и Шага 2 должны быть одинаковым
+        # шрифтом"; раньше здесь был 9pt, на 1pt мельче кнопок Шага 1 без явной причины).
+        btn = tk.Button(parent, text=label_text, command=on_pick, font=("Segoe UI", 10),
                           wraplength=_px(_PATH_BTN_COL_WIDTH - 20), padx=_px(11), pady=_px(6),
                           anchor="w")
         btn.grid(row=row, column=0, sticky="ew", padx=(0, _px(16)), pady=(0, _px(4)))
@@ -2038,7 +2113,7 @@ class _Wizard:
                 icon="warning", default="no", parent=self.root):
             self._run_bus.cancel_event.set()
 
-    def _start_worker(self, mode: str, source, target, log) -> None:
+    def _start_worker(self, mode: str, source, target, log, classification_filter="all") -> None:
         """Запускает движок в фоновом потоке (§2.1/§2.4 ТЗ). Вызывается ПОСЛЕ render_run_screen()
         -- виджеты уже на экране, дренаж очереди сразу обновляет их. m._run_event_bus/sys.stdout/
         sys.stderr снимаются в _finish_worker() (гарантированная точка -- см. её докстринг), не
@@ -2072,7 +2147,8 @@ class _Wizard:
         sys.stderr = m._BusTeeStream(bus)
         m._run_event_bus = bus
         self._run_thread = threading.Thread(
-            target=_run_worker_thread, args=(bus, mode, source, target, log), daemon=True)
+            target=_run_worker_thread, args=(bus, mode, source, target, log, classification_filter),
+            daemon=True)
         self._run_thread.start()
         self._run_drain_job[0] = self.root.after(100, self._drain_bus)
 
@@ -2397,7 +2473,7 @@ class _Wizard:
         sys.exit(0)
 
 
-def _run_worker_thread(bus, mode: str, source, target, log) -> None:
+def _run_worker_thread(bus, mode: str, source, target, log, classification_filter="all") -> None:
     """Тело воркер-потока (§2.1 ТЗ) -- НИКОГДА не трогает tkinter, только зовёт существующие
     m._bare_launch_run_*() и кладёт события через bus (thread-safe -- queue.Queue).
     _ensure_target_unlocked() уже отработала на главном потоке ДО старта этого потока (см.
@@ -2420,7 +2496,8 @@ def _run_worker_thread(bus, mode: str, source, target, log) -> None:
                 [source], target, input_fn=_auto_yes_input_fn, log=log)
         else:
             report_path = m._bare_launch_run_build(
-                [source], target, input_fn=_auto_yes_input_fn, log=log, outcome=run_outcome)
+                [source], target, input_fn=_auto_yes_input_fn, log=log, outcome=run_outcome,
+                classification_filter=classification_filter)
         if report_path is None:
             # REVIEW-HANDOFF.md Раунд 182, замечание 182-2: ни один источник не дал ни одного
             # успеха (см. докстринг каждой _bare_launch_run_*() в photosort_win.py) -- это НЕ
@@ -2539,7 +2616,8 @@ def _run_wizard(log=print) -> None:
                     screen = "paths"
                     continue
                 _cap_and_show(wiz, wiz.render_run_screen)
-                wiz._start_worker(mode, source, target, log)
+                wiz._start_worker(mode, source, target, log,
+                                   classification_filter=wiz.state.get("classification_filter", "all"))
                 wiz.root.mainloop()
                 if wiz.action in ("cancel", "exit"):
                     raise m._GuiExplicitExit

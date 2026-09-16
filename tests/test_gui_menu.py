@@ -686,6 +686,26 @@ class TestResetPaths:
         wiz.reset_paths()
         assert wiz.state["mode"] == "passport"
 
+    def test_clears_classification_filter(self):
+        # 2026-09-15: тот же принцип, что и у source/target -- выбор фильтра "альбом"/"по
+        # дате"/"всё подряд" не должен незаметно пережить смену режима на Назад.
+        wiz = g._Wizard()
+        wiz.state["classification_filter"] = "albums_only"
+        wiz.reset_paths()
+        assert wiz.state["classification_filter"] == "all"
+
+
+class TestClassificationFilterState:
+    """2026-09-15, переключатель "альбом"/"по дате"/"всё подряд" -- только GUI, экран 2 режима
+    "Создание архива" (см. render_paths_screen()/gui_menu.py's module docstring на эту тему).
+    Сама отрисовка радиокнопок не тестируется здесь (нужен реальный tk.Tk(), недоступен на
+    Linux dev-машине без дисплея) -- только проброс значения по цепочке state -> _start_worker
+    -> _run_worker_thread -> m._bare_launch_run_build(), тем же duck-typed приёмом, что и
+    TestResetPaths выше."""
+
+    def test_default_is_all(self):
+        assert g._Wizard().state["classification_filter"] == "all"
+
 
 class TestFinalDescriptionAndStart:
     """2026-09-01: отдельного экрана «Финальная проверка» больше нет -- _final_description()
