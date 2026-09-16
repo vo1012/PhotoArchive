@@ -95,15 +95,36 @@ class TestRunWorkerThread:
 
     def test_build_success_reports_done_ok(self, monkeypatch):
         monkeypatch.setattr(
-            m, "_bare_launch_run_build", lambda sources, target, input_fn, log, outcome=None: "C:\\r.html")
+            m, "_bare_launch_run_build", lambda sources, target, input_fn, log, outcome=None, classification_filter="all": "C:\\r.html")
         bus = _FakeBus()
         g._run_worker_thread(bus, "build", "C:\\src", "C:\\tgt", print)
         assert bus.events == [("done", "C:\\r.html", "ok")]
 
+    def test_classification_filter_defaults_to_all_and_reaches_bare_launch_run_build(self, monkeypatch):
+        # 2026-09-15: переключатель "альбом"/"по дате"/"всё подряд" -- проброс значения из
+        # _Wizard.state (не тестируется здесь, см. TestClassificationFilterState в
+        # test_gui_menu.py) через _run_worker_thread до m._bare_launch_run_build() as есть,
+        # без искажения.
+        captured = {}
+
+        def _fake_build(sources, target, input_fn, log, outcome=None, classification_filter="all"):
+            captured["classification_filter"] = classification_filter
+            return "C:\\r.html"
+
+        monkeypatch.setattr(m, "_bare_launch_run_build", _fake_build)
+        bus = _FakeBus()
+        g._run_worker_thread(bus, "build", "C:\\src", "C:\\tgt", print)
+        assert captured["classification_filter"] == "all"
+
+        bus2 = _FakeBus()
+        g._run_worker_thread(bus2, "build", "C:\\src", "C:\\tgt", print,
+                              classification_filter="albums_only")
+        assert captured["classification_filter"] == "albums_only"
+
     def test_build_stopped_for_space_reports_done_warnings(self, monkeypatch):
         """Раунд 189: m._bare_launch_run_build(outcome=...) заполняет {"stopped_for_space":
         True} -> воркер шлёт "warnings", не "ok"."""
-        def _fake_build(sources, target, input_fn, log, outcome=None):
+        def _fake_build(sources, target, input_fn, log, outcome=None, classification_filter="all"):
             if outcome is not None:
                 outcome["stopped_for_space"] = True
             return "C:\\r.html"
@@ -114,7 +135,7 @@ class TestRunWorkerThread:
         assert bus.events == [("done", "C:\\r.html", "warnings")]
 
     def test_build_not_stopped_for_space_still_reports_done_ok(self, monkeypatch):
-        def _fake_build(sources, target, input_fn, log, outcome=None):
+        def _fake_build(sources, target, input_fn, log, outcome=None, classification_filter="all"):
             if outcome is not None:
                 outcome["stopped_for_space"] = False
             return "C:\\r.html"
@@ -130,7 +151,7 @@ class TestRunWorkerThread:
         Раньше воркер слал bus.error(...) -> исход `failed` -> у пользователя пропадала кнопка
         «Главное меню». Теперь -- отдельный исход `nothing` через bus.done(None, "nothing")."""
         monkeypatch.setattr(
-            m, "_bare_launch_run_build", lambda sources, target, input_fn, log, outcome=None: None)
+            m, "_bare_launch_run_build", lambda sources, target, input_fn, log, outcome=None, classification_filter="all": None)
         bus = _FakeBus()
         g._run_worker_thread(bus, "build", "C:\\src", "C:\\tgt", print)
         assert bus.events == [("done", None, "nothing")]
@@ -143,7 +164,7 @@ class TestRunWorkerThread:
 
     def test_interrupted_run_report_maps_to_done_interrupted_with_its_report_path(
             self, monkeypatch):
-        def _boom(sources, target, input_fn, log, outcome=None):
+        def _boom(sources, target, input_fn, log, outcome=None, classification_filter="all"):
             raise m._InterruptedRunReport("C:\\partial.html")
 
         monkeypatch.setattr(m, "_bare_launch_run_build", _boom)
@@ -155,7 +176,7 @@ class TestRunWorkerThread:
         """Ctrl+C-пакет ДО того, как что-либо успело сформировать отчёт -- report_path=None,
         воркер обязан всё равно доложить done (не проглотить событие молча, экран должен уметь
         показать «Работа прервана» даже без ссылки на отчёт)."""
-        def _boom(sources, target, input_fn, log, outcome=None):
+        def _boom(sources, target, input_fn, log, outcome=None, classification_filter="all"):
             raise m._InterruptedRunReport(None)
 
         monkeypatch.setattr(m, "_bare_launch_run_build", _boom)
@@ -166,7 +187,7 @@ class TestRunWorkerThread:
     def test_aborted_run_report_maps_to_done_aborted_before_interrupted_branch(self, monkeypatch):
         """183-1/183-2: _AbortedRunReport (подкласс _InterruptedRunReport) должна ловиться
         РАНЬШЕ -> outcome="aborted", не "interrupted"."""
-        def _boom(sources, target, input_fn, log, outcome=None):
+        def _boom(sources, target, input_fn, log, outcome=None, classification_filter="all"):
             raise m._AbortedRunReport("C:\\partial.html")
 
         monkeypatch.setattr(m, "_bare_launch_run_build", _boom)
@@ -178,7 +199,7 @@ class TestRunWorkerThread:
         """_HardExit -- крестик, main-поток уже сам ведёт процесс к sys.exit(0) (см.
         _Wizard._on_run_hard_exit()) -- воркер не должен класть событие, экран этого уже не
         увидит."""
-        def _boom(sources, target, input_fn, log, outcome=None):
+        def _boom(sources, target, input_fn, log, outcome=None, classification_filter="all"):
             raise m._HardExit()
 
         monkeypatch.setattr(m, "_bare_launch_run_build", _boom)
@@ -189,7 +210,7 @@ class TestRunWorkerThread:
     def test_unexpected_exception_reports_error_and_writes_crash_log(self, monkeypatch, tmp_path):
         monkeypatch.setattr(m, "_app_dir", lambda: str(tmp_path))
 
-        def _boom(sources, target, input_fn, log, outcome=None):
+        def _boom(sources, target, input_fn, log, outcome=None, classification_filter="all"):
             raise RuntimeError("kaboom")
 
         monkeypatch.setattr(m, "_bare_launch_run_build", _boom)
