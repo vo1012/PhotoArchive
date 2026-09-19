@@ -4401,8 +4401,59 @@ def test_requirements_txt_pinned_and_wired_up():
 # Побочный эффект: забытая функция теста, которую не дописали в этот список, -- опечатка в
 # ОДНОМ месте (не как раньше, когда `def test_...():` и вызов в main() были двумя независимыми
 # местами, и можно было незаметно для CI никогда не вызвать новый тест).
+def test_probe_raw_and_dat_work_on_cyrillic_paths():
+    """Раунд 242-1: opt-in content-sniff (probe_raw_as_photo/probe_dat_as_video) обязан находить
+    файл по КИРИЛЛИЧЕСКОМУ пути. Боевой прогон 2026-09-19: _raw_ext_has_camera_exif() передавал
+    путь exiftool.exe в argv -- на Windows это ANSI, с `-charset filename=utf8` файл не
+    находился, проба молча давала False на каждом .raw (тот же класс бага, что
+    exiftool_batch(), см. проверку выше). Юнит-тест в tests/ на ubuntu-джобе этот баг не
+    ловит (нет Windows-exiftool), поэтому ассерт живёт здесь -- windows-джоб на настоящем
+    exiftool.exe/ffprobe.exe."""
+    print("\n=== probe_raw_as_photo/probe_dat_as_video: Cyrillic path ===")
+    d = os.path.join(WORK, "probe_cyr_src", "Отпуск")
+    os.makedirs(d, exist_ok=True)
+    cam_jpg = os.path.join(d, "cam.jpg")
+    image(cam_jpg, 300, 200, exif=True)   # Make/Model реально записаны exiftool'ом
+    cam_raw = os.path.join(d, "cam.raw")
+    os.replace(cam_jpg, cam_raw)
+    junk_raw = os.path.join(d, "junk.raw")
+    with open(junk_raw, "wb") as f:
+        f.write(b"\x00\x01" * 3000)
+    vcd = os.path.join(d, "vcd.dat")
+    junk_dat = os.path.join(d, "junk.dat")
+    with open(junk_dat, "wb") as f:
+        f.write(os.urandom(5000))
+    mk = subprocess.run(
+        ["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25",
+         "-t", "1", "-c:v", "mpeg1video", "-f", "mpeg", vcd],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    check(mk.returncode == 0 and os.path.isfile(vcd), "fixture: synthetic MPEG-1 .dat created via ffmpeg")
+
+    code = (
+        "import sys, json; sys.path.insert(0, %r)\n"
+        "import photosort_win as m\n"
+        "print(json.dumps([m._raw_ext_has_camera_exif(%r), m._raw_ext_has_camera_exif(%r),\n"
+        "                  m._dat_has_video_stream(%r), m._dat_has_video_stream(%r)]))\n"
+        % (ROOT, cam_raw, junk_raw, vcd, junk_dat))
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL)
+    try:
+        import json as _json
+        got = _json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception:
+        got = None
+        print(f"  probe subprocess output: {r.stdout!r} stderr: {r.stderr[-300:]!r}")
+    check(got is not None and got[0] is True,
+          "probe_raw: .raw with Make/Model in Cyrillic folder recognized as camera RAW")
+    check(got is not None and got[1] is False, "probe_raw: junk .raw (no camera EXIF) rejected")
+    check(got is not None and got[2] is True,
+          "probe_dat: .dat with a video stream in Cyrillic folder recognized as video")
+    check(got is not None and got[3] is False, "probe_dat: junk .dat (no video stream) rejected")
+
+
 ALL_TESTS = [
     test_regression_and_zones,
+    test_probe_raw_and_dat_work_on_cyrillic_paths,
     test_sibling_albums_not_merged,
     test_mirror_raw,
     test_multi_source,
