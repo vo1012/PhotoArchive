@@ -79,9 +79,9 @@ warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
 # blanket ignore of all warnings, so any other future PIL/library warning still surfaces.
 warnings.filterwarnings("ignore", message="Palette images with Transparency.*", category=UserWarning)
 
-__version__ = "0.6.17"          # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
+__version__ = "0.6.18"          # версия ПРОГРАММЫ (тег/релиз, см. RELEASING.md) -- НЕ путать
                                  # с RULES_VERSION ниже (та про совместимость архива, а не exe)
-RULES_VERSION = "2026-09-15"   # дата последнего изменения бизнес-правил -- см. RULES.md;
+RULES_VERSION = "2026-09-19"   # дата последнего изменения бизнес-правил -- см. RULES.md;
                                 # менять руками при изменении логики раскладки/дедупа/дат
 __copyright__ = "© 2026 Vladimir Oleynikov"  # держим строку короткой и везде идентичной
                                               # LICENSE, а не только там, куда мало кто
@@ -2061,10 +2061,50 @@ class ProgressReporter:
 # ============================================================================
 
 
-IMAGE_EXTS = {"jpg", "jpeg", "png", "heic", "heif", "tif", "tiff", "bmp", "webp", "gif"}
-RAW_EXTS = {"cr2", "cr3", "nef", "arw", "dng"}
+IMAGE_EXTS = {"jpg", "jpeg", "png", "heic", "heif", "tif", "tiff", "bmp", "webp", "gif",
+              "avif", "jfif"}
+# 2026-09-19, тот же заход, что и легаси-видео выше ("программа должна обрабатывать все
+# популярные форматы"): "avif" -- реально проверен исполнением (не по докстрингу) -- забандленный
+# Pillow 12.3.0 кодирует/декодирует AVIF НАТИВНО, без доп. зависимости (register_heif_opener()
+# для этого не нужен). "jfif" -- то же самое, что .jpg (JPEG File Interchange Format, так
+# некоторые браузеры/мессенджеры называют скачанный JPEG) -- Pillow уже маппит это расширение на
+# свой штатный JPEG-плагин, только расширения не было в списке.
+RAW_EXTS = {"cr2", "cr3", "nef", "arw", "dng",
+            "orf", "rw2", "raf", "pef", "srw", "3fr", "nrw", "crw", "mrw", "x3f"}
+# 2026-09-19: бренд-специфичные RAW (Olympus/Panasonic/Fujifilm/Pentax/Samsung/Hasselblad/
+# компактные Nikon/старый Canon/Minolta/Sigma) -- расширения проверены по списку поддерживаемых
+# форматов забандленного exiftool.exe (`exiftool -listf`), которым и так единственно читаются
+# дата/размер/камера для RAW (Pillow RAW не декодирует вообще, см. её докстрин у ветки
+# ftype=="raw"). Тот же самый механизм, что уже работает для cr2/nef/arw -- просто больше
+# распознанных расширений, не новый код-путь. НЕ включает голое "raw" (без бренда) -- то
+# расширение неспецифично (используется и для посторонних сырых дампов данных), и, в отличие
+# от .dat-видео, для RAW вообще нет проверки "похоже на медиа" -- см. Config.probe_raw_as_photo
+# ниже, отдельный opt-in.
 VIDEO_EXTS = {"mp4", "mov", "m4v", "avi", "mkv", "3gp", "mts", "m2ts", "wmv", "flv", "webm", "mod", "tod",
-              "vob"}
+              "vob", "mpg", "mpeg", "vro", "dv", "ts", "asf", "divx", "rm", "rmvb"}
+# 2026-09-19, реальный баг из боевого прогона: оцифровка VHS (DVD-рекордер/capture-карта) почти
+# всегда пишет .mpg/.mpeg -- их не было в списке, файлы молча пропускались при обходе (см.
+# "Файлы с расширением вне image/raw/video/archive" в RULES.md). Никакой DVD-юнит/двойной счёт
+# здесь не задействован (в отличие от "vob" выше) -- обычный отдельностоящий видеофайл.
+# Тем же заходом (речь пользователя: "программа должна обрабатывать все популярные форматы", не
+# только личный найденный случай) -- добавлены остальные специфичные легаси-форматы бытового
+# видео/цифровизации, каждый предварительно проверен ИСПОЛНЕНИЕМ (не по докстрингу) на
+# забандленном bin/ffmpeg.exe/ffprobe.exe: демультиплексирование + извлечение кадра (нужно для
+# pHash-сравнения, см. "video: ffprobe... pHash 3 кадров" в RULES.md) реально работают для
+# каждого:
+#   vro   -- нативный формат бытовых DVD-рекордеров (Panasonic/Sony/LG) до финализации диска;
+#            НЕ пересекается с VIDEO_TS (та структура -- исключительно .vob/.ifo/.bup), поэтому
+#            без риска двойного счёта, как у "vob" выше.
+#   dv    -- сырой поток MiniDV-камер (1995-2010е).
+#   ts    -- сырой MPEG transport stream (капчер-карты/часть камкордеров; НЕ путать с уже
+#            поддерживаемым .m2ts/.mts -- те AVCHD-контейнер, этот -- голый поток).
+#   asf   -- старый контейнер Windows Media (отдельное семейство от уже поддерживаемого .wmv).
+#   divx  -- отдельное расширение для AVI-совместимого контейнера с кодеком DivX.
+#   rm/rmvb -- RealMedia (1998-2005).
+# "dat" НЕ добавлен сюда -- расширение неспецифично (кэши приложений/winmail.dat/базы данных
+# гораздо чаще видео), слепое добавление в этот плоский набор погнало бы ffprobe на КАЖДЫЙ
+# .dat, попавшийся при обходе. Для него нужна отдельная opt-in ветка (проба содержимого, не
+# расширения) -- см. Config.probe_dat_as_video ниже, отдельная задача.
 # 2026-08-07, по прямой просьбе пользователя (реальный боевой прогон, домашнее видео с DVD):
 # отдельностоящий .vob (НЕ внутри папки VIDEO_TS) идёт обычным путём видео -- хеш/дедуп/near-dup/
 # откат даты на mtime (как у .mod/.tod выше, тот же класс "старый формат без надёжных метаданных
@@ -2500,6 +2540,25 @@ class Config:
     debug: bool = False  # p.5.3: подробные [DEBUG]-строки в actions.log (причины решений,
                           # полный traceback на ошибках) -- для тестеров/разбора багов между
                           # релизами, НЕ ротируется отдельно от остального actions.log
+    probe_dat_as_video: bool = False  # 2026-09-19: ".dat" НЕ в VIDEO_EXTS (расширение слишком
+        # неспецифично -- кэши приложений/winmail.dat/базы данных гораздо чаще видео, чем VCD).
+        # По умолчанию выключено -- такие .dat молча пропускаются, как и раньше. Включив,
+        # пользователь платит ОДИН ffprobe-вызовом за каждый .dat, встреченный при обходе (см.
+        # classify_source_file_type(), кэшируется на уровень _walk_dir()'s directory-visit --
+        # ffprobe спавнится РОВНО один раз на файл, даже несмотря на то, что тип этого файла в
+        # обходе читается несколько раз подряд, см. _file_type_cache) -- у пользователей с
+        # большим числом непричастных .dat (кэши браузера и т.п.) это может заметно замедлить
+        # Фазу 1.
+    probe_raw_as_photo: bool = False  # 2026-09-19, тот же принцип, что и probe_dat_as_video
+        # выше, для голого ".raw" (БЕЗ бренда -- orf/rw2/raf/... уже в RAW_EXTS безусловно, их
+        # это не касается): расширение неспецифично (посторонние сырые дампы данных), и, в
+        # отличие от .dat-видео (ffprobe находит поток) и обычных изображений (проверка
+        # размера), у RAW вообще нет своей проверки "похоже на медиа" -- всегда безусловно
+        # считается снимком камеры. По умолчанию выключено -- такие .raw молча пропускаются.
+        # Включив, пользователь платит ОДИН exiftool-вызовом за каждый .raw, встреченный при
+        # обходе (см. classify_source_file_type()/_raw_ext_has_camera_exif(), тот же
+        # _file_type_cache -- ровно один вызов на файл) -- принимается как RAW только если
+        # найден реальный Make/Model камеры.
     suppress_logs: bool = False  # ТЗ-меню 2026-07-10, раздел 5: интерактивный "пробный
         # прогон" из голого меню репетирует archive dry_run=True, НО не создаёт __служебные_файлы\
         # и не пишет CSV/summary.txt в TARGET -- результат только на экране. НЕТ отдельной
@@ -3429,6 +3488,83 @@ def file_type(path: str) -> str:
     if e in ARCHIVE_EXTS or e in ("tar.gz", "tar.bz2"):
         return "archive"
     return "other"
+
+
+def _dat_has_video_stream(path: str) -> bool:
+    """Content-sniff for Config.probe_dat_as_video -- ".dat" деliberately НЕ в VIDEO_EXTS (см.
+    её докстрин): расширение слишком неспецифично (кэши приложений/winmail.dat/базы данных
+    гораздо чаще видео), доверять голому расширению здесь нельзя. Требует настоящий видеопоток
+    с реальными размерами -- та же планка приёмки, что даёт VIDEO_EXTS-путь через file_type()
+    для любого другого расширения (там гарантию даёт сам факт, что расширение специфично)."""
+    info = ffprobe_json(path)
+    for s in info.get("streams", []):
+        if s.get("codec_type") == "video" and s.get("width") and s.get("height"):
+            return True
+    return False
+
+
+def _raw_ext_has_camera_exif(path: str) -> bool:
+    """Content-sniff for Config.probe_raw_as_photo -- голое ".raw" (без бренда, в отличие от
+    orf/rw2/raf/... в RAW_EXTS) НЕ входит в список: неспецифичное имя, встречается и у
+    посторонних сырых дампов данных, не только у фотокамер (Panasonic/Leica). В отличие от
+    ".dat"-видео (который можно проверить пробным ffprobe-декодированием), у RAW-ветки вообще
+    нет собственной проверки "похоже на медиа" (см. классификацию ftype=="raw" -- всегда
+    считается настоящим снимком камеры) -- единственный сигнал, которым можно отличить реальный
+    RAW от мусора, это наличие осмысленных EXIF-тегов камеры (Make/Model)."""
+    argfile_path = None
+    try:
+        # Путь -- через -@ argfile, не argv (тот же приём, что у основного вызова exiftool ниже по
+        # файлу): argv на Windows идёт в ANSI, с `-charset filename=utf8` кириллический путь не
+        # находится ("Invalid filename encoding") и проба молча давала False на каждом .raw.
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".args", delete=False, encoding="utf-8"
+        ) as argfile:
+            argfile_path = argfile.name
+            argfile.write(path + "\n")
+        out = subprocess.run(
+            [EXIFTOOL_BIN, "-j", "-n", "-charset", "filename=utf8", "-Make", "-Model",
+             "-@", argfile_path],
+            capture_output=True, timeout=30, startupinfo=_NO_WINDOW_STARTUPINFO,
+            creationflags=_hidden_child_creationflags(),
+        )
+        data = json.loads(out.stdout.decode("utf-8", "replace") or "[]")
+        if not data:
+            return False
+        entry = data[0]
+        return bool(entry.get("Make") or entry.get("Model"))
+    except Exception:
+        return False
+    finally:
+        if argfile_path:
+            try:
+                os.remove(argfile_path)
+            except OSError:
+                pass
+
+
+def classify_source_file_type(path: str, cfg) -> str:
+    """file_type() плюс opt-in содержимое-проба для ".dat"/".raw" (Config.probe_dat_as_video/
+    probe_raw_as_photo, оба по умолчанию выключены) -- единственная точка, где реально
+    спавнится ffprobe/exiftool ради классификации (не путать с video_duration_and_resolution()/
+    EXIF-префетчем дальше по конвейеру -- те уже для файла, решение о типе которого принято
+    здесь). Cтоимость -- один subprocess-вызов на каждый ".dat"/".raw", встреченный при обходе,
+    ТОЛЬКО если соответствующий флаг включён; для всех остальных расширений (и для ".dat"/
+    ".raw" при выключенных флагах) -- ровно то же самое, что и раньше, без дополнительных
+    затрат. Единственный вызывающий код в реальном обходе -- SourceWalker._walk_dir()'s
+    _file_type_cache (см. её докстрин) -- гарантирует, что этот subprocess-вызов происходит
+    РОВНО один раз на файл, несмотря на то, что тип файла в обходе читается несколько раз
+    подряд (preview-счётчик папки, сортировка sibling-пар, реальный диспетчер)."""
+    t = file_type(path)
+    if t != "other":
+        return t
+    ext = ext_of(path)
+    if ext == "dat" and getattr(cfg, "probe_dat_as_video", False):
+        if _dat_has_video_stream(path):
+            return "video"
+    elif ext == "raw" and getattr(cfg, "probe_raw_as_photo", False):
+        if _raw_ext_has_camera_exif(path):
+            return "raw"
+    return t
 
 
 # "обработано объектов X/Y" (_quick_media_count_estimate()/SourceWalker._tick_object()) считает
@@ -4956,7 +5092,7 @@ class SourceWalker:
             # файла-SOURCE нет сегментов пути, которые мог бы отравить is_dump_segment(), сам
             # факт явного указания пользователем этого файла как SOURCE весомее гипотетической
             # классификации по голому имени файла. Обрабатывается всегда, независимо от фильтра.
-            t = file_type(source)
+            t = classify_source_file_type(source, self.cfg)
             if t in ("image", "raw", "video"):
                 st = os.stat(winlong(source))
                 yield SourceItem(source, source, os.path.basename(source), st.st_size, st.st_mtime, t,
@@ -5499,10 +5635,21 @@ class SourceWalker:
             # SESSION-HANDOFF.txt, редизайн живого вывода Фазы 2: этот же проход уже вызывает
             # file_type() на каждый файл папки -- расширен на video (не только image/raw) для
             # "[папка] ... найдено медиафайлов N", не заводить второй проход ради этого счётчика.
+            # 2026-09-19: classify_source_file_type() (не голый file_type()) -- если пропустить
+            # opt-in пробу .dat/.raw здесь, ДВА реальных бага сразу: (1) "[папка] ... найдено
+            # медиафайлов N" не считает probe-подтверждённые .dat/.raw; (2) хуже -- sibling_by_base
+            # не узнал бы о probe-подтверждённом .raw вообще, и его JPEG-партнёр с тем же именем
+            # получил бы sibling_path=None (ложный "JPEG без RAW" в stats.n_jpeg_without_raw,
+            # см. её докстрин). Результат кэшируется в _file_type_cache -- classify_source_file_type()
+            # спавнит subprocess ТОЛЬКО для .dat/.raw при включённом флаге; без кэша тот же файл
+            # был бы переспрошен ещё дважды ниже (_defer_raw_with_sibling()/реальный per-file
+            # диспетчер) -- три subprocess-вызова на файл вместо одного.
             sibling_by_base = {}
             folder_media_count = 0
+            _file_type_cache = {}
             for name in files:
-                t = file_type(os.path.join(cur_dirpath, name))
+                t = classify_source_file_type(os.path.join(cur_dirpath, name), self.cfg)
+                _file_type_cache[name] = t
                 if t in ("image", "raw", "video"):
                     folder_media_count += 1
                 if t not in ("image", "raw"):
@@ -5546,9 +5693,8 @@ class SourceWalker:
                 else:
                     self._object_line_cb("folder", disp_for_object, folder_media_count, letter)
 
-            def _defer_raw_with_sibling(name, _dirpath=cur_dirpath, _sibling_by_base=sibling_by_base):
-                t = file_type(os.path.join(_dirpath, name))
-                if t != "raw":
+            def _defer_raw_with_sibling(name, _cache=_file_type_cache, _sibling_by_base=sibling_by_base):
+                if _cache.get(name) != "raw":
                     return 0
                 base_noext = os.path.splitext(name)[0].lower()
                 return 1 if "image" in _sibling_by_base.get(base_noext, {}) else 0
@@ -5627,7 +5773,7 @@ class SourceWalker:
                     _tick_object()
                     continue
 
-                t = file_type(full)
+                t = _file_type_cache[name]
                 if t == "other" or t == "archive":
                     # t == "archive" здесь -- ТОЛЬКО бэйр .gz/.bz2, который detect_archive_format()
                     # выше уже отверг (одиночный сжатый файл: core.log.gz, dump.sql.gz, UTF-8.gz --
@@ -8162,6 +8308,17 @@ def _walk_media_files(root: str, exclude_dirs=None):
         for fn in filenames:
             p = _strip_winlong(os.path.join(dirpath, fn))
             t = file_type(p)
+            # ".dat"/".raw" здесь -- безусловно video/raw, без повторной пробы ffprobe/exiftool:
+            # попасть в архив они могли только через classify_source_file_type()
+            # (probe_dat_as_video/probe_raw_as_photo), т.е. проба уже пройдена один раз при
+            # копировании -- переиндексация того же архива на следующем прогоне не должна
+            # платить за неё второй раз.
+            if t == "other":
+                e = ext_of(p)
+                if e == "dat":
+                    t = "video"
+                elif e == "raw":
+                    t = "raw"
             if t in ("image", "raw", "video"):
                 yield p, t
 
@@ -11391,7 +11548,18 @@ def _run_impl(cfg: Config, log=print, shared_pool=None, print_summary=True):
             unreadable_count += 1
             # os.stat() провалился раньше, чем SourceItem с ftype вообще собран -- только путь
             # (disp), тип определяем по расширению тем же способом, что и сам SourceItem.
-            unreadable_count_by_type[_ftype_bucket(file_type(disp))] += 1
+            # ".dat"/".raw" -- безусловно video/raw: раз дошло до этой точки,
+            # classify_source_file_type() уже отвергло "other" (проба ffprobe/exiftool пройдена
+            # раньше, до os.stat()) -- переспрашивать расширением без пробы значило бы откатить
+            # уже принятое решение.
+            _stat_failed_ftype = file_type(disp)
+            if _stat_failed_ftype == "other":
+                _stat_failed_ext = ext_of(disp)
+                if _stat_failed_ext == "dat":
+                    _stat_failed_ftype = "video"
+                elif _stat_failed_ext == "raw":
+                    _stat_failed_ftype = "raw"
+            unreadable_count_by_type[_ftype_bucket(_stat_failed_ftype)] += 1
 
         if pending_retry and not st.stopped_for_space and not st.interrupted:
             try:
@@ -11682,6 +11850,32 @@ DEFAULT_CONFIG_YAML_TEMPLATE = """\
                                 # вперемешку с обычными во всех будущих прогонах того же
                                 # архива (см. README.md).
 
+# probe_dat_as_video: false      # ".dat" -- расширение слишком неспецифичное (кэши приложений,
+                                # winmail.dat, базы данных), чтобы доверять ему как видео "на
+                                # глаз" -- по умолчанию такие файлы молча пропускаются, как и
+                                # любое другое расширение вне поддерживаемого списка. true --
+                                # каждый встреченный .dat проверяется ffprobe на настоящий
+                                # видеопоток (например, старые VCD-диски); если поток найден --
+                                # обрабатывается как обычное видео. Цена: один ffprobe-вызов на
+                                # КАЖДЫЙ .dat при обходе -- ориентировочно ~0.1с/файл (спавн
+                                # процесса, не зависит от размера самого файла), измерено
+                                # ревизором (Раунд 240): на источнике с N тысячами непричастных
+                                # .dat (кэши браузера и т.п.) это добавит ~N x 0.1с к Фазе 1.
+
+# probe_raw_as_photo: false      # Тот же принцип, что и probe_dat_as_video выше, для голого
+                                # ".raw" (БЕЗ бренда -- orf/rw2/raf/pef/srw/3fr/nrw/crw/mrw/x3f
+                                # поддерживаются безусловно, этого параметра не касаются):
+                                # расширение неспецифично (посторонние сырые дампы данных), а у
+                                # RAW-файлов, в отличие от обычных изображений, вообще нет своей
+                                # проверки "похоже на медиа" -- по умолчанию такие .raw молча
+                                # пропускаются. true -- каждый встреченный .raw проверяется
+                                # exiftool на настоящие EXIF-теги камеры (Make/Model); найдены --
+                                # обрабатывается как обычный RAW. Цена: один exiftool-вызов на
+                                # КАЖДЫЙ .raw при обходе -- ориентировочно ~0.25с/файл (спавн
+                                # процесса, не зависит от размера самого файла), измерено
+                                # ревизором (Раунд 240): на источнике с N тысячами голых .raw
+                                # это добавит ~N x 0.25с к Фазе 1.
+
 # gui_font_scale: 1.2            # ТОЛЬКО графическое меню (gui_menu.py), НЕ движок. Множитель
                                 # размера шрифта мастера ПОВЕРХ системного «Масштаба» экрана
                                 # Windows (программа его и так уважает). 1.2 (по умолчанию) --
@@ -11742,7 +11936,7 @@ CONFIG_YAML_FIELDS = {
     "read_retry_count", "read_retry_delay", "bydate_granularity",
     "scan_system_dirs",
     "default_exclude_dirs", "extra_exclude_dirs", "mirror_raw",
-    "tmp_extract_dir", "raw_layout", "debug",
+    "tmp_extract_dir", "raw_layout", "debug", "probe_dat_as_video", "probe_raw_as_photo",
     "dump_segment_names", "extra_dump_segment_names",
     "dump_segment_prefixes", "extra_dump_segment_prefixes",
 }

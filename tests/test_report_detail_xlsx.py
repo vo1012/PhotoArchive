@@ -408,8 +408,11 @@ class TestBuildDetailRows:
         assert row["ps_command"] == ""  # не пара "дубликат", открывать не с чем сравнивать
 
     def test_disputed_row_without_recognized_extension_falls_back_to_other(self):
+        # "weird.dat" was the example here until 2026-09-19: report.py's VIDEO_EXTS now treats
+        # "dat" as video (Config.probe_dat_as_video content-sniff, see its docstring) -- no
+        # longer a generic "unrecognized extension" example. ".xyz" still is.
         rows = rx._build_detail_rows({"disputes": [
-            _disputed(r"D:\SOURCE\weird.dat", r"D:\TARGET\_Unsorted\weird.dat", "not_media"),
+            _disputed(r"D:\SOURCE\weird.xyz", r"D:\TARGET\_Unsorted\weird.xyz", "not_media"),
         ]})
         assert rows[0]["kind"] == "other"
 

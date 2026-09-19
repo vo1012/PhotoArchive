@@ -527,14 +527,22 @@ symlink), ведущая сама на себя или на одну из уже
 
 Актуальный список (тот же, что печатает `PhotoArchive.exe --formats`):
 
-- **Изображения**: jpg/jpeg, png, heic/heif, tif/tiff, bmp, webp, gif (только статичный —
-  анимированный GIF считается не фотографией).
-- **RAW**: cr2, cr3, nef, arw, dng.
-- **Видео**: mp4, mov, m4v, avi, mkv, 3gp, mts, m2ts, wmv, flv, webm, mod, tod, vob.
+- **Изображения**: avif, bmp, gif (только статичный — анимированный GIF считается не
+  фотографией), heic/heif, jfif, jpg/jpeg, png, tif/tiff, webp.
+- **RAW**: 3fr, arw, cr2, cr3, crw, dng, mrw, nef, nrw, orf, pef, raf, rw2, srw, x3f.
+- **Видео**: 3gp, asf, avi, divx, dv, flv, m2ts, m4v, mkv, mod, mov, mp4, mpeg, mpg, mts, rm,
+  rmvb, tod, ts, vob, vro, webm, wmv.
 - **Архивы** (распаковываются автоматически): zip, rar, 7z, tar, tar.gz/tgz, tar.bz2.
 
 Файлы прочих типов (документы, музыка, исполняемые файлы и т. п.) при обходе источника
 просто пропускаются — они вне области применения программы.
+
+`.dat`/голое `.raw` (без бренда) в эти списки не входят (оба расширения слишком неспецифичны —
+кэши приложений/базы данных/посторонние сырые дампы встречаются под ними чаще, чем видео/фото)
+— но опционально могут быть включены параметрами `probe_dat_as_video: true`/
+`probe_raw_as_photo: true` в `photoarchive_config.yaml`: каждый такой файл тогда проверяется —
+`.dat` на настоящий видеопоток (ffprobe), `.raw` на настоящие EXIF-теги камеры Make/Model
+(exiftool) — и, если сигнал найден, обрабатывается как обычное видео/RAW.
 
 ## Известные ограничения
 
